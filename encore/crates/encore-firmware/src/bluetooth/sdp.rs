@@ -34,7 +34,7 @@ const UUID_L2CAP: u16 = 0x0100;
 /// Format: Data Element Sequence of (UINT16 attr_id, value) pairs.
 static A2DP_RECORD: &[u8] = &[
     // Outer SEQ (length in next byte)
-    0x35, 60,
+    0x35, 64,
     // Attr 0x0000 ServiceRecordHandle = UINT32(0x00010001)
     0x09, 0x00, 0x00, // UINT16 attr_id
     0x0A, 0x00, 0x01, 0x00, 0x01, // UINT32 value

@@ -637,7 +637,7 @@ mod tests {
 
     #[test]
     fn parse_eir_shortened_name() {
-        let eir = [0x04, 0x08, b'H', b'K']; // Shortened Local Name
+        let eir = [0x03, 0x08, b'H', b'K']; // Shortened Local Name
         assert_eq!(parse_eir_name(&eir), Some("HK".into()));
     }
 

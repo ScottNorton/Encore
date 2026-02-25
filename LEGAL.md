@@ -57,19 +57,12 @@ analysis of the instruction set architecture and publicly available
 documentation. The stock DSP firmware binary is not distributed; only
 independently-authored tools and research documentation are included.
 
-## Stock Firmware
+## Vendor Software
 
-This project does **not** distribute proprietary firmware images. The build
-process requires a stock firmware image that users must obtain independently
-from their own device. The following stock components remain the property of
-their respective copyright holders:
+This project **does not distribute** proprietary firmware images. The build
+process currently requires a stock firmware image that users must obtain independently.
 
-- Linux kernel and device drivers — Marvell Technology / Synaptics
-- Bootloader and system binaries — Harman International
-- Wireless firmware blobs — Marvell Technology
-- DSP firmware — Analog Devices / Harman International
-
-The stock Linux kernel source code was made available under the terms of the
+The vendor's Linux kernel source code was made available under the terms of the
 GNU General Public License v2.
 
 ## Third-Party Software

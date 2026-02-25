@@ -89,7 +89,7 @@ jobs:
 
       - name: Download stock firmware
         if: steps.cache-stock.outputs.cache-hit != 'true'
-        run: make download
+        run: bash scripts/build/download_firmware.sh
 
       - name: Verify stock firmware
         run: |
@@ -103,8 +103,6 @@ jobs:
           fi
           echo "Stock firmware verified (SHA256: $ACTUAL_SHA)"
 
-      # Note: can't use 'make firmware' here — it depends on 'encore' which
-      # would try to rebuild. The binary is already provided as an artifact.
       - name: Build firmware image
         run: sudo bash scripts/build/build_firmware.sh
 
@@ -115,13 +113,17 @@ jobs:
           echo "83_IMAGE size: $(wc -c < build/firmware/83_IMAGE) bytes"
           echo "rootfs.squashfs size: $(wc -c < build/firmware/rootfs.squashfs) bytes"
 
-      - name: Upload firmware artifacts
+      - name: Upload 83_IMAGE
         uses: actions/upload-artifact@v4
         with:
-          name: firmware
-          path: |
-            build/firmware/83_IMAGE
-            build/firmware/rootfs.squashfs
+          name: 83_IMAGE
+          path: build/firmware/83_IMAGE
+
+      - name: Upload rootfs.squashfs
+        uses: actions/upload-artifact@v4
+        with:
+          name: rootfs.squashfs
+          path: build/firmware/rootfs.squashfs
 
   release:
     name: Create release
@@ -136,22 +138,48 @@ jobs:
           name: encore-binary
           path: artifacts
 
-      - name: Download firmware
+      - name: Download 83_IMAGE
         uses: actions/download-artifact@v4
         with:
-          name: firmware
-          path: artifacts/firmware
+          name: 83_IMAGE
+          path: artifacts
+
+      - name: Download rootfs.squashfs
+        uses: actions/download-artifact@v4
+        with:
+          name: rootfs.squashfs
+          path: artifacts
 
       - name: Prepare release assets
+        id: assets
         run: |
           VERSION=${{ needs.build.outputs.version }}
           cd artifacts
           mv encore "encore-${VERSION}-arm"
-          mv firmware/rootfs.squashfs "encore-${VERSION}.squashfs"
-          mv firmware/83_IMAGE "encore-${VERSION}-83_IMAGE"
-          sha256sum "encore-${VERSION}-arm" > "encore-${VERSION}-arm.sha256"
-          sha256sum "encore-${VERSION}.squashfs" > "encore-${VERSION}.squashfs.sha256"
-          sha256sum "encore-${VERSION}-83_IMAGE" > "encore-${VERSION}-83_IMAGE.sha256"
+          mv 83_IMAGE "encore-${VERSION}-83_IMAGE"
+          mv rootfs.squashfs "encore-${VERSION}.squashfs"
+
+          # Compute sizes and hashes for release notes
+          for f in "encore-${VERSION}-arm" "encore-${VERSION}.squashfs" "encore-${VERSION}-83_IMAGE"; do
+            sha256sum "$f" > "${f}.sha256"
+          done
+
+          ARM_SIZE=$(du -h "encore-${VERSION}-arm" | cut -f1)
+          SQFS_SIZE=$(du -h "encore-${VERSION}.squashfs" | cut -f1)
+          IMG_SIZE=$(du -h "encore-${VERSION}-83_IMAGE" | cut -f1)
+          ARM_SHA=$(sha256sum "encore-${VERSION}-arm" | cut -d' ' -f1)
+          SQFS_SHA=$(sha256sum "encore-${VERSION}.squashfs" | cut -d' ' -f1)
+          IMG_SHA=$(sha256sum "encore-${VERSION}-83_IMAGE" | cut -d' ' -f1)
+
+          {
+            echo "arm_size=${ARM_SIZE}"
+            echo "sqfs_size=${SQFS_SIZE}"
+            echo "img_size=${IMG_SIZE}"
+            echo "arm_sha=${ARM_SHA}"
+            echo "sqfs_sha=${SQFS_SHA}"
+            echo "img_sha=${IMG_SHA}"
+          } >> "$GITHUB_OUTPUT"
+
           ls -lh encore-*
 
       - name: Create GitHub release
@@ -161,12 +189,23 @@ jobs:
           body: |
             ## Firmware artifacts
 
-            | File | Purpose | How to use |
-            |------|---------|------------|
-            | `encore-${{ needs.build.outputs.version }}-arm` | Encore binary (~6.6 MB) | OTA binary update via web UI |
-            | `encore-${{ needs.build.outputs.version }}.squashfs` | Full rootfs (~45 MB) | OTA rootfs update via web UI |
-            | `encore-${{ needs.build.outputs.version }}-83_IMAGE` | Complete image (~107 MB) | USB boot initial flash |
+            | File | Size | How to use |
+            |------|------|------------|
+            | `encore-${{ needs.build.outputs.version }}-arm` | ${{ steps.assets.outputs.arm_size }} | OTA binary update via web UI |
+            | `encore-${{ needs.build.outputs.version }}.squashfs` | ${{ steps.assets.outputs.sqfs_size }} | OTA rootfs update via web UI |
+            | `encore-${{ needs.build.outputs.version }}-83_IMAGE` | ${{ steps.assets.outputs.img_size }} | USB boot initial flash |
 
-            See [flashing guide](docs/flashing.md) for instructions.
+            ## SHA256 checksums
+            ```
+            ${{ steps.assets.outputs.arm_sha }}  encore-${{ needs.build.outputs.version }}-arm
+            ${{ steps.assets.outputs.sqfs_sha }}  encore-${{ needs.build.outputs.version }}.squashfs
+            ${{ steps.assets.outputs.img_sha }}  encore-${{ needs.build.outputs.version }}-83_IMAGE
+            ```
+
+            ## Install guide
+
+            **First time (USB boot):** Download `83_IMAGE`, follow the [flashing guide](docs/flashing.md).
+
+            **Update existing install:** Upload `.squashfs` (full rootfs) or `-arm` (binary only) via the web dashboard Update tab.
           files: |
             artifacts/encore-*

@@ -134,13 +134,17 @@ jobs:
           echo "83_IMAGE size: $(wc -c < build/firmware/83_IMAGE) bytes"
           echo "rootfs.squashfs size: $(wc -c < build/firmware/rootfs.squashfs) bytes"
 
-      - name: Upload firmware artifacts
+      - name: Upload 83_IMAGE
         uses: actions/upload-artifact@v4
         with:
-          name: firmware
-          path: |
-            build/firmware/83_IMAGE
-            build/firmware/rootfs.squashfs
+          name: 83_IMAGE
+          path: build/firmware/83_IMAGE
+
+      - name: Upload rootfs.squashfs
+        uses: actions/upload-artifact@v4
+        with:
+          name: rootfs.squashfs
+          path: build/firmware/rootfs.squashfs
 
   verify:
     name: Verify

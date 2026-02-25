@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Encore Docs</title>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/highlight.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/styles/github-dark.min.css">
+<style>
+  :root {
+    --bg: #0d1117;
+    --bg-sidebar: #010409;
+    --bg-card: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --accent: #58a6ff;
+    --accent-hover: #79c0ff;
+    --link: #58a6ff;
+    --code-bg: #1c2128;
+    --scrollbar: #30363d;
+    --scrollbar-hover: #484f58;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  ::-webkit-scrollbar { width: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-hover); }
+
+  /* Sidebar */
+  #sidebar {
+    width: 280px;
+    min-width: 280px;
+    background: var(--bg-sidebar);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+  }
+
+  #sidebar-header {
+    padding: 20px 16px 12px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  #sidebar-header h1 {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  #sidebar-header h1 span { font-size: 20px; }
+
+  #sidebar-header p {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-top: 4px;
+  }
+
+  /* Doc list — shrinks when TOC is present */
+  #nav {
+    overflow-y: auto;
+    padding: 8px;
+    flex-shrink: 0;
+  }
+
+  /* When TOC is visible, cap the nav height so TOC gets room */
+  #nav.has-toc {
+    max-height: 40vh;
+    flex-shrink: 1;
+  }
+
+  #nav .section-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-dim);
+    padding: 12px 8px 4px;
+  }
+
+  #nav a.doc-link {
+    display: block;
+    padding: 6px 12px;
+    border-radius: 6px;
+    color: var(--text-dim);
+    text-decoration: none;
+    font-size: 14px;
+    transition: background 0.15s, color 0.15s;
+    cursor: pointer;
+  }
+
+  #nav a.doc-link:hover { background: var(--bg-card); color: var(--text); }
+  #nav a.doc-link.active { background: #1f2937; color: var(--accent); font-weight: 500; }
+
+  /* Table of contents */
+  #toc {
+    border-top: 1px solid var(--border);
+    padding: 8px;
+    overflow-y: auto;
+    flex: 1;
+    min-height: 0;
+  }
+
+  #toc:empty {
+    display: none;
+  }
+
+  #toc .toc-title {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-dim);
+    padding: 4px 8px 4px;
+  }
+
+  #toc a {
+    display: block;
+    padding: 3px 8px;
+    border-radius: 4px;
+    color: var(--text-dim);
+    text-decoration: none;
+    font-size: 13px;
+    line-height: 1.4;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  #toc a:hover { background: var(--bg-card); color: var(--text); }
+  #toc a.active { color: var(--accent); }
+  #toc a.toc-h3 { padding-left: 20px; font-size: 12px; }
+  #toc a.toc-h4 { padding-left: 32px; font-size: 12px; }
+
+  /* Main content */
+  #main {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+  }
+
+  #toolbar {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    padding: 8px 24px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+
+  #toolbar .filename {
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    color: var(--text);
+  }
+
+  #toolbar .sep { opacity: 0.3; }
+
+  #toolbar button {
+    margin-left: auto;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: border-color 0.15s, color 0.15s;
+  }
+
+  #toolbar button:hover { border-color: var(--text-dim); color: var(--text); }
+
+  #content {
+    max-width: 900px;
+    width: 100%;
+    margin: 0 auto;
+    padding: 32px 48px 80px;
+    line-height: 1.7;
+  }
+
+  #content.landing {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 60vh;
+    text-align: center;
+    color: var(--text-dim);
+  }
+
+  #content.landing h2 { font-size: 24px; color: var(--text); margin-bottom: 8px; }
+  #content.landing p { font-size: 15px; }
+
+  #content h1 { font-size: 2em; font-weight: 600; margin: 0 0 16px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+  #content h2 { font-size: 1.5em; font-weight: 600; margin: 32px 0 16px; padding-bottom: 6px; border-bottom: 1px solid var(--border); scroll-margin-top: 52px; }
+  #content h3 { font-size: 1.25em; font-weight: 600; margin: 24px 0 12px; scroll-margin-top: 52px; }
+  #content h4 { font-size: 1em; font-weight: 600; margin: 20px 0 8px; scroll-margin-top: 52px; }
+  #content p { margin: 0 0 16px; }
+  #content a { color: var(--link); text-decoration: none; }
+  #content a:hover { text-decoration: underline; }
+  #content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+  #content code {
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 85%;
+    background: var(--code-bg);
+    padding: 2px 6px;
+    border-radius: 4px;
+  }
+
+  #content pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    overflow-x: auto;
+    margin: 0 0 16px;
+  }
+
+  #content pre code {
+    background: none;
+    padding: 0;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  #content blockquote {
+    border-left: 3px solid var(--accent);
+    padding: 4px 16px;
+    margin: 0 0 16px;
+    color: var(--text-dim);
+  }
+
+  #content table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 0 0 16px;
+    font-size: 14px;
+  }
+
+  #content th, #content td {
+    border: 1px solid var(--border);
+    padding: 8px 12px;
+    text-align: left;
+  }
+
+  #content th { background: var(--bg-card); font-weight: 600; }
+  #content tr:nth-child(even) { background: rgba(22, 27, 34, 0.5); }
+
+  #content ul, #content ol { padding-left: 24px; margin: 0 0 16px; }
+  #content li { margin: 4px 0; }
+  #content li > ul, #content li > ol { margin-bottom: 0; }
+  #content hr { border: none; border-top: 1px solid var(--border); margin: 24px 0; }
+  #content details { margin: 0 0 16px; }
+  #content summary { cursor: pointer; font-weight: 600; }
+  #content .task-list-item { list-style: none; margin-left: -24px; }
+  #content .task-list-item input { margin-right: 6px; }
+
+  .status {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--text-dim);
+    font-size: 15px;
+  }
+
+  .status.error { color: #f85149; }
+
+  #menu-toggle {
+    display: none;
+    background: none;
+    border: none;
+    color: var(--text);
+    font-size: 22px;
+    cursor: pointer;
+    padding: 0 4px;
+  }
+
+  @media (max-width: 768px) {
+    #sidebar {
+      position: fixed;
+      left: -280px;
+      top: 0;
+      bottom: 0;
+      z-index: 100;
+      transition: left 0.2s;
+    }
+    #sidebar.open { left: 0; }
+    #menu-toggle { display: block; }
+    #content { padding: 24px 16px 60px; }
+  }
+</style>
+</head>
+<body>
+
+<aside id="sidebar">
+  <div id="sidebar-header">
+    <h1><span>&#9881;</span> Encore Docs</h1>
+    <p>Harman Kardon Invoke</p>
+  </div>
+  <nav id="nav"></nav>
+  <div id="toc"></div>
+</aside>
+
+<main id="main">
+  <div id="toolbar">
+    <button id="menu-toggle" onclick="document.getElementById('sidebar').classList.toggle('open')">&#9776;</button>
+    <span id="breadcrumb"></span>
+  </div>
+  <div id="content" class="landing">
+    <h2>Encore Documentation</h2>
+    <p>Select a document from the sidebar to get started.</p>
+  </div>
+</main>
+
+<script>
+// Detect base path: if served from repo root, docs are at docs/; if served from docs/, they're local
+const BASE = location.pathname.includes("/docs/") ? "" : "docs/";
+const ROOT = location.pathname.includes("/docs/") ? "../" : "";
+
+const docs = [
+  { section: "Project", items: [
+    { name: "What's this?",     file: ROOT + "README.md" },
+    { name: "License",          file: ROOT + "LICENSE" },
+    { name: "Legal",            file: ROOT + "LEGAL.md" },
+    { name: "Contributing",     file: ROOT + "CONTRIBUTING.md" },
+  ]},
+  { section: "Getting Started", items: [
+    { name: "Architecture",     file: BASE + "architecture.md" },
+    { name: "Build Guide",      file: BASE + "build-guide.md" },
+    { name: "Makefile Reference", file: BASE + "makefile.md" },
+    { name: "Flashing",         file: BASE + "flashing.md" },
+    { name: "Troubleshooting",  file: BASE + "troubleshooting.md" },
+    { name: "Config Reference", file: BASE + "config-reference.md" },
+  ]},
+  { section: "Features", items: [
+    { name: "Desktop & Mobile App", file: BASE + "app.md" },
+    { name: "Home Assistant",   file: BASE + "home-assistant.md" },
+    { name: "Speaker Groups",   file: BASE + "groups.md" },
+  ]},
+  { section: "Hardware", items: [
+    { name: "Hardware Reference",  file: BASE + "hardware.md" },
+    { name: "MCU Reference",       file: BASE + "mcu-reference.md" },
+    { name: "DSP Reference",       file: BASE + "dsp-reference.md" },
+    { name: "DSP Tools",           file: BASE + "dsp-tools.md" },
+  ]},
+  { section: "Development", items: [
+    { name: "Porting Status",      file: BASE + "encore-porting-status.md" },
+    { name: "Kernel Porting",      file: BASE + "kernel-porting.md" },
+    { name: "Kexec Method",        file: BASE + "kexec-method.md" },
+  ]},
+];
+
+let currentFile = null;
+
+function buildNav() {
+  const nav = document.getElementById("nav");
+  for (const group of docs) {
+    const label = document.createElement("div");
+    label.className = "section-label";
+    label.textContent = group.section;
+    nav.appendChild(label);
+    for (const doc of group.items) {
+      const a = document.createElement("a");
+      a.className = "doc-link";
+      a.textContent = doc.name;
+      a.dataset.file = doc.file;
+      a.addEventListener("click", () => loadDoc(doc.file, doc.name));
+      nav.appendChild(a);
+    }
+  }
+}
+
+function setActive(file) {
+  document.querySelectorAll("#nav a.doc-link").forEach(a => {
+    a.classList.toggle("active", a.dataset.file === file);
+  });
+}
+
+function slugify(text) {
+  return text.toLowerCase().replace(/[^\w\s-]/g, "").replace(/\s+/g, "-");
+}
+
+function buildToc() {
+  const toc = document.getElementById("toc");
+  const nav = document.getElementById("nav");
+  toc.innerHTML = "";
+
+  const headings = document.querySelectorAll("#content h2, #content h3, #content h4");
+  if (headings.length === 0) {
+    nav.classList.remove("has-toc");
+    return;
+  }
+
+  nav.classList.add("has-toc");
+
+  const title = document.createElement("div");
+  title.className = "toc-title";
+  title.textContent = "On this page";
+  toc.appendChild(title);
+
+  const usedSlugs = {};
+  headings.forEach(h => {
+    let slug = slugify(h.textContent);
+    if (usedSlugs[slug]) {
+      usedSlugs[slug]++;
+      slug += "-" + usedSlugs[slug];
+    } else {
+      usedSlugs[slug] = 1;
+    }
+    h.id = slug;
+    const a = document.createElement("a");
+    a.textContent = h.textContent;
+    a.title = h.textContent;
+    a.dataset.target = h.id;
+    const tag = h.tagName.toLowerCase();
+    if (tag === "h3") a.className = "toc-h3";
+    else if (tag === "h4") a.className = "toc-h4";
+    a.addEventListener("click", () => {
+      h.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    toc.appendChild(a);
+  });
+
+  // Scroll spy
+  const mainEl = document.getElementById("main");
+  mainEl.removeEventListener("scroll", onScroll);
+  mainEl.addEventListener("scroll", onScroll);
+}
+
+function onScroll() {
+  const headings = document.querySelectorAll("#content h2, #content h3, #content h4");
+  const tocLinks = document.querySelectorAll("#toc a");
+  if (headings.length === 0 || tocLinks.length === 0) return;
+
+  const mainEl = document.getElementById("main");
+  const scrollTop = mainEl.scrollTop + 80;
+
+  let activeIdx = 0;
+  headings.forEach((h, i) => {
+    if (h.offsetTop <= scrollTop) activeIdx = i;
+  });
+
+  tocLinks.forEach((a, i) => {
+    a.classList.toggle("active", i === activeIdx);
+  });
+}
+
+function updateBreadcrumb(name, file) {
+  const bc = document.getElementById("breadcrumb");
+  if (file) {
+    const basename = file.split("/").pop();
+    const inDocs = file.includes("docs/") || (!file.includes("/") && !["README.md","LICENSE","LEGAL.md","CONTRIBUTING.md"].includes(file));
+    const display = inDocs ? "docs / " + basename : basename;
+    bc.innerHTML = `<span class="filename">${display}</span>`;
+  } else {
+    bc.textContent = "";
+  }
+}
+
+async function loadDoc(file, name) {
+  currentFile = file;
+  setActive(file);
+  updateBreadcrumb(name, file);
+
+  const content = document.getElementById("content");
+  content.className = "";
+  content.innerHTML = '<div class="status">Loading...</div>';
+
+  document.getElementById("sidebar").classList.remove("open");
+
+  try {
+    const resp = await fetch(file + "?t=" + Date.now(), { cache: "no-store" });
+    if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
+    const md = await resp.text();
+
+    marked.setOptions({
+      highlight: (code, lang) => {
+        if (lang && hljs.getLanguage(lang)) {
+          return hljs.highlight(code, { language: lang }).value;
+        }
+        return hljs.highlightAuto(code).value;
+      },
+      breaks: false,
+      gfm: true,
+    });
+
+    content.innerHTML = marked.parse(md);
+
+    // Rebase relative URLs for root-level documents (file starts with "../")
+    const fileDir = file.substring(0, file.lastIndexOf("/") + 1) || "";
+    if (fileDir) {
+      content.querySelectorAll("img[src]").forEach(img => {
+        const src = img.getAttribute("src");
+        if (src && !src.startsWith("http") && !src.startsWith("/") && !src.startsWith("data:") && !src.startsWith("../")) {
+          img.setAttribute("src", fileDir + src);
+        }
+      });
+      content.querySelectorAll("source[srcset]").forEach(el => {
+        const ss = el.getAttribute("srcset");
+        if (ss && !ss.startsWith("http") && !ss.startsWith("/") && !ss.startsWith("data:") && !ss.startsWith("../")) {
+          el.setAttribute("srcset", fileDir + ss);
+        }
+      });
+      content.querySelectorAll("a[href]").forEach(a => {
+        const href = a.getAttribute("href");
+        if (href && !href.startsWith("http") && !href.startsWith("#") && !href.startsWith("/") && !href.match(/\.md(#.*)?$/) && !href.startsWith("../")) {
+          // Check if this links to a doc we know about before rebasing
+          const entry = docs.flatMap(g => g.items).find(d => d.file === fileDir + href || d.file.endsWith("/" + href));
+          if (entry) {
+            a.addEventListener("click", e => { e.preventDefault(); loadDoc(entry.file, entry.name); });
+          } else {
+            a.setAttribute("href", fileDir + href);
+          }
+        }
+      });
+    }
+
+    // Rewrite relative .md links to use the viewer
+    content.querySelectorAll("a[href]").forEach(a => {
+      const href = a.getAttribute("href");
+      if (href && !href.startsWith("http")) {
+        const match = href.match(/^([^#]*\.md)(#.*)?$/);
+        if (match) {
+          a.addEventListener("click", async e => {
+            e.preventDefault();
+            const basename = match[1].split("/").pop();
+            const hash = match[2] || "";
+            const entry = docs.flatMap(g => g.items).find(d =>
+              d.file === basename || d.file.endsWith("/" + basename) || d.file === match[1]
+            );
+            const targetFile = entry ? entry.file : (BASE + basename);
+            await loadDoc(targetFile, entry ? entry.name : basename.replace(".md", ""));
+            if (hash) {
+              const el = document.getElementById(hash.slice(1));
+              if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+            }
+          });
+        }
+      }
+    });
+
+    // Build TOC after content is rendered
+    buildToc();
+
+    document.getElementById("main").scrollTop = 0;
+    history.replaceState(null, "", "#" + file);
+
+  } catch (err) {
+    content.innerHTML = `<div class="status error">Failed to load ${file}<br><br>${err.message}<br><br>
+      <small>Make sure you're serving these files over HTTP.<br>
+      e.g. <code>python -m http.server 8000</code> from the docs/ folder</small></div>`;
+  }
+}
+
+// Init
+buildNav();
+
+const hash = location.hash.slice(1);
+if (hash) {
+  const entry = docs.flatMap(g => g.items).find(d => d.file === hash);
+  if (entry) loadDoc(entry.file, entry.name);
+  else loadDoc(hash, hash.replace(".md", ""));
+} else {
+  loadDoc(ROOT + "README.md", "README");
+}
+</script>
+</body>
+</html>

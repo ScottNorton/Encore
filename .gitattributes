@@ -1,0 +1,20 @@
+# Force LF line endings for scripts and U-Boot commands.
+# Windows CRLF breaks U-Boot command parsing and shell scripts on-device.
+*.sh text eol=lf
+*.py text eol=lf
+*.patch text eol=lf
+rootfs/etc/init.d/* text eol=lf
+
+# Binary files (last matching rule wins in gitattributes)
+*.img binary
+*.pdf binary
+*.cat binary
+*.dll binary
+*.exe binary
+*_IMAGE binary
+flash/usb_boot_linux binary
+
+# Override: 79_IMAGE is a U-Boot text script, not a binary image.
+# This MUST come after *_IMAGE binary to take precedence.
+79_IMAGE text eol=lf
+79_IMAGE* text eol=lf

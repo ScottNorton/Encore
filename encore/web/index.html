@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#0d1117" media="(prefers-color-scheme:dark)">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme:light)">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" type="image/png" href="/branding/favicon-dark.png" media="(prefers-color-scheme:dark)">
+<link rel="icon" type="image/png" href="/branding/favicon-light.png" media="(prefers-color-scheme:light)">
+<link rel="apple-touch-icon" sizes="192x192" href="/branding/pwa-icon-192-dark.png">
+<link rel="apple-touch-icon" sizes="512x512" href="/branding/pwa-icon-512-dark.png">
+<title>Encore</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:#0d1117;color:#e6edf3;font-family:system-ui,-apple-system,sans-serif}
+  @media(prefers-color-scheme:light){body{background:#f8f9fa;color:#1a1a1a}}
+  .loading{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:1000;opacity:0;animation:fadein .4s .1s forwards;transition:opacity .5s ease,transform .5s ease;padding-top:env(safe-area-inset-top,0px)}
+  .loading.exit{opacity:0 !important;transform:scale(1.04);pointer-events:none}
+  .ring{position:relative;width:80px;height:80px;margin-bottom:20px}
+  .ring svg:first-of-type{position:absolute;inset:0;width:100%;height:100%;animation:rotate 25s linear infinite}
+  .ring circle{stroke-width:2;stroke-linecap:round}
+  .ring .track{stroke:#1e2430;stroke-width:3}
+  .ring .arc{stroke:url(#encore-grad);stroke-width:2.5}
+  .ring .speaker-sil{position:absolute;inset:15%;width:70%;height:70%}
+  .glow{position:absolute;inset:-8px;border-radius:50%;background:radial-gradient(circle,rgba(88,166,255,.12) 0%,transparent 70%);animation:pulse 2s ease-in-out infinite}
+  .brand{font-size:28px;font-weight:300;letter-spacing:6px;text-transform:uppercase;margin-bottom:8px}
+  .sub{font-size:12px;color:#6e7681;letter-spacing:2px;transition:opacity .3s ease}
+  @media(prefers-color-scheme:light){
+    .ring .track{stroke:#dee2e6}
+    .glow{background:radial-gradient(circle,rgba(0,100,255,.08) 0%,transparent 70%)}
+    .sub{color:#8b949e}
+  }
+  @keyframes fadein{to{opacity:1}}
+  @keyframes rotate{to{transform:rotate(360deg)}}
+  @keyframes pulse{0%,100%{opacity:.4;transform:scale(.95)}50%{opacity:1;transform:scale(1.05)}}
+  .ring.fling svg:first-of-type{animation-duration:.6s}
+</style>
+</head>
+<body>
+<div id="loading" class="loading">
+  <div class="ring">
+    <div class="glow"></div>
+    <svg viewBox="0 0 100 100">
+      <defs>
+        <linearGradient id="encore-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="#58a6ff"/>
+          <stop offset="50%" stop-color="#a371f7"/>
+          <stop offset="100%" stop-color="#58a6ff"/>
+        </linearGradient>
+      </defs>
+      <circle class="track" cx="50" cy="50" r="42" fill="none"/>
+      <circle class="arc" cx="50" cy="50" r="42" fill="none" stroke-dasharray="198 66" transform="rotate(135 50 50)"/>
+    </svg>
+    <svg class="speaker-sil" viewBox="0 0 100 100">
+      <path d="M36,26 Q34.5,54 33,82 A17,5 0 0,0 67,82 Q65.5,54 64,26 A14,3.8 0 0,1 36,26 Z" fill="none" stroke="currentColor" stroke-width="1.2" opacity="0.5"/>
+      <ellipse cx="50" cy="33" rx="15" ry="3.2" fill="none" stroke="currentColor" stroke-width="0.8" opacity="0.4"/>
+      <ellipse cx="50" cy="82" rx="17" ry="5" fill="none" stroke="currentColor" stroke-width="0.6" opacity="0.3"/>
+      <ellipse cx="50" cy="26" rx="12" ry="2.8" fill="#e8b040" opacity="0.85"/>
+    </svg>
+  </div>
+  <div class="brand">Encore</div>
+  <div id="loading-status" class="sub">Loading...</div>
+</div>
+<script>if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{});</script>
+<script type="module">
+import init from './pkg/encore_wasm.js';
+init();
+</script>
+</body>
+</html>

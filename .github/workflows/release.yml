@@ -1,0 +1,167 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build Encore binary
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-12-07
+          targets: armv7-unknown-linux-musleabihf, wasm32-unknown-unknown
+
+      - name: Cache cargo tools
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin
+          key: ${{ runner.os }}-cargo-tools-zigbuild-wasm-pack-1
+
+      - name: Install tools
+        run: |
+          command -v cargo-zigbuild || cargo install cargo-zigbuild
+          command -v wasm-pack || cargo install wasm-pack
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            encore/target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('encore/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-release-
+
+      - name: Build Encore
+        run: BUILD_VERSION="${GITHUB_REF_NAME}" make encore
+
+      - name: Upload Encore binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: encore-binary
+          path: build/encore
+
+  firmware:
+    name: Build firmware image
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Encore binary
+        uses: actions/download-artifact@v4
+        with:
+          name: encore-binary
+          path: build
+
+      - name: Make binary executable
+        run: chmod 755 build/encore
+
+      - name: Cache stock firmware image
+        id: cache-stock
+        uses: actions/cache@v4
+        with:
+          path: firmware/83_IMAGE_stock
+          key: stock-firmware-83-image-b2e12178
+
+      - name: Download stock firmware
+        if: steps.cache-stock.outputs.cache-hit != 'true'
+        run: make download
+
+      - name: Verify stock firmware
+        run: |
+          EXPECTED_SHA="b2e12178f98a0c0904cb1e6e2ba933de0c0fef8be7c24e7852bc9933294850e8"
+          ACTUAL_SHA=$(sha256sum firmware/83_IMAGE_stock | cut -d' ' -f1)
+          if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+            echo "ERROR: Stock firmware SHA256 mismatch!"
+            echo "  Expected: $EXPECTED_SHA"
+            echo "  Got:      $ACTUAL_SHA"
+            exit 1
+          fi
+          echo "Stock firmware verified (SHA256: $ACTUAL_SHA)"
+
+      # Note: can't use 'make firmware' here — it depends on 'encore' which
+      # would try to rebuild. The binary is already provided as an artifact.
+      - name: Build firmware image
+        run: sudo bash scripts/build/build_firmware.sh
+
+      - name: Verify build outputs
+        run: |
+          ls -lh build/firmware/83_IMAGE
+          ls -lh build/firmware/rootfs.squashfs
+          echo "83_IMAGE size: $(wc -c < build/firmware/83_IMAGE) bytes"
+          echo "rootfs.squashfs size: $(wc -c < build/firmware/rootfs.squashfs) bytes"
+
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: |
+            build/firmware/83_IMAGE
+            build/firmware/rootfs.squashfs
+
+  release:
+    name: Create release
+    runs-on: ubuntu-latest
+    needs: [build, firmware]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Encore binary
+        uses: actions/download-artifact@v4
+        with:
+          name: encore-binary
+          path: artifacts
+
+      - name: Download firmware
+        uses: actions/download-artifact@v4
+        with:
+          name: firmware
+          path: artifacts/firmware
+
+      - name: Prepare release assets
+        run: |
+          VERSION=${{ needs.build.outputs.version }}
+          cd artifacts
+          mv encore "encore-${VERSION}-arm"
+          mv firmware/rootfs.squashfs "encore-${VERSION}.squashfs"
+          mv firmware/83_IMAGE "encore-${VERSION}-83_IMAGE"
+          sha256sum "encore-${VERSION}-arm" > "encore-${VERSION}-arm.sha256"
+          sha256sum "encore-${VERSION}.squashfs" > "encore-${VERSION}.squashfs.sha256"
+          sha256sum "encore-${VERSION}-83_IMAGE" > "encore-${VERSION}-83_IMAGE.sha256"
+          ls -lh encore-*
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          body: |
+            ## Firmware artifacts
+
+            | File | Purpose | How to use |
+            |------|---------|------------|
+            | `encore-${{ needs.build.outputs.version }}-arm` | Encore binary (~6.6 MB) | OTA binary update via web UI |
+            | `encore-${{ needs.build.outputs.version }}.squashfs` | Full rootfs (~45 MB) | OTA rootfs update via web UI |
+            | `encore-${{ needs.build.outputs.version }}-83_IMAGE` | Complete image (~107 MB) | USB boot initial flash |
+
+            See [flashing guide](docs/flashing.md) for instructions.
+          files: |
+            artifacts/encore-*

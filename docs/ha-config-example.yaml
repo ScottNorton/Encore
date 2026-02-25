@@ -1,0 +1,234 @@
+# Encore — Home Assistant Configuration Example
+#
+# The Encore registers most entities automatically via MQTT Discovery.
+# You do NOT need to add sensors, lights, or buttons manually.
+#
+# This file provides:
+#   1. A template media_player (since HA has no native MQTT media_player)
+#   2. Example automations for common use cases
+#   3. Example scripts for convenient TTS/audio playback
+#
+# Prerequisites:
+#   - MQTT broker running (Mosquitto add-on or external)
+#   - Encore MQTT integration enabled in Encore config.toml
+#   - Entities auto-discovered: light.led_ring, number.volume, sensors, etc.
+
+
+# ─── Template Media Player ───────────────────────────────
+# Since HA has no native MQTT media_player platform, we create a
+# template media_player that maps to MQTT topics.
+
+template:
+  - media_player:
+      - name: "Encore Speaker"
+        unique_id: encore_media_player
+        device_class: speaker
+        state_template: >
+          {% set state = states('sensor.encore_media_state') %}
+          {% if state == 'playing' %}playing
+          {% elif state == 'paused' %}paused
+          {% else %}idle{% endif %}
+        volume_level_template: >
+          {{ states('number.encore_volume') | float(50) / 100 }}
+        availability_template: >
+          {{ states('sensor.encore_media_state') not in ['unavailable', 'unknown'] }}
+        turn_off:
+          - service: mqtt.publish
+            data:
+              topic: encore/media/command
+              payload: '{"command": "stop"}'
+        volume_set:
+          - service: mqtt.publish
+            data:
+              topic: encore/media/command
+              payload_template: '{"command": "volume_set", "volume": {{ (volume * 100) | int }}}'
+        play_media:
+          - service: mqtt.publish
+            data:
+              topic: encore/media/command
+              payload_template: >
+                {"command": "play_media", "url": "{{ media_id }}", "content_type": "{{ media_type }}"}
+        media_play:
+          - service: mqtt.publish
+            data:
+              topic: encore/media/command
+              payload: '{"command": "play"}'
+        media_pause:
+          - service: mqtt.publish
+            data:
+              topic: encore/media/command
+              payload: '{"command": "pause"}'
+        media_stop:
+          - service: mqtt.publish
+            data:
+              topic: encore/media/command
+              payload: '{"command": "stop"}'
+
+# Helper sensor for media state (fed by Encore MQTT bridge)
+mqtt:
+  sensor:
+    - name: "Encore Media State"
+      unique_id: encore_media_state
+      state_topic: "encore/media/state"
+      value_template: "{{ value_json.state }}"
+      availability_topic: "encore/status"
+
+
+# ─── Scripts ─────────────────────────────────────────────
+
+script:
+  # Play TTS on Encore
+  encore_tts:
+    alias: "Encore TTS"
+    description: "Speak text through the Encore speaker"
+    fields:
+      message:
+        description: "Text to speak"
+        example: "Hello from Home Assistant"
+    sequence:
+      - service: tts.google_translate_say
+        data:
+          entity_id: media_player.encore_speaker
+          message: "{{ message }}"
+
+  # Play a URL on Encore
+  encore_play_url:
+    alias: "Encore Play URL"
+    description: "Play an audio URL on the Encore"
+    fields:
+      url:
+        description: "HTTP URL to audio file"
+        example: "http://192.168.7.100:8123/local/doorbell.wav"
+    sequence:
+      - service: mqtt.publish
+        data:
+          topic: encore/media/command
+          payload_template: '{"command": "play_media", "url": "{{ url }}"}'
+
+  # Set LED ring color
+  encore_led_color:
+    alias: "Encore LED Color"
+    description: "Set the LED ring to a specific color"
+    fields:
+      r: { description: "Red 0-255", example: "255" }
+      g: { description: "Green 0-255", example: "0" }
+      b: { description: "Blue 0-255", example: "0" }
+    sequence:
+      - service: light.turn_on
+        target:
+          entity_id: light.encore_led_ring
+        data:
+          rgb_color: ["{{ r }}", "{{ g }}", "{{ b }}"]
+
+
+# ─── Example Automations ─────────────────────────────────
+
+automation:
+  # Doorbell notification: flash LED ring and play sound
+  - alias: "Encore Doorbell Alert"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.front_door_doorbell
+        to: "on"
+    action:
+      # Flash blue
+      - service: light.turn_on
+        target:
+          entity_id: light.encore_led_ring
+        data:
+          rgb_color: [0, 100, 255]
+          brightness: 255
+      # Play doorbell sound (put a WAV file in your HA www/ folder)
+      - service: mqtt.publish
+        data:
+          topic: encore/media/command
+          payload: '{"command": "play_media", "url": "http://YOUR_HA_IP:8123/local/doorbell.wav"}'
+      - delay: "00:00:05"
+      # Turn off LED
+      - service: light.turn_off
+        target:
+          entity_id: light.encore_led_ring
+
+  # Volume ring turn → adjust media player volume in steps
+  - alias: "Encore Volume Ring"
+    trigger:
+      - platform: mqtt
+        topic: encore/event/action
+    action:
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ trigger.payload == 'volume_up' }}"
+            sequence:
+              - service: number.set_value
+                target:
+                  entity_id: number.encore_volume
+                data:
+                  value: "{{ [states('number.encore_volume') | int + 5, 100] | min }}"
+          - conditions:
+              - condition: template
+                value_template: "{{ trigger.payload == 'volume_down' }}"
+            sequence:
+              - service: number.set_value
+                target:
+                  entity_id: number.encore_volume
+                data:
+                  value: "{{ [states('number.encore_volume') | int - 5, 0] | max }}"
+
+  # Touch press → toggle LED ring on/off
+  - alias: "Encore Touch Toggle LED"
+    trigger:
+      - platform: mqtt
+        topic: encore/event/action
+        payload: touch_short
+    action:
+      - service: light.toggle
+        target:
+          entity_id: light.encore_led_ring
+
+  # Long press → announce the time via TTS
+  - alias: "Encore Long Press Time"
+    trigger:
+      - platform: mqtt
+        topic: encore/event/action
+        payload: touch_long
+    action:
+      - service: tts.google_translate_say
+        data:
+          entity_id: media_player.encore_speaker
+          message: "The time is {{ now().strftime('%I:%M %p') }}"
+
+  # Motion → gentle night light
+  - alias: "Encore Night Light on Motion"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.hallway_motion
+        to: "on"
+    condition:
+      - condition: sun
+        after: sunset
+        before: sunrise
+    action:
+      - service: light.turn_on
+        target:
+          entity_id: light.encore_led_ring
+        data:
+          rgb_color: [255, 170, 85]
+          brightness: 50
+      - delay: "00:02:00"
+      - service: light.turn_off
+        target:
+          entity_id: light.encore_led_ring
+
+  # High CPU alert (diagnostic)
+  - alias: "Encore High CPU Alert"
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.encore_cpu_usage
+        above: 90
+        for: "00:05:00"
+    action:
+      - service: notify.notify
+        data:
+          title: "Encore Alert"
+          message: "CPU usage above 90% for 5 minutes"

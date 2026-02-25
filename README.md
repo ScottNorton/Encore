@@ -15,33 +15,25 @@
 
 <p align="center"><b>Community firmware for the Harman Kardon Invoke smart speaker.</b></p>
 
-In 2017, Harman Kardon made a top-tier device. Three precision-tuned drivers,
-a TI TAS5756M DAC, a 7-microphone array with DSP beamforming, a 15-LED light ring,
-capacitive touch controls, all wrapped in a design that turned heads.
+In 2017, Harman Kardon released the Invoke together with Microsoft. Microsoft brought it to life with Cortana, 
+making it one of the first super-premium retail smart speakers on the market. Unfortunately, In January 2021, Microsoft retired Cortana. The Invoke was included, owners were offered a $50 gift card. Invokes were 'un-smarted' to Bluetooth-only overnight by an OTA auto update.
 
-Microsoft brought it to life with Cortana, making it one of the first super-premium smart speakers on the market.
+**Encore wakes them up again.**
 
-In January 2021, Microsoft retired Cortana. The Invoke was included, owners were offered a
-$50 gift card. Thousands of beautifully crafted speakers went silent overnight by OTA auto update.
-
-**Encore wakes them up.**
-
-Let the Harman Kardon Invoke blow you away. This is a drop-in replacement with a single
+This is a drop-in replacement with a single
 open-source Rust binary that runs entirely on your local network. Spotify Connect, VPN,
-Bluetooth streaming, Home Assistant integration, a real-time web dashboard you can
-install as an app on your phone — all running on hardware you already own,
-answering to nobody but you...
+Bluetooth streaming, Home Assistant integration, including a real-time web dashboard you can
+install as an app on your phone or PC.
 
-No cloud dependency. Use your home VPN to access your local assistant remotely.
+No cloud dependency. Use your secure home VPN to access your local assistant remotely.
 No subscription. No telemetry. No one deciding your speaker's fate from a boardroom.
 Your hardware, your rules.
 
-Consider forking and contribute!
+**Please consider forking and contributing!**
 
-Thanks to Harman Kardon for sharing the kernel source and making this possible,
+Thanks to Harman Kardon for openly sharing the kernel source and tools making this possible,
 and to [coggy9](https://github.com/coggy9)'s
-[HKHacking](https://github.com/coggy9/HKHacking) repository for the early
-research that helped get this project off the ground.
+[HKHacking](https://github.com/coggy9/HKHacking) repository and community efforts that helped get this project off the ground!
 
 **This is what smart speakers were supposed to be.**
 
@@ -59,7 +51,7 @@ no pairing ceremony, no app to install. It just works.
 ### Bluetooth A2DP
 
 Stream from any Bluetooth device. The firmware introduces high-quality
-codec support — aptX HD, aptX, and SBC — with automatic pairing.
+codec support. aptX HD, aptX, and SBC. This is a massive improvement over stock!
 
 ### Home Assistant (experimental)
 
@@ -81,12 +73,12 @@ dashboards, automations, or voice commands through your own HA instance.
 The Invoke becomes a
 [Wyoming voice satellite](https://www.home-assistant.io/integrations/wyoming/)
 for Home Assistant. The 7-microphone array and onboard SHARC DSP handle
-far-field voice capture with beamforming and noise suppression. Speech
-processing happens on your Home Assistant server — never in the cloud.
+far-field voice capture with hardware beamforming and noise suppression. Speech
+processing happens on your Home Assistant server.
 
 ### Web Dashboard
 
-Invokes running Encore get it a full-featured web app built entirely in Rust and compiled to WebAssembly, embedded in firmware binary, and served from the speaker itself. Network configuration, bluetooth setup, and over-the-air firmware updates can be done through this, but it also offers everything the speaker is capable of. Link the output of two or more speakers, create LED ring animation preview and editor for Home Assistant notifications, Spotify playback controls, check system logs. It's all done here.
+Invokes running Encore get it a full-featured web app built entirely in Rust and compiled to WebAssembly, embedded in firmware binary, and served from the speaker itself. Network configuration, bluetooth setup, and over-the-air firmware updates can be done through this, and offers everything the speaker is capable of under Encore. Link the output of two or more speakers, create LED ring animation preview and editor for silent Home Assistant notifications, Spotify playback controls, check system logs. It's all done here.
 
 ### Desktop & Mobile App
 
@@ -107,15 +99,12 @@ See [docs/groups.md](docs/groups.md) for usage.
 
 ### LED Ring
 
-15-LED RGB light ring (13 controlled by firmware) with smooth 30fps animations,
-all driven by the onboard MSP430 MCU. Built-in presets — breathe, spin, pulse,
-volume arc, boot surge — or design your own custom frame sequences. The
-volume ring and proximity sensor still work exactly like the original: turn
-for volume, tap for control.
+Control the 13-LED RGB light ring with smooth 30fps animations, all driven by the MCU. 
+Built-in presets — breathe, spin, pulse, volume arc, boot surge — or design your own custom frame sequences.
 
 ### Network
 
-Boots into access point mode for zero-app setup. Connect to `Invoke-XXXX`
+Connect to `Invoke-XXXX`
 (unique per device), a captive portal opens, enter your WiFi credentials, done. Once on your network,
 the speaker announces itself via mDNS at `encore.local`. Optional WireGuard VPN
 for secure remote access through [boringtun](https://github.com/cloudflare/boringtun).

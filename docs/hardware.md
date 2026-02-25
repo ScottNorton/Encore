@@ -158,10 +158,12 @@ unless you have a known-good replacement and JTAG recovery capability.
 ## I2C Bus
 
 All hardware is on I2C bus 0 (`/dev/i2c-0`):
+>**Note:** The integrated GPU/co-processor interface has not been discovered yet.
+Findings indicate it includes it's own DAC, but the GPU does not support compute and may not be useful to harness the co-processor.
 
 | Address | Device | Status | Notes |
 |---------|--------|--------|-------|
-| 0x10 | — | **Not a device** | Bitmask artifact on IO Expander 0x20 scan. Zero references in any binary. |
+| 0x10 | — | **Unknown** | Bitmask artifact on IO Expander 0x20 scan. Zero references in any binary. Possibly co-processor. |
 | 0x19 | Marvell 88PG868 PMIC | Kernel-managed | CPU voltage regulator (BUCK1=VDD_CPU, reg 0x24) |
 | 0x1A | Wolfson WM8904 | Kernel-managed | Audio codec (ALSA driver) |
 | 0x20 | TI PCA9538 IO Expander | Fully controlled | Amp mute (bit 1), DAC mute (bit 2), DSP reset (bit 0), DSP power (bits 3-4) |
@@ -382,9 +384,9 @@ Hardware watchdog at `/dev/watchdog` (DesignWare WDT at SoC address 0xF7FC2000).
 Opening the device starts the timer; writing any byte resets it (CRR write 0x76).
 If the process dies without closing the fd, the device reboots. Encore pets the
 watchdog every 10 seconds. Encore also sends MCU I2C command 0x24 every 30 seconds
-(stock sent it every 5 seconds), but this is a confirmed NO-OP — the MCU firmware
-dispatcher ignores command 0x24 entirely, and the MCU's own WDT_A is stopped at
-boot. The SoC hardware watchdog is the only real reset source.
+(stock sent it every 5 seconds), but this is a confirmed NO-OP — the MCU firmware has
+a dispatcher that ignores command 0x24 entirely, and the MCU's own WDT_A is stopped at
+boot. The SoC hardware watchdog is a reset source, but the MCU can reset the device.
 
 ## NAND Partition Layout
 
@@ -429,7 +431,9 @@ for Marvell's AMP framework and IPC with the **ZSP media co-processor** (Xtensa-
 (Inter-CPU Communication) message queues through shared memory. On the Invoke (no display),
 the ZSP is almost certainly idle — the SHM is reserved but wasted. The stock `ampservice`
 process (438 MB VSIZE) maps these regions. The 6.1 kernel does not need them and can reclaim
-the full 512 MB.
+the full 512 MB. 
+
+>**TODO:** test RAM continuity over time at high addresses to see if memory is being shared with hardware. e.g. through the backplane connector to the AMP or if the co-processor always uses memory.
 
 Stock kernel cmdline: `console=ttyS0,115200 root=/dev/ram initrd=0x08000000,35497472 usb_host_port_num=3-7.3`
 (initrd at 0x08000000 = 33.8 MB ramdisk, USB hub path 3-7.3)
@@ -476,25 +480,3 @@ driver parameters, and firmware files.
 - Primary: `hostapd` on `p2p0` with band-matched channel (same band as STA connection)
 - Fallback: Marvell uAP firmware mode via `uaputl.exe` (open network, no WPA2 — emergency only)
 - IP: 192.168.43.1/27, dnsmasq for DHCP + captive portal DNS redirect
-
-## Board Layout
-
-The Harman Kardon Invoke has two main PCBs connected by flex cables:
-
-### Main Board
-- Marvell BG2CDP SoC (ARM Cortex-A7 dual-core), silicon revision B0
-- Libre Wireless LS9AD module (WiFi + BT; silicon supports NFC and FM radio but module likely does not break out antennas for them)
-- NAND flash (top)
-- RAM (bottom)
-
-![Main Board - Top](https://raw.githubusercontent.com/coggy9/HKHacking/master/Devices/Invoke/images/InvokeMainBoard1.png)
-![Main Board - Bottom](https://raw.githubusercontent.com/coggy9/HKHacking/master/Devices/Invoke/images/InvokeMainBoard2.png)
-
-### Amplifier Board
-- Analog Devices ADSP-21489 SHARC DSP (part marking: AD91210Z)
-- TI TAS5756M DAC
-- TI PCA9538 IO Expander
-- Wolfson WM8904 codec
-
-![Amplifier Board - Top](https://raw.githubusercontent.com/coggy9/HKHacking/master/Devices/Invoke/images/InvokeAmp1.png)
-![Amplifier Board - Bottom](https://raw.githubusercontent.com/coggy9/HKHacking/master/Devices/Invoke/images/InvokeAmp2.png)

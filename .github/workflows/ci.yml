@@ -1,8 +1,7 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
   pull_request:
     branches: [main]
 
@@ -85,6 +84,63 @@ jobs:
         with:
           name: encore-arm
           path: build/encore
+
+  firmware:
+    name: Build firmware image
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Encore binary
+        uses: actions/download-artifact@v4
+        with:
+          name: encore-arm
+          path: build
+
+      - name: Make binary executable
+        run: chmod 755 build/encore
+
+      - name: Cache stock firmware image
+        id: cache-stock
+        uses: actions/cache@v4
+        with:
+          path: firmware/83_IMAGE_stock
+          key: stock-firmware-83-image-b2e12178
+
+      - name: Download stock firmware
+        if: steps.cache-stock.outputs.cache-hit != 'true'
+        run: bash scripts/build/download_firmware.sh
+
+      - name: Verify stock firmware
+        run: |
+          EXPECTED_SHA="b2e12178f98a0c0904cb1e6e2ba933de0c0fef8be7c24e7852bc9933294850e8"
+          ACTUAL_SHA=$(sha256sum firmware/83_IMAGE_stock | cut -d' ' -f1)
+          if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+            echo "ERROR: Stock firmware SHA256 mismatch!"
+            echo "  Expected: $EXPECTED_SHA"
+            echo "  Got:      $ACTUAL_SHA"
+            exit 1
+          fi
+          echo "Stock firmware verified (SHA256: $ACTUAL_SHA)"
+
+      - name: Build firmware image
+        run: sudo bash scripts/build/build_firmware.sh
+
+      - name: Verify build outputs
+        run: |
+          ls -lh build/firmware/83_IMAGE
+          ls -lh build/firmware/rootfs.squashfs
+          echo "83_IMAGE size: $(wc -c < build/firmware/83_IMAGE) bytes"
+          echo "rootfs.squashfs size: $(wc -c < build/firmware/rootfs.squashfs) bytes"
+
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: |
+            build/firmware/83_IMAGE
+            build/firmware/rootfs.squashfs
 
   verify:
     name: Verify

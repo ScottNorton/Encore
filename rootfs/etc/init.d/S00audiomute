@@ -1,0 +1,9 @@
+#!/bin/sh
+# S00audiomute — Mute amp+DAC via IO Expander ASAP to prevent boot noise.
+# Uses static C binary — runs before any services start.
+case $1 in
+start)
+    /usr/bin/i2c_mute 2>/dev/null
+    echo "S00audiomute: amp+DAC muted"
+    ;;
+esac

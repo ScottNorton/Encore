@@ -1,0 +1,43 @@
+[package]
+name = "encore-firmware"
+description = "Community firmware for the Harman Kardon Invoke smart speaker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+encore-common = { workspace = true, features = ["toml"] }
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+i2cdev.workspace = true
+nix.workspace = true
+librespot-core.workspace = true
+librespot-playback.workspace = true
+librespot-connect.workspace = true
+librespot-discovery.workspace = true
+librespot-metadata.workspace = true
+rumqttc.workspace = true
+axum.workspace = true
+tower-http.workspace = true
+rust-embed.workspace = true
+toml.workspace = true
+libc.workspace = true
+rkyv.workspace = true
+tokio-rustls.workspace = true
+rustls-pemfile.workspace = true
+boringtun.workspace = true
+base64.workspace = true
+microfft.workspace = true
+rcgen.workspace = true
+time.workspace = true
+
+[build-dependencies]
+cc = "1"

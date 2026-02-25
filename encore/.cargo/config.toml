@@ -1,0 +1,8 @@
+[target.armv7-unknown-linux-musleabihf]
+linker = "arm-linux-gnueabihf-gcc"
+rustflags = ["-C", "target-feature=+neon,+vfp4"]
+
+[alias]
+firmware = "build --package encore-firmware --target armv7-unknown-linux-musleabihf"
+firmware-release = "build --package encore-firmware --target armv7-unknown-linux-musleabihf --release"
+web = "build --package encore-wasm --target wasm32-unknown-unknown --release"

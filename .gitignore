@@ -1,0 +1,59 @@
+# USB boot (user downloads OTA2 contents)
+uboot/*
+!uboot/README.md
+
+# Build outputs
+/build/
+firmware/83_IMAGE
+firmware/83_IMAGE_stock
+firmware/*.squashfs
+firmware/dsp_test/
+flash/83_IMAGE
+buildroot/
+rootfs/usr/bin/encore
+branding-kit/
+
+# Downloaded/built artifacts (not source)
+firmware/*.cpio.gz
+firmware/initramfs/
+firmware/initramfs_tiny/
+firmware/kernel_test/
+firmware/wifi_firmware/
+tools/
+
+# Design docs and local tools
+docs/plans/
+docs/serve.bat
+
+# Vendor (RE reference material — not part of the release)
+vendor/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+NUL
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Tool config
+.claude/
+CLAUDE.md
+
+# Python
+__pycache__/
+*.pyc
+
+# GitHub publish workflow
+.github-publish
+
+# Verify patterns (personal credentials — never commit)
+.verify-patterns
+
+# Credentials (should never exist, but just in case)
+spotify_client_id.txt
+*.env
+*.keystore
+.aider*

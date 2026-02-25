@@ -1,0 +1,291 @@
+//! Configuration editor panel.
+
+use crate::components::TextField;
+use crate::dom;
+use encore_common::protocol::{ClientMsg, EncoreConfig};
+
+pub fn render(container: &web_sys::Element) {
+    // Request latest config
+    crate::ws::send_msg(&ClientMsg::RequestConfig);
+
+    let form = dom::create_div();
+    form.set_id("config-form");
+
+    // Build sections from current config (or defaults)
+    let cfg = crate::state::with(|s| {
+        s.config.clone().unwrap_or_default()
+    });
+
+    // Device section
+    section(&form, "Device", &[
+        TextField::create("cfg-name", "Device Name", &cfg.device_name, ""),
+    ]);
+
+    // Audio section
+    section(&form, "Audio", &[
+        field_range("cfg-master-vol", "Master Volume", cfg.master_volume),
+        field_range("cfg-spotify-vol", "Spotify Volume", cfg.spotify_volume),
+        field_range("cfg-bt-vol", "Bluetooth Volume", cfg.bluetooth_volume),
+        field_range("cfg-tts-duck", "TTS Duck %", cfg.tts_duck_percent),
+    ]);
+
+    // Spotify section
+    section(&form, "Spotify", &[
+        field_toggle("cfg-spotify-en", "Enabled", cfg.spotify_enabled),
+    ]);
+
+    // Bluetooth section
+    section(&form, "Bluetooth", &[
+        field_toggle("cfg-bt-en", "Enabled", cfg.bluetooth_enabled),
+        field_toggle("cfg-bt-disc", "Discoverable", cfg.bluetooth_discoverable),
+    ]);
+
+    // Home Assistant section
+    section(&form, "Home Assistant", &[
+        field_toggle("cfg-ha-en", "Enabled", cfg.homeassistant_enabled),
+        TextField::create("cfg-mqtt-host", "MQTT Host", cfg.mqtt_host.as_deref().unwrap_or(""), ""),
+        TextField::create("cfg-mqtt-port", "MQTT Port", &cfg.mqtt_port.map(|p| p.to_string()).unwrap_or_default(), ""),
+        TextField::create("cfg-mqtt-user", "MQTT User", cfg.mqtt_user.as_deref().unwrap_or(""), ""),
+        TextField::create("cfg-mqtt-pass", "MQTT Password", cfg.mqtt_password.as_deref().unwrap_or(""), ""),
+    ]);
+
+    // Wyoming section
+    section(&form, "Wyoming Voice", &[
+        field_toggle("cfg-wy-en", "Enabled", cfg.wyoming_enabled),
+        TextField::create("cfg-wy-host", "Server Host", cfg.wyoming_host.as_deref().unwrap_or(""), ""),
+        TextField::create("cfg-wy-port", "Server Port", &cfg.wyoming_port.map(|p| p.to_string()).unwrap_or_default(), ""),
+    ]);
+
+    // Network section
+    section(&form, "Network", &[
+        TextField::create("cfg-wifi-ssid", "WiFi SSID", cfg.wifi_ssid.as_deref().unwrap_or(""), ""),
+        TextField::create("cfg-wifi-pass", "WiFi Password", cfg.wifi_password.as_deref().unwrap_or(""), ""),
+        field_toggle("cfg-ap-keep-alive", "Keep AP Alive", cfg.ap_keep_alive),
+    ]);
+
+    // VPN section
+    section(&form, "VPN (WireGuard)", &[
+        field_toggle("cfg-vpn-en", "Enabled", cfg.vpn_enabled),
+        TextField::create("cfg-vpn-key", "Private Key", cfg.vpn_private_key.as_deref().unwrap_or(""), ""),
+        TextField::create("cfg-vpn-addr", "Address", cfg.vpn_address.as_deref().unwrap_or(""), ""),
+        TextField::create("cfg-vpn-peer-pub", "Peer Public Key", cfg.vpn_peer_public_key.as_deref().unwrap_or(""), ""),
+        TextField::create("cfg-vpn-peer-psk", "Peer Preshared Key", cfg.vpn_peer_preshared_key.as_deref().unwrap_or(""), ""),
+        TextField::create("cfg-vpn-endpoint", "Peer Endpoint", cfg.vpn_peer_endpoint.as_deref().unwrap_or(""), ""),
+        TextField::create("cfg-vpn-allowed", "Allowed IPs", cfg.vpn_peer_allowed_ips.as_deref().unwrap_or(""), ""),
+        TextField::create("cfg-vpn-keepalive", "Keepalive (s)", &cfg.vpn_persistent_keepalive.to_string(), ""),
+    ]);
+
+    // Debug section
+    section(&form, "Debug", &[
+        TextField::create("cfg-debug-mode", "Mode", &cfg.debug_mode, ""),
+    ]);
+
+    dom::append(container, &form);
+
+    // Save button
+    let save_wrap = dom::create_div();
+    dom::set_class(&save_wrap, "mt-16");
+    let save_btn = dom::el("button", "btn btn-primary w-full", Some("Save Configuration"));
+    dom::on_click(&save_btn, || {
+        save_config();
+    });
+    dom::append(&save_wrap, &save_btn);
+    dom::append(container, &save_wrap);
+}
+
+fn section(parent: &web_sys::Element, title: &str, fields: &[web_sys::Element]) {
+    let card = dom::create_div();
+    dom::set_class(&card, "card mb-12");
+
+    let heading = dom::el("div", "card-title", Some(title));
+    dom::append(&card, &heading);
+
+    for field in fields {
+        dom::append(&card, field);
+    }
+
+    dom::append(parent, &card);
+}
+
+fn field_range(id: &str, label: &str, value: u8) -> web_sys::Element {
+    use wasm_bindgen::prelude::*;
+    use wasm_bindgen::JsCast;
+
+    let wrap = dom::create_div();
+    dom::set_class(&wrap, "mb-12");
+    let header = dom::create_div();
+    dom::set_class(&header, "flex justify-between");
+    let lbl = dom::el("label", "", Some(label));
+    let val = dom::el("span", "stat-value text-sm", Some(&format!("{}%", value)));
+    val.set_id(&format!("{}-val", id));
+    dom::append(&header, &lbl);
+    dom::append(&header, &val);
+    dom::append(&wrap, &header);
+    let input = dom::create_el("input");
+    dom::set_attr(&input, "type", "range");
+    dom::set_attr(&input, "min", "0");
+    dom::set_attr(&input, "max", "100");
+    dom::set_attr(&input, "value", &value.to_string());
+    input.set_id(id);
+    // Live-update display value on drag
+    let val_id = format!("{}-val", id);
+    let cb = Closure::wrap(Box::new(move |e: web_sys::Event| {
+        if let Some(input) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok()) {
+            if let Some(el) = dom::get_el(&val_id) {
+                dom::set_text(&el, &format!("{}%", input.value()));
+            }
+        }
+    }) as Box<dyn FnMut(_)>);
+    input.add_event_listener_with_callback("input", cb.as_ref().unchecked_ref()).ok();
+    cb.forget();
+    dom::append(&wrap, &input);
+    wrap
+}
+
+fn field_toggle(id: &str, label: &str, checked: bool) -> web_sys::Element {
+    let wrap = dom::create_div();
+    dom::set_class(&wrap, "toggle-wrap");
+    let lbl = dom::el("span", "", Some(label));
+    dom::append(&wrap, &lbl);
+    // Use <label> so clicking anywhere on the toggle toggles the hidden checkbox
+    let toggle = dom::create_el("label");
+    dom::set_class(&toggle, "toggle");
+    let input = dom::create_el("input");
+    dom::set_attr(&input, "type", "checkbox");
+    input.set_id(id);
+    if checked {
+        dom::set_attr(&input, "checked", "");
+    }
+    let track = dom::create_div();
+    dom::set_class(&track, "toggle-track");
+    let thumb = dom::create_div();
+    dom::set_class(&thumb, "toggle-thumb");
+    dom::append(&toggle, &input);
+    dom::append(&toggle, &track);
+    dom::append(&toggle, &thumb);
+    dom::append(&wrap, &toggle);
+    wrap
+}
+
+fn get_input_value(id: &str) -> String {
+    use wasm_bindgen::JsCast;
+    dom::get_el(id)
+        .and_then(|el| el.dyn_ref::<web_sys::HtmlInputElement>().map(|i| i.value()))
+        .unwrap_or_default()
+}
+
+fn get_checkbox(id: &str) -> bool {
+    use wasm_bindgen::JsCast;
+    dom::get_el(id)
+        .and_then(|el| el.dyn_ref::<web_sys::HtmlInputElement>().map(|i| i.checked()))
+        .unwrap_or(false)
+}
+
+fn save_config() {
+    let config = EncoreConfig {
+        device_name: get_input_value("cfg-name"),
+        master_volume: get_input_value("cfg-master-vol").parse().unwrap_or(70),
+        spotify_volume: get_input_value("cfg-spotify-vol").parse().unwrap_or(70),
+        bluetooth_volume: get_input_value("cfg-bt-vol").parse().unwrap_or(70),
+        tts_duck_percent: get_input_value("cfg-tts-duck").parse().unwrap_or(80),
+        volume_ring_step: crate::state::with(|s| {
+            s.config.as_ref().map(|c| c.volume_ring_step).unwrap_or(2)
+        }),
+        spotify_enabled: get_checkbox("cfg-spotify-en"),
+        spotify_bitrate: crate::state::with(|s| {
+            s.config.as_ref().map(|c| c.spotify_bitrate.clone()).unwrap_or_else(|| "320".into())
+        }),
+        spotify_gapless: crate::state::with(|s| {
+            s.config.as_ref().map(|c| c.spotify_gapless).unwrap_or(true)
+        }),
+        spotify_normalisation: crate::state::with(|s| {
+            s.config.as_ref().map(|c| c.spotify_normalisation).unwrap_or(false)
+        }),
+        spotify_normalisation_type: crate::state::with(|s| {
+            s.config.as_ref().map(|c| c.spotify_normalisation_type.clone()).unwrap_or_else(|| "auto".into())
+        }),
+        spotify_normalisation_pregain_db: crate::state::with(|s| {
+            s.config.as_ref().map(|c| c.spotify_normalisation_pregain_db).unwrap_or(0.0)
+        }),
+        bluetooth_enabled: get_checkbox("cfg-bt-en"),
+        bluetooth_discoverable: get_checkbox("cfg-bt-disc"),
+        homeassistant_enabled: get_checkbox("cfg-ha-en"),
+        mqtt_host: {
+            let v = get_input_value("cfg-mqtt-host");
+            if v.is_empty() { None } else { Some(v) }
+        },
+        mqtt_port: get_input_value("cfg-mqtt-port").parse().ok(),
+        mqtt_user: {
+            let v = get_input_value("cfg-mqtt-user");
+            if v.is_empty() { None } else { Some(v) }
+        },
+        mqtt_password: {
+            let v = get_input_value("cfg-mqtt-pass");
+            if v.is_empty() { None } else { Some(v) }
+        },
+        wyoming_enabled: get_checkbox("cfg-wy-en"),
+        wyoming_host: {
+            let v = get_input_value("cfg-wy-host");
+            if v.is_empty() { None } else { Some(v) }
+        },
+        wyoming_port: get_input_value("cfg-wy-port").parse().ok(),
+        wifi_ssid: {
+            let v = get_input_value("cfg-wifi-ssid");
+            if v.is_empty() { None } else { Some(v) }
+        },
+        wifi_password: {
+            let v = get_input_value("cfg-wifi-pass");
+            if v.is_empty() { None } else { Some(v) }
+        },
+        ap_keep_alive: get_checkbox("cfg-ap-keep-alive"),
+        ap_ssid: crate::state::with(|s| s.config.as_ref().and_then(|c| c.ap_ssid.clone())),
+        ap_password: crate::state::with(|s| s.config.as_ref().and_then(|c| c.ap_password.clone())),
+        vpn_enabled: get_checkbox("cfg-vpn-en"),
+        vpn_private_key: {
+            let v = get_input_value("cfg-vpn-key");
+            if v.is_empty() { None } else { Some(v) }
+        },
+        vpn_address: {
+            let v = get_input_value("cfg-vpn-addr");
+            if v.is_empty() { None } else { Some(v) }
+        },
+        vpn_peer_public_key: {
+            let v = get_input_value("cfg-vpn-peer-pub");
+            if v.is_empty() { None } else { Some(v) }
+        },
+        vpn_peer_preshared_key: {
+            let v = get_input_value("cfg-vpn-peer-psk");
+            if v.is_empty() { None } else { Some(v) }
+        },
+        vpn_peer_endpoint: {
+            let v = get_input_value("cfg-vpn-endpoint");
+            if v.is_empty() { None } else { Some(v) }
+        },
+        vpn_peer_allowed_ips: {
+            let v = get_input_value("cfg-vpn-allowed");
+            if v.is_empty() { None } else { Some(v) }
+        },
+        vpn_persistent_keepalive: get_input_value("cfg-vpn-keepalive").parse().unwrap_or(25),
+        group_enabled: crate::state::with(|s| {
+            s.config.as_ref().map(|c| c.group_enabled).unwrap_or(false)
+        }),
+        group_name: crate::state::with(|s| {
+            s.config.as_ref().map(|c| c.group_name.clone()).unwrap_or_else(|| "Living Room".into())
+        }),
+        group_channel: crate::state::with(|s| {
+            s.config.as_ref().map(|c| c.group_channel.clone()).unwrap_or_else(|| "stereo".into())
+        }),
+        group_buffer_ms: crate::state::with(|s| {
+            s.config.as_ref().map(|c| c.group_buffer_ms).unwrap_or(80)
+        }),
+        group_peers: crate::state::with(|s| {
+            s.config.as_ref().map(|c| c.group_peers.clone()).unwrap_or_default()
+        }),
+        debug_mode: get_input_value("cfg-debug-mode"),
+    };
+
+    crate::ws::send_msg(&ClientMsg::SaveConfig(Box::new(config)));
+
+    // Visual feedback
+    web_sys::console::log_1(&"Config saved".into());
+}

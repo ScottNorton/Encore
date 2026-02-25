@@ -1,0 +1,25 @@
+#!/bin/sh
+case $1 in
+start)
+    echo "Setting up firewall — outbound open, inbound LAN-only..."
+    iptables -F; iptables -X; iptables -t nat -F 2>/dev/null
+    # Outbound: allow all (Spotify CDN, authentication, mDNS, NTP)
+    iptables -P OUTPUT ACCEPT
+    # Inbound: drop by default, allow established + LAN
+    iptables -P INPUT DROP
+    iptables -P FORWARD DROP
+    iptables -A INPUT -i lo -j ACCEPT
+    iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+    # LAN ranges
+    iptables -A INPUT -s 192.168.0.0/16 -j ACCEPT
+    iptables -A INPUT -s 10.0.0.0/8 -j ACCEPT
+    iptables -A INPUT -s 172.16.0.0/12 -j ACCEPT
+    iptables -A INPUT -s 169.254.0.0/16 -j ACCEPT
+    # DHCP
+    iptables -A INPUT -p udp --sport 67:68 --dport 67:68 -j ACCEPT
+    # Multicast (mDNS for Spotify Connect discovery)
+    iptables -A INPUT -d 224.0.0.0/4 -j ACCEPT
+    echo "Firewall active (outbound open, inbound LAN-only).";;
+stop) iptables -F; iptables -X; iptables -P INPUT ACCEPT; iptables -P FORWARD ACCEPT; iptables -P OUTPUT ACCEPT;;
+esac
+exit 0

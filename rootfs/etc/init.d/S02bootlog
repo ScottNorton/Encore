@@ -1,0 +1,39 @@
+#!/bin/sh
+# S02bootlog — Persistent boot logging to /lsync/data1/logs/
+dmesg > /tmp/dmesg-early.log 2>/dev/null
+(
+    LOGDIR="/lsync/data1/logs"
+    LOGFILE="$LOGDIR/boot.log"
+    PREVLOG="$LOGDIR/boot.prev.log"
+    TRIES=0
+    while [ $TRIES -lt 90 ]; do
+        if mount | grep -q '/lsync'; then break; fi
+        sleep 1; TRIES=$((TRIES + 1))
+    done
+    if ! mount | grep -q '/lsync'; then
+        echo "S02bootlog: /lsync never mounted" >> /tmp/bootlog-error.log; exit 1
+    fi
+    mkdir -p "$LOGDIR" 2>/dev/null
+    [ -f "$LOGFILE" ] && mv -f "$LOGFILE" "$PREVLOG"
+    log() { echo "$(date '+%H:%M:%S') $1" >> "$LOGFILE"; }
+    log "=== Boot started ==="
+    log "Kernel: $(uname -r)"
+    log "Uptime: $(cat /proc/uptime)"
+    log "/lsync mounted after ${TRIES}s"
+    cp /tmp/dmesg-early.log "$LOGDIR/dmesg.log" 2>/dev/null
+    log "dmesg saved ($(wc -l < "$LOGDIR/dmesg.log") lines)"
+    mount >> "$LOGFILE" 2>/dev/null
+    log "---"
+    sleep 30
+    dmesg > "$LOGDIR/dmesg-30s.log" 2>/dev/null
+    log "dmesg-30s saved"
+    echo "--- ps at 30s ---" >> "$LOGFILE"; ps >> "$LOGFILE" 2>/dev/null
+    echo "--- network at 30s ---" >> "$LOGFILE"
+    ifconfig wlan0 >> "$LOGFILE" 2>/dev/null
+    wpa_cli -i wlan0 status >> "$LOGFILE" 2>/dev/null
+    sleep 90
+    dmesg > "$LOGDIR/dmesg-120s.log" 2>/dev/null
+    log "dmesg-120s saved"
+    echo "--- ps at 120s ---" >> "$LOGFILE"; ps >> "$LOGFILE" 2>/dev/null
+    log "=== Boot log complete ==="
+) &

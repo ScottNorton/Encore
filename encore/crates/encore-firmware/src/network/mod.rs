@@ -962,7 +962,7 @@ pub fn sanitize_hostname(name: &str) -> String {
         .collect();
     let trimmed = sanitized.trim_matches('-').to_string();
     if trimmed.is_empty() {
-        "encore".into()
+        "encore.local".into()
     } else {
         format!("{}.local", trimmed)
     }

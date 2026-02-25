@@ -100,7 +100,7 @@ See [docs/groups.md](docs/groups.md) for usage.
 ### LED Ring
 
 Control the 13-LED RGB light ring with smooth 30fps animations, all driven by the MCU. 
-Built-in presets — breathe, spin, pulse, volume arc, boot surge — or design your own custom frame sequences.
+Built-in presets — breathe, spin, pulse, volume arc, boot surge — or design your own custom frame sequences. Home Assistant has access to all animations for routines.
 
 ### Network
 
@@ -112,21 +112,18 @@ for secure remote access through [boringtun](https://github.com/cloudflare/borin
 ### Reliability
 
 A hardware watchdog prevents hangs — if Encore stops responding, the speaker
-reboots automatically. If Encore crashes three times at boot, the system falls
+reboots automatically. If Encore crashes even once at boot, the system falls
 back to the stable binary. You cannot brick the speaker by running
 experimental firmware. You can't even brick it by replacing the kernel.
 
-OTA updates through the web dashboard: upload a new binary, click flash
-and forget about it. New firmware comes up or the stable one loads after 3 crashes.
-
-Recovery from soft-brick is simple. Follow the initial flashing steps.
+**Just don't try to mess with the bootloader, it might not be safe**
 
 > By using this firmware and flashing it to your device, you acknowledge there
 > are risks and agree to the terms in [LEGAL.md](LEGAL.md).
 
 ---
 
-## Architecture
+## Encore's Architecture
 
 <p align="center">
   <picture>
@@ -136,8 +133,8 @@ Recovery from soft-brick is simple. Follow the initial flashing steps.
   </picture>
 </p>
 
-Encore is a single statically-linked Rust binary.
-It manages 13 async subsystems on a dual-core ARM Cortex-A7 with 512 MB of RAM.
+>Encore is a single statically-linked ARM-compiled Rust binary.
+It manages 13 async subsystems and runs efficiently on the Invoke's dual-core ARM Cortex-A7 with 512 MB of RAM. Average usage is around ~40mb and ~3% CPU combined usage across both cores at idle. While Spotify is playing at the highest quality available, CPU usage is ~20% between both cores. There is headroom for more subsystems.
 
 | Subsystem | Purpose | Auto-Restart |
 |-----------|---------|:---:|
@@ -223,7 +220,7 @@ make firmware
 # Build desktop app (Windows installer)
 make app
 
-# Build Android app (APK)
+# Build Android app (APK, requires additional deps)
 make app-android
 ```
 
@@ -254,7 +251,7 @@ troubleshooting.
 
 ### First Boot
 
-1. On your phone or laptop, connect to the `Invoke-XXXX` WiFi network
+1. On your phone or computer, connect to the `Invoke-XXXX` WiFi network
    (password: `ridiculous`) — XXXX is unique to your device
 2. A captive portal opens automatically — or navigate to `http://192.168.43.1`
 3. Enter your home WiFi credentials in the setup wizard

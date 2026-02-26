@@ -26,7 +26,7 @@ install as an app on your phone or PC. No cloud dependency. Use your own VPN to 
 No subscription. No telemetry. No one deciding your speaker's fate from a boardroom.
 Your hardware, your rules.
 
->See [legal information](LEGAL) for your rights and protections for this project and its contributors.
+>See [legal information](LEGAL.md) for your rights and protections for this project and its contributors.
 
 **Please consider forking and contributing!**
 

@@ -1,5 +1,5 @@
 # Legal Notice
-:us: <br>
+![Made in the USA](https://img.shields.io/badge/%F0%9F%87%BA%F0%9F%87%B8_Made_in_the_USA-red?style=flat-square) <br>
 *Encore, an American open-source project, built on the principle that you own what you buy.*
 
 ## Disclaimer

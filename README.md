@@ -16,18 +16,17 @@
 <p align="center"><b>Community firmware for the Harman Kardon Invoke smart speaker.</b></p>
 
 In 2017, Harman Kardon released the Invoke together with Microsoft. Microsoft brought it to life with Cortana, 
-making it one of the first super-premium retail smart speakers on the market. Unfortunately, In January 2021, Microsoft retired Cortana. The Invoke was included, owners were offered a $50 gift card. Invokes were 'un-smarted' to Bluetooth-only overnight by an OTA auto update.
+making it one of the first super-premium retail smart speakers on the market. Unfortunately, In January 2021, Microsoft retired Cortana. The Invoke was included and was made Bluetooth-only via OTA automatic update. Owners were offered a $50 gift card by Microsoft.
 
 **Encore wakes them up again.**
 
-This is a drop-in replacement with a single
-open-source Rust binary that runs entirely on your local network. Spotify Connect, VPN,
+Encore is a drop-in replacement with a single open-source Rust binary that is responsible for restoring full functionality to hardware. Spotify Connect, VPN,
 Bluetooth streaming, Home Assistant integration, including a real-time web dashboard you can
-install as an app on your phone or PC.
-
-No cloud dependency. Use your secure home VPN to access your local assistant remotely.
+install as an app on your phone or PC. No cloud dependency. Use your own VPN to access your local assistant remotely from your speaker anywhere it has an internet connection via WiFi.
 No subscription. No telemetry. No one deciding your speaker's fate from a boardroom.
 Your hardware, your rules.
+
+>See [legal information](LEGAL) for your rights and protections for this project and its contributors.
 
 **Please consider forking and contributing!**
 
@@ -133,8 +132,8 @@ experimental firmware. You can't even brick it by replacing the kernel.
   </picture>
 </p>
 
->Encore is a single statically-linked ARM-compiled Rust binary.
-It manages 13 async subsystems and runs efficiently on the Invoke's dual-core ARM Cortex-A7 with 512 MB of RAM. Average usage is around ~40mb and ~3% CPU combined usage across both cores at idle. While Spotify is playing at the highest quality available, CPU usage is ~20% between both cores. There is headroom for more subsystems.
+>Encore is a monolithic statically-linked ARM-compiled Rust binary.
+It manages 13 async subsystems and runs efficiently on the Invoke's dual-core processor. Average RAM usage is around ~40mb and ~1-3% CPU usage across both cores at idle. While Spotify is playing at the highest quality available, CPU usage averages across both cores ~20%. There is headroom for more subsystems without audio underbuffer.
 
 | Subsystem | Purpose | Auto-Restart |
 |-----------|---------|:---:|
@@ -160,9 +159,9 @@ with automatic volume ducking.
 ```
 encore/                   Rust workspace
   crates/
-    encore-firmware/      On-device binary (ARM musl, ~6.6 MB)
+    encore-firmware/      On-device binary (ARM musl)
     encore-common/        Shared types — config schema, WebSocket protocol
-    encore-wasm/           WASM dashboard — Canvas 2D graphics, no JS deps
+    encore-wasm/           WASM dashboard — Served from the device or wrapped to a platform app
     encore-app/           Desktop/mobile app — Tauri v2 wrapper
   web/                    PWA shell — HTML, manifest, service worker, icons
 rootfs/                   Filesystem overlay (merged onto stock rootfs at build)
@@ -192,7 +191,7 @@ flash/                    USB boot flashing tools
 | **Controls** | Volume ring (infinite rotation, no detent), proximity sensor (tap/hold), mic mute button, Bluetooth button (control mechanism unknown) |
 | **LEDs** | 15 RGB total; 13 controlled (12 ring + 1 top center), 2 uncontrolled (including BT indicator) |
 | **MCU** | TI MSP430FR5739 (FRAM) — I2C slave, manages LEDs and touch input |
-| **Kernel** | Linux 3.8.13 (stock, signature-locked on NAND — replaceable at runtime via [kexec module](docs/kexec-method.md)) |
+| **Kernel** | Linux 3.8.13 (stock, signature-locked on NAND — replaceable at runtime via [kexec module](docs/kexec-method.md) but is proving to be elite-tier) |
 
 See [docs/hardware.md](docs/hardware.md) for the full peripheral map, I2C bus
 layout, GPIO assignments, and audio signal path.
@@ -260,6 +259,10 @@ troubleshooting.
 Root SSH is available at the speaker's IP address (user: `root`, password:
 `ridiculous`).
 
+### Go Back to Stock
+
+>Follow the same flashing instructions that come with the official Harmon Kardon final firmware update.
+
 ---
 
 ## Documentation
@@ -293,19 +296,14 @@ Root SSH is available at the speaker's IP address (user: `root`, password:
   </picture>
 </p>
 
-This project exists because two companies built something worth saving.
+This project exists because two companies built something worth saving and left enough breadcrumbs behind to make it possible.
 
-**Harman Kardon** designed extraordinary audio hardware. The Invoke's
-three-driver array, TI DAC, and acoustic engineering deliver sound
-quality that rivals speakers at twice the price. Years after discontinuation,
-the hardware hasn't aged a day. They built something that lasts.
-
-**Microsoft** did something rare and commendable: they shipped the Invoke with
-a Linux-based firmware, published the kernel source, and left the boot process
+**Harman Kardon** & **Microsoft** designed small but extraordinary hardware for the time. The Invoke's
+acoustic engineering deliver the sound quality that made this worth saving. Years after discontinuation,
+the hardware hasn't aged a day. They built something that lasts, shared the kernel source, and left the boot process
 accessible enough that a community could pick up where they left off. Whether
 that door was left open by design or by fortune, it made this entire project
-possible. Not every company gives their hardware a second chance at life — and
-we're grateful.
+possible. Not every company leaves breadcrumbs for their product to have a second chance at life like this.
 
 Together, they created a speaker that deserved better than a retirement notice
 and a gift card. Encore is our way of making sure it gets that.

@@ -1,7 +1,8 @@
 #!/bin/bash
 # Wait for device to come back after kexec/reboot
 # Usage: wait_reboot.sh [IP] [MAX_SECONDS]
-IP="${1:-192.168.43.1}"
+. "$(dirname "$0")/../common.sh"
+IP="${1:-$ENCORE_DEVICE_IP}"
 MAX="${2:-120}"
 echo "Waiting for $IP (max ${MAX}s)..."
 elapsed=0

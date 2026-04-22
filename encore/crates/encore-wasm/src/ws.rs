@@ -15,11 +15,25 @@ const RECONNECT_MAX_MS: i32 = 30_000;
 
 thread_local! {
     static WS: RefCell<Option<WebSocket>> = RefCell::new(None);
+    static STOPPED: RefCell<bool> = RefCell::new(false);
 }
 
 /// Connect to the firmware WebSocket.
 pub fn connect() {
+    STOPPED.with(|s| *s.borrow_mut() = false);
     do_connect(RECONNECT_BASE_MS);
+}
+
+/// Disconnect and stop auto-reconnect.
+pub fn disconnect() {
+    STOPPED.with(|s| *s.borrow_mut() = true);
+    WS.with(|w| {
+        if let Some(ws) = w.borrow_mut().take() {
+            ws.set_onclose(None);
+            ws.set_onerror(None);
+            ws.close().ok();
+        }
+    });
 }
 
 fn do_connect(backoff_ms: i32) {
@@ -28,7 +42,7 @@ fn do_connect(backoff_ms: i32) {
     // In standalone mode, connect to the configured speaker host.
     // Otherwise, derive from page origin (device-served mode).
     let (host, protocol) = match crate::state::with(|s| s.speaker_host.clone()) {
-        Some(h) => (h, "wss"),
+        Some(h) => (h, "ws"),
         None => {
             let location = window.location();
             let h = location.host().unwrap_or_else(|_| "localhost".into());
@@ -101,11 +115,18 @@ fn do_connect(backoff_ms: i32) {
 }
 
 fn schedule_reconnect(delay_ms: i32) {
+    if STOPPED.with(|s| *s.borrow()) {
+        return;
+    }
     let next_delay = (delay_ms * 2).min(RECONNECT_MAX_MS);
     web_sys::console::log_1(&format!("WS: reconnecting in {}ms...", delay_ms).into());
 
     crate::dom::set_timeout(
-        move || do_connect(next_delay),
+        move || {
+            if !STOPPED.with(|s| *s.borrow()) {
+                do_connect(next_delay);
+            }
+        },
         delay_ms,
     );
 }
@@ -160,6 +181,7 @@ fn dispatch(msg: ServerMsg) {
         ServerMsg::GroupStatus(_) => "GroupStatus",
         ServerMsg::BootMode { .. } => "BootMode",
         ServerMsg::AudioPowerState { .. } => "AudioPowerState",
+        ServerMsg::MicLevels { .. } => "MicLevels",
     };
     match msg {
         ServerMsg::SystemStatus(snap) => {
@@ -330,6 +352,14 @@ fn dispatch(msg: ServerMsg) {
         ServerMsg::AudioPowerState { state } => {
             crate::state::with_mut(|s| s.audio_power_state = state);
         }
+        ServerMsg::MicLevels { left_rms, right_rms, left_peak, right_peak } => {
+            crate::state::with_mut(|s| {
+                s.mic_left_rms = left_rms;
+                s.mic_right_rms = right_rms;
+                s.mic_left_peak = left_peak;
+                s.mic_right_peak = right_peak;
+            });
+        }
     }
 
     // Notify only the relevant page(s) instead of always refreshing the
@@ -349,7 +379,7 @@ fn dispatch(msg: ServerMsg) {
         "VolumeChanged" => Some("audio"),
         "AudioLevels" => Some("audio"),
         "EqState" | "DrcState" | "DspInfo" | "DacRegValue" | "DspSpiResponse"
-        | "AudioSpectrum" | "AudioWaveform" | "AudioPowerState" => Some("audio"),
+        | "AudioSpectrum" | "AudioWaveform" | "AudioPowerState" | "MicLevels" => Some("audio"),
         "ConfigLoaded" => None,  // all pages may care about config
         "LogEntries" => Some("logs"),
         _ => None,

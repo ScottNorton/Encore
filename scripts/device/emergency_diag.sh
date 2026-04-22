@@ -25,7 +25,8 @@ touch /lsync/encore/disabled
 echo "Encore disabled. AP should recover on next manual start_ap.sh"
 
 echo "=== RESTART AP ==="
-killall hostapd dnsmasq 2>/dev/null
+killall hostapd 2>/dev/null
+if [ -f /tmp/dnsmasq-ap.pid ]; then kill $(cat /tmp/dnsmasq-ap.pid) 2>/dev/null; fi
 sleep 1
 /sbin/start_ap.sh
 sleep 3

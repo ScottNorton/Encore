@@ -16,11 +16,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+. "$REPO_ROOT/scripts/common.sh"
 
-DEVICE_IP="${1:-192.168.43.1}"
+DEVICE_IP="${1:-$ENCORE_DEVICE_IP}"
 TEST_NUM="${2:-safe}"
-SSH_OPTS="-o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedKeyTypes=+ssh-rsa -o StrictHostKeyChecking=no -o ConnectTimeout=5"
-SSH="sshpass -p ridiculous ssh $SSH_OPTS root@$DEVICE_IP"
+SSH_OPTS="$ENCORE_SSH_OPTS -o ConnectTimeout=5"
+SSH="sshpass -p $ENCORE_SSH_PASS ssh $SSH_OPTS root@$DEVICE_IP"
 
 PASS=0
 FAIL=0

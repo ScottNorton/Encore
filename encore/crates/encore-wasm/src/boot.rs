@@ -1,16 +1,13 @@
-//! Smart boot sequence — connection probing, mDNS scanning, data gate.
+//! Boot sequence — try connecting to known or default speaker host.
 //!
 //! Called from `lib.rs` instead of `app::init()`. Runs an async boot
-//! sequence that updates the loading screen text and ring animation
-//! at each phase, then hands off to `app::init_after_boot()`.
+//! sequence that updates the loading screen, then hands off to
+//! `app::init_after_boot()`.
 
 use crate::dom;
-use wasm_bindgen::prelude::*;
-use wasm_bindgen::JsCast;
 
 /// Entry point — called from lib.rs start().
 pub fn run() {
-    // Initialize state early so boot can read/write it
     let _state = crate::state::init();
 
     wasm_bindgen_futures::spawn_local(async {
@@ -68,64 +65,6 @@ async fn wait_for_data_gate(timeout_ms: i32) -> bool {
     }
 }
 
-/// Check if Tauri runtime is available.
-fn has_tauri() -> bool {
-    let w = dom::window();
-    let w_ref: &JsValue = w.as_ref();
-    js_sys::Reflect::get(w_ref, &"__TAURI__".into())
-        .map(|v| !v.is_undefined() && !v.is_null())
-        .unwrap_or(false)
-}
-
-/// Run mDNS discovery via Tauri. Returns discovered (name, host) pairs.
-async fn tauri_discover() -> Vec<(String, String)> {
-    let w = dom::window();
-    let w_ref: &JsValue = w.as_ref();
-    let tauri = match js_sys::Reflect::get(w_ref, &"__TAURI__".into()) {
-        Ok(t) => t,
-        Err(_) => return Vec::new(),
-    };
-    let core = match js_sys::Reflect::get(&tauri, &"core".into()) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
-    let invoke_fn = match js_sys::Reflect::get(&core, &"invoke".into()) {
-        Ok(f) => f,
-        Err(_) => return Vec::new(),
-    };
-    let func = match invoke_fn.dyn_ref::<js_sys::Function>() {
-        Some(f) => f,
-        None => return Vec::new(),
-    };
-    let promise: js_sys::Promise = match func.call1(&core, &"discover_speakers".into()) {
-        Ok(p) => p.into(),
-        Err(_) => return Vec::new(),
-    };
-    let result = match wasm_bindgen_futures::JsFuture::from(promise).await {
-        Ok(r) => r,
-        Err(_) => return Vec::new(),
-    };
-
-    let mut speakers = Vec::new();
-    if let Some(arr) = result.dyn_ref::<js_sys::Array>() {
-        for i in 0..arr.length() {
-            let item = arr.get(i);
-            let name = js_sys::Reflect::get(&item, &"name".into())
-                .ok()
-                .and_then(|v| v.as_string())
-                .unwrap_or_default();
-            let host = js_sys::Reflect::get(&item, &"host".into())
-                .ok()
-                .and_then(|v| v.as_string())
-                .unwrap_or_default();
-            if !host.is_empty() {
-                speakers.push((name, host));
-            }
-        }
-    }
-    speakers
-}
-
 /// The main boot sequence.
 async fn boot_sequence() {
     // Small delay to let the loading screen render and be visible
@@ -141,42 +80,61 @@ async fn boot_sequence() {
 }
 
 /// Boot flow for standalone mode (Tauri or external browser).
+///
+/// 1. Try saved host from localStorage (previous successful connection)
+/// 2. mDNS discovery via Tauri backend (finds any Encore on the network)
+/// 3. Fall through to connect page for manual entry
 async fn boot_standalone() {
-    // Check for a saved speaker host
-    let saved_host = dom::get_local("encore_speaker_host");
-
-    if let Some(ref host) = saved_host {
-        // Try connecting to saved host
+    // 1. Try saved host
+    if let Some(host) = dom::get_local("encore_speaker_host") {
         set_status("Connecting...");
-        crate::state::with_mut(|s| s.speaker_host = Some(host.clone()));
-        crate::ws::connect();
-
-        // Wait briefly for the WebSocket to connect
-        sleep(2000).await;
-
-        let connected = crate::state::with(|s| s.connected);
-        if connected {
-            // Connected — wait for data gate
+        if try_connect(&host, 8000).await {
             set_status("Syncing...");
             wait_for_data_gate(5000).await;
-            // Land on dashboard (data may still be arriving)
             crate::app::init_after_boot("dashboard");
             return;
         }
-
-        // Connection failed — clear the broken host, fall through to scan
+        crate::ws::disconnect();
         crate::state::with_mut(|s| s.speaker_host = None);
+        dom::remove_local("encore_speaker_host");
     }
 
-    // No host or connection failed — scan for speakers
-    if has_tauri() {
-        set_status("Scanning...");
-        let speakers = tauri_discover().await;
-        crate::state::with_mut(|s| s.boot_speakers = speakers);
+    // 2. mDNS discovery (Tauri desktop only)
+    if dom::has_tauri() {
+        set_status("Searching...");
+        let speakers = dom::tauri_discover_speakers().await;
+        if let Some((_name, host)) = speakers.first() {
+            set_status("Connecting...");
+            if try_connect(host, 5000).await {
+                dom::set_local("encore_speaker_host", host);
+                set_status("Syncing...");
+                wait_for_data_gate(5000).await;
+                crate::app::init_after_boot("dashboard");
+                return;
+            }
+            crate::ws::disconnect();
+            crate::state::with_mut(|s| s.speaker_host = None);
+        }
     }
 
-    // Land on connect screen
+    // 3. Nothing found — show connect page
     crate::app::init_after_boot("connect");
+}
+
+/// Try connecting to a host via WebSocket. Returns true if connected within timeout_ms.
+async fn try_connect(host: &str, timeout_ms: i32) -> bool {
+    crate::state::with_mut(|s| s.speaker_host = Some(host.to_string()));
+    crate::ws::connect();
+
+    let mut elapsed = 0;
+    while elapsed < timeout_ms {
+        if crate::state::with(|s| s.connected) {
+            return true;
+        }
+        sleep(200).await;
+        elapsed += 200;
+    }
+    false
 }
 
 /// Boot flow for device-served mode (dashboard loaded from speaker itself).

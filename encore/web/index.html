@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
-<meta name="theme-color" content="#0d1117" media="(prefers-color-scheme:dark)">
-<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme:light)">
+<meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme:dark)">
+<meta name="theme-color" content="#F5F2ED" media="(prefers-color-scheme:light)">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="manifest" href="/manifest.json">
@@ -15,23 +15,23 @@
 <title>Encore</title>
 <style>
   *{margin:0;padding:0;box-sizing:border-box}
-  body{background:#0d1117;color:#e6edf3;font-family:system-ui,-apple-system,sans-serif}
-  @media(prefers-color-scheme:light){body{background:#f8f9fa;color:#1a1a1a}}
+  body{background:#0a0a0a;color:#e8e6e3;font-family:system-ui,-apple-system,sans-serif}
+  @media(prefers-color-scheme:light){body{background:#F5F2ED;color:#1a1815}}
   .loading{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:1000;opacity:0;animation:fadein .4s .1s forwards;transition:opacity .5s ease,transform .5s ease;padding-top:env(safe-area-inset-top,0px)}
   .loading.exit{opacity:0 !important;transform:scale(1.04);pointer-events:none}
   .ring{position:relative;width:80px;height:80px;margin-bottom:20px}
   .ring svg:first-of-type{position:absolute;inset:0;width:100%;height:100%;animation:rotate 25s linear infinite}
   .ring circle{stroke-width:2;stroke-linecap:round}
-  .ring .track{stroke:#1e2430;stroke-width:3}
+  .ring .track{stroke:rgba(255,255,255,0.06);stroke-width:3}
   .ring .arc{stroke:url(#encore-grad);stroke-width:2.5}
   .ring .speaker-sil{position:absolute;inset:15%;width:70%;height:70%}
-  .glow{position:absolute;inset:-8px;border-radius:50%;background:radial-gradient(circle,rgba(88,166,255,.12) 0%,transparent 70%);animation:pulse 2s ease-in-out infinite}
+  .glow{position:absolute;inset:-8px;border-radius:50%;background:radial-gradient(circle,rgba(200,165,92,.12) 0%,transparent 70%);animation:pulse 2s ease-in-out infinite}
   .brand{font-size:28px;font-weight:300;letter-spacing:6px;text-transform:uppercase;margin-bottom:8px}
-  .sub{font-size:12px;color:#6e7681;letter-spacing:2px;transition:opacity .3s ease}
+  .sub{font-size:12px;color:#4a4540;letter-spacing:2px;transition:opacity .3s ease}
   @media(prefers-color-scheme:light){
-    .ring .track{stroke:#dee2e6}
-    .glow{background:radial-gradient(circle,rgba(0,100,255,.08) 0%,transparent 70%)}
-    .sub{color:#8b949e}
+    .ring .track{stroke:rgba(0,0,0,0.06)}
+    .glow{background:radial-gradient(circle,rgba(160,134,74,.08) 0%,transparent 70%)}
+    .sub{color:#8c8580}
   }
   @keyframes fadein{to{opacity:1}}
   @keyframes rotate{to{transform:rotate(360deg)}}
@@ -46,9 +46,9 @@
     <svg viewBox="0 0 100 100">
       <defs>
         <linearGradient id="encore-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stop-color="#58a6ff"/>
-          <stop offset="50%" stop-color="#a371f7"/>
-          <stop offset="100%" stop-color="#58a6ff"/>
+          <stop offset="0%" stop-color="#C8A55C"/>
+          <stop offset="50%" stop-color="#F0E6D0"/>
+          <stop offset="100%" stop-color="#C8A55C"/>
         </linearGradient>
       </defs>
       <circle class="track" cx="50" cy="50" r="42" fill="none"/>

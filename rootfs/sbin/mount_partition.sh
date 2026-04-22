@@ -5,17 +5,18 @@
 # Encore (single Rust binary) replaces all stock services. The supervisor
 # manages a fallback chain:
 #
-#   1. Run primary binary (encore_next or /lsync/encore/encore)
-#   2. If primary crashes fast (< 5 min): quarantine it, try fallback (/usr/bin/encore)
-#   3. If fallback also crashes fast: safe mode (SSH recovery)
-#   4. Stable runs (5+ min) restart automatically — not counted as crashes
+#   1. Promote encore_next → encore (if staged OTA exists)
+#   2. Clean stale OTA if rootfs binary is newer (rootfs flash = new intended version)
+#   3. Run primary binary (/lsync/encore/encore or /usr/bin/encore)
+#   4. If primary crashes fast (< 5 min): quarantine it, try fallback (/usr/bin/encore)
+#   5. If fallback also crashes fast: safe mode (SSH recovery)
 #
 # The rootfs-baked /usr/bin/encore is the ultimate safety net — it can only
 # be changed by a full firmware flash, so it's always the last known-good.
 #
 # Safety mechanisms:
 #   - Manual disable: touch /lsync/encore/disabled
-#   - OTA binary: upload to /lsync/encore/encore_next, auto-tested next boot
+#   - OTA binary: upload to /lsync/encore/encore_next, promoted at next boot
 
 # ── 1. Immediate amp mute (prevent boot pop) ──
 /usr/bin/i2c_mute 2>/dev/null && echo "mount_partition: amp muted" || echo "mount_partition: mute failed"
@@ -62,16 +63,29 @@ mkdir -p /dev/net
 [ -e /dev/net/tun ] || mknod /dev/net/tun c 10 200
 
 # ── 4. Determine Encore binaries ──
-# Priority: encore_next (staged OTA) > /lsync/encore/encore (dev) > /usr/bin/encore (baked)
+# Priority: /lsync/encore/encore (OTA) > /usr/bin/encore (rootfs-baked)
 # Fallback is always the rootfs binary — last known-good release.
+
+# 4a. Promote staged OTA immediately (supervisor can't — it blocks on the running daemon)
+if [ -f /lsync/encore/encore_next ]; then
+    chmod +x /lsync/encore/encore_next
+    mv /lsync/encore/encore_next /lsync/encore/encore
+    echo "mount_partition: promoted encore_next → encore"
+fi
+
+# 4b. Clean stale OTA binary after rootfs flash.
+# A new rootfs means /usr/bin/encore is the intended version. Old OTA binaries
+# on /lsync survive the flash and would shadow it. Remove them if rootfs is newer.
+if [ -x /usr/bin/encore ] && [ -f /lsync/encore/encore ] && [ /usr/bin/encore -nt /lsync/encore/encore ]; then
+    rm -f /lsync/encore/encore
+    echo "mount_partition: removed stale OTA binary (rootfs is newer)"
+fi
+
+# 4c. Select primary and fallback
 PRIMARY=""
 FALLBACK=""
 
-if [ -f /lsync/encore/encore_next ]; then
-    chmod +x /lsync/encore/encore_next
-    PRIMARY=/lsync/encore/encore_next
-    [ -x /usr/bin/encore ] && FALLBACK=/usr/bin/encore
-elif [ -x /lsync/encore/encore ]; then
+if [ -x /lsync/encore/encore ]; then
     PRIMARY=/lsync/encore/encore
     [ -x /usr/bin/encore ] && FALLBACK=/usr/bin/encore
 elif [ -x /usr/bin/encore ]; then

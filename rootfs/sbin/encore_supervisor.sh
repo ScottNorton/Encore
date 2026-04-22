@@ -6,7 +6,7 @@
 #   /sbin/encore_supervisor.sh <primary> [fallback]
 #
 # Flow:
-#   1. Run primary (encore_next, /lsync/encore/encore, or /usr/bin/encore)
+#   1. Run primary (/lsync/encore/encore or /usr/bin/encore)
 #   2. If primary crashes fast (< 5 min): quarantine it, try fallback
 #   3. If fallback also crashes fast: safe mode (SSH recovery)
 #   4. Stable runs (5+ min) restart automatically — not counted as crashes
@@ -14,8 +14,9 @@
 # Quarantine: bad binaries on /lsync are renamed to .bad so they aren't
 # retried after reboot. This keeps the AP up — no reboot cycle.
 #
-# Promotion: if encore_next runs stably for 5+ min, it's promoted to
-# /lsync/encore/encore and encore_next is removed.
+# Promotion: encore_next is promoted to encore at boot time by
+# mount_partition.sh (before supervisor starts). If the promoted binary
+# is bad, it gets quarantined here and we fall back to /usr/bin/encore.
 #
 # Watchdog handoff:
 #   - Supervisor owns watchdog between Encore runs (prevents reboot during restart)
@@ -79,16 +80,10 @@ run_encore() {
         echo "supervisor: $BIN exited (rc=$RC uptime=${UP}s)"
 
         if [ "$UP" -ge "$STABLE_SECS" ]; then
-            # Promote encore_next on stable run
-            if [ "$BIN" = "/lsync/encore/encore_next" ]; then
-                cp "$BIN" /lsync/encore/encore 2>/dev/null && \
-                    rm -f /lsync/encore/encore_next && \
-                    BIN=/lsync/encore/encore
-                echo "supervisor: promoted encore_next → encore (stable ${UP}s)"
-            fi
+            # Stable exit (config change, OTA, etc) — restart automatically
             pet_watchdog
             sleep 2
-            continue  # restart — was running fine
+            continue
         fi
 
         # Fast crash — give up on this binary
@@ -99,10 +94,6 @@ run_encore() {
 # ── Quarantine bad binary ──
 quarantine() {
     case "$1" in
-        /lsync/encore/encore_next)
-            rm -f /lsync/encore/encore_next
-            echo "supervisor: removed bad encore_next"
-            ;;
         /lsync/encore/encore)
             mv /lsync/encore/encore /lsync/encore/encore.bad 2>/dev/null
             echo "supervisor: quarantined encore → encore.bad"

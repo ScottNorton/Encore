@@ -1,13 +1,20 @@
-//! Speakers page — multi-speaker group status, controls, and peer details.
+//! Groups page — multi-speaker group status, controls, and peer details.
 
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+use std::cell::RefCell;
+use std::collections::HashSet;
 
 use crate::components::segmented::{SegmentedControl, SegmentedMode};
 use crate::components::toggle::Toggle;
 use crate::components::text_field::TextField;
 use crate::dom;
 use encore_common::protocol::ClientMsg;
+
+thread_local! {
+    /// Track which peer cards are expanded (by peer_id) so updates don't collapse them.
+    static EXPANDED_PEERS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+}
 
 pub fn render(container: &web_sys::Element) {
     // Request fresh group status on page open
@@ -222,7 +229,7 @@ pub fn render(container: &web_sys::Element) {
 
     let peers_list = dom::create_div();
     peers_list.set_id("group-peers");
-    let peers_placeholder = dom::el("div", "text-muted text-center", Some("No speakers discovered"));
+    let peers_placeholder = dom::el("div", "text-muted text-center", Some("No peers discovered"));
     dom::append(&peers_list, &peers_placeholder);
     dom::append(&peers_card, &peers_list);
     dom::append(container, &peers_card);
@@ -315,10 +322,10 @@ pub fn update() {
             list.set_inner_html("");
 
             if status.peers.is_empty() {
-                let empty = dom::el("div", "text-muted text-center", Some("No speakers discovered"));
+                let empty = dom::el("div", "text-muted text-center", Some("No peers discovered"));
                 dom::append(&list, &empty);
             } else {
-                for (idx, peer) in status.peers.iter().enumerate() {
+                for peer in status.peers.iter() {
                     let card = dom::create_div();
                     dom::set_class(&card, "peer-card mb-8");
                     dom::set_style(&card, "border", "1px solid var(--border)");
@@ -344,15 +351,20 @@ pub fn update() {
                     let dot = dom::el("span", dot_cls, None);
                     dom::append(&left, &dot);
 
-                    // Peer name
-                    let name = dom::el("span", "text-bold", Some(&peer.name));
+                    // Peer name (fall back to peer_id if name is empty)
+                    let display_name = if peer.name.is_empty() {
+                        &peer.peer_id[..8.min(peer.peer_id.len())]
+                    } else {
+                        &peer.name
+                    };
+                    let name = dom::el("span", "text-bold", Some(display_name));
                     dom::append(&left, &name);
 
                     // Role badge
                     let (peer_role, peer_badge) = match peer.role.as_str() {
-                        "leader" => ("leader", "badge badge-blue badge-sm"),
-                        "follower" => ("follower", "badge badge-green badge-sm"),
-                        _ => (&*peer.role, "badge badge-sm"),
+                        "leader" => ("Leader", "badge badge-blue badge-sm"),
+                        "follower" => ("Follower", "badge badge-green badge-sm"),
+                        _ => ("Standalone", "badge badge-muted badge-sm"),
                     };
                     let rbadge = dom::el("span", peer_badge, Some(peer_role));
                     dom::append(&left, &rbadge);
@@ -360,37 +372,44 @@ pub fn update() {
                     dom::append(&summary, &left);
 
                     // RTT on the right side
-                    let rtt_text = if peer.latency_us.abs() < 1000 {
-                        format!("{}us", peer.latency_us)
+                    let rtt_text = if peer.latency_us == 0 {
+                        "\u{2014}".to_string() // em-dash for no data
+                    } else if peer.latency_us.abs() < 1000 {
+                        format!("{} \u{00B5}s", peer.latency_us)
                     } else {
-                        format!("{:.1}ms", peer.latency_us as f64 / 1000.0)
+                        format!("{:.1} ms", peer.latency_us as f64 / 1000.0)
                     };
                     let rtt = dom::el("span", "text-muted text-sm", Some(&rtt_text));
                     dom::append(&summary, &rtt);
 
-                    // Click handler to toggle detail
-                    let detail_id = format!("peer-detail-{}", idx);
+                    // Click handler to toggle detail — keyed by peer_id for stability
+                    let peer_id_key = peer.peer_id.clone();
+                    let detail_id = format!("peer-detail-{}", peer.peer_id);
                     let detail_id_c = detail_id.clone();
                     dom::on_click(&summary, move || {
+                        let peer_id_c = peer_id_key.clone();
                         if let Some(el) = dom::get_el(&detail_id_c) {
                             let cur = el.dyn_ref::<web_sys::HtmlElement>()
                                 .and_then(|h| Some(h.style().get_property_value("display").unwrap_or_default()))
                                 .unwrap_or_default();
                             if cur == "none" {
                                 dom::set_style(&el, "display", "block");
+                                EXPANDED_PEERS.with(|ep| ep.borrow_mut().insert(peer_id_c));
                             } else {
                                 dom::set_style(&el, "display", "none");
+                                EXPANDED_PEERS.with(|ep| ep.borrow_mut().remove(&peer_id_c));
                             }
                         }
                     });
 
                     dom::append(&card, &summary);
 
-                    // ── Expandable detail section (hidden by default) ──
+                    // ── Expandable detail section ──
+                    let is_expanded = EXPANDED_PEERS.with(|ep| ep.borrow().contains(&peer.peer_id));
                     let detail = dom::create_div();
                     detail.set_id(&detail_id);
                     dom::set_class(&detail, "p-8");
-                    dom::set_style(&detail, "display", "none");
+                    dom::set_style(&detail, "display", if is_expanded { "block" } else { "none" });
                     dom::set_style(&detail, "border-top", "1px solid var(--border)");
                     dom::set_style(&detail, "background", "var(--bg-card-alt, rgba(255,255,255,0.02))");
 
@@ -411,9 +430,19 @@ pub fn update() {
 
                     add_detail(&grid, "Address", &peer.address);
                     add_detail(&grid, "Channel", &peer.channel);
-                    add_detail(&grid, "RTT", &format!("{} us", peer.latency_us));
+                    let rtt_detail = if peer.latency_us == 0 {
+                        "No data".to_string()
+                    } else {
+                        format!("{} \u{00B5}s", peer.latency_us)
+                    };
+                    add_detail(&grid, "RTT", &rtt_detail);
                     add_detail(&grid, "Packet Loss", &format!("{:.1}%", peer.packet_loss_pct));
-                    add_detail(&grid, "Clock Offset", &format!("{} us", peer.clock_offset_us));
+                    let offset_detail = if peer.clock_offset_us == 0 && peer.latency_us == 0 {
+                        "Syncing...".to_string()
+                    } else {
+                        format!("{} \u{00B5}s", peer.clock_offset_us)
+                    };
+                    add_detail(&grid, "Clock Offset", &offset_detail);
                     add_detail(&grid, "Buffer Health", &format!("{}%", peer.buffer_health));
                     add_detail(&grid, "Hop Count", &format!("{}", peer.hop_count));
                     if peer.is_relay {

@@ -16,49 +16,63 @@ pub fn inject() {
 }
 
 const CSS: &str = r#"
+@font-face {
+    font-family: 'Inter';
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+    src: url('/fonts/Inter-Regular.woff2') format('woff2');
+}
+@font-face {
+    font-family: 'Inter';
+    font-style: normal;
+    font-weight: 500;
+    font-display: swap;
+    src: url('/fonts/Inter-Medium.woff2') format('woff2');
+}
 :root {
-    --bg: #0d1117;
-    --bg-card: #161b22;
-    --bg-card-hover: #1c2128;
-    --bg-input: #0d1117;
-    --border: #30363d;
-    --text: #e6edf3;
-    --text-secondary: #8b949e;
-    --text-muted: #484f58;
-    --accent: #58a6ff;
-    --accent-hover: #79c0ff;
+    --bg: #0a0a0a;
+    --bg-card: #141414;
+    --bg-card-hover: #1a1a1a;
+    --bg-input: #111111;
+    --border: rgba(255,255,255,0.06);
+    --text: #e8e6e3;
+    --text-secondary: #8a8580;
+    --text-muted: #4a4540;
+    --accent: #C8A55C;
+    --accent-hover: #D4B56E;
     --green: #3fb950;
     --orange: #d29922;
     --red: #f85149;
     --purple: #bc8cff;
     --cyan: #39d2c0;
     --yellow: #e3b341;
-    --radius: 12px;
-    --radius-sm: 8px;
-    --shadow: 0 2px 8px rgba(0,0,0,0.3);
+    --radius: 16px;
+    --radius-sm: 10px;
+    --shadow: 0 4px 20px rgba(0,0,0,0.5);
     --nav-height: 56px;
     --tab-height: 44px;
     --header-height: 56px;
 }
 @media (prefers-color-scheme: light) {
     :root {
-        --bg: #ffffff;
-        --bg-card: #f6f8fa;
-        --bg-card-hover: #eef1f5;
-        --bg-input: #ffffff;
-        --border: #d0d7de;
-        --text: #1f2328;
-        --text-secondary: #656d76;
-        --text-muted: #8c959f;
-        --accent: #0969da;
-        --accent-hover: #0550ae;
+        --bg: #F5F2ED;
+        --bg-card: #FFFDF8;
+        --bg-card-hover: #F0EDE6;
+        --bg-input: #FFFDF8;
+        --border: rgba(0,0,0,0.06);
+        --text: #1a1815;
+        --text-secondary: #6B6560;
+        --text-muted: #8c8580;
+        --accent: #A0864A;
+        --accent-hover: #8A7340;
         --green: #1a7f37;
         --orange: #bf8700;
         --red: #cf222e;
         --purple: #8250df;
         --cyan: #1b7c83;
         --yellow: #9a6700;
-        --shadow: 0 2px 8px rgba(0,0,0,0.08);
+        --shadow: 0 4px 16px rgba(0,0,0,0.06);
     }
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -66,9 +80,10 @@ html, body {
     height: 100%; width: 100%;
     background: var(--bg);
     color: var(--text);
-    font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+    font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
     font-size: 14px;
     line-height: 1.5;
+    letter-spacing: 0.01em;
     overflow-x: hidden;
     -webkit-font-smoothing: antialiased;
     touch-action: manipulation;
@@ -144,7 +159,7 @@ html, body {
     position: absolute;
     inset: -5px;
     border-radius: 50%;
-    background: radial-gradient(circle, rgba(88,166,255,0.12) 0%, transparent 70%);
+    background: radial-gradient(circle, rgba(200,165,92,0.12) 0%, transparent 70%);
     animation: logo-glow 4s ease-in-out infinite;
     pointer-events: none;
 }
@@ -181,7 +196,7 @@ html, body {
 }
 @media (prefers-color-scheme: light) {
     .logo-glow {
-        background: radial-gradient(circle, rgba(9,105,218,0.1) 0%, transparent 70%);
+        background: radial-gradient(circle, rgba(160,134,74,0.08) 0%, transparent 70%);
     }
 }
 
@@ -197,7 +212,7 @@ html, body {
 /* Header state: top-left, 32px, inline */
 .logo-header {
     top: calc(12px + env(safe-area-inset-top, 0px));
-    left: 16px;
+    left: max(16px, calc((100vw - 1200px) / 2 + 16px));
     margin: 0;
     flex-direction: row; gap: 10px;
 }
@@ -214,10 +229,10 @@ html, body {
 .logo-hero .logo-ring-wrap { width: 100px; height: 100px; }
 .logo-hero .logo-text { font-size: 20px; opacity: 1; }
 
-/* Connecting state: centered like loading, with ring + text + status */
+/* Connecting state: same position as hero, ring shrinks slightly, status visible */
 .logo-connecting {
-    top: 50%; left: 50%;
-    transform: translate(-50%, -50%);
+    top: 80px; left: 50%;
+    transform: translateX(-50%);
     margin: 0;
     flex-direction: column; align-items: center; gap: 14px;
 }
@@ -230,6 +245,7 @@ html, body {
     color: var(--text-secondary);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     max-width: 200px;
+    margin-right: 8px;
     opacity: 0; transition: opacity 0.4s ease;
 }
 .header-device-name.visible { opacity: 1; }
@@ -354,7 +370,7 @@ html, body {
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
     background: var(--bg-card);
-    border: 1px solid var(--border);
+    border: none;
     border-radius: 22px;
     cursor: grab;
     user-select: none;
@@ -405,14 +421,18 @@ html, body {
 @keyframes fadeInUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 .card {
     background: var(--bg-card);
-    border: 1px solid var(--border);
+    border: none;
     border-radius: var(--radius);
     padding: 16px;
     margin-bottom: 12px;
-    transition: background .2s;
+    transition: background .2s, box-shadow .2s;
     animation: fadeInUp 0.2s ease;
+    box-shadow: var(--shadow);
 }
-.card:hover { background: var(--bg-card-hover); }
+.card:hover { background: var(--bg-card-hover); box-shadow: 0 6px 24px rgba(0,0,0,0.6); }
+@media (prefers-color-scheme: light) {
+    .card:hover { box-shadow: 0 6px 24px rgba(0,0,0,0.08); }
+}
 .card-title {
     font-size: 12px;
     font-weight: 600;
@@ -485,7 +505,7 @@ html, body {
 .badge-stopped .badge-dot { background: var(--text-muted); }
 .badge-crashed .badge-dot { background: var(--red); }
 .badge-degraded .badge-dot { background: var(--orange); }
-.badge-blue { background: rgba(88,166,255,0.15); border-color: rgba(88,166,255,0.3); color: var(--accent); }
+.badge-blue { background: rgba(200,165,92,0.15); border-color: rgba(200,165,92,0.3); color: var(--accent); }
 .badge-green { background: rgba(63,185,80,0.15); border-color: rgba(63,185,80,0.3); color: var(--green); }
 .badge-muted { background: var(--bg); color: var(--text-muted); }
 .badge-sm { padding: 2px 8px; font-size: 10px; border-radius: 10px; }
@@ -1197,7 +1217,7 @@ canvas {
 }
 .designer-frame.selected {
     border-color: var(--accent);
-    box-shadow: 0 0 0 2px rgba(88,166,255,0.3);
+    box-shadow: 0 0 0 2px rgba(200,165,92,0.3);
 }
 .designer-frame:hover { border-color: var(--text-muted); }
 

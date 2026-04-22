@@ -124,50 +124,90 @@ impl Subsystem for SpotifySubsystem {
     async fn run(&mut self, mut ctx: SubsystemContext) -> Result<()> {
         ctx.health.set_state(SubsystemState::Running);
 
+        // Take command receiver early so it's available during discovery
+        let (_dummy_tx, dummy_rx) = mpsc::channel::<encore_common::protocol::SpotifyAction>(1);
+        let mut cmd_rx = self.cmd_rx.take().unwrap_or(dummy_rx);
+        let has_cmds = true; // always true after take (dummy still works)
+
         let session_config = SessionConfig::default();
         // Credentials on NAND, audio cache on tmpfs (RAM-backed, won't fill NAND)
         let cache = Cache::new(
             Some(CACHE_DIR),       // credentials/volume state on NAND
             None,                  // no separate volume cache dir
-            Some("/tmp/spotify"),  // audio cache on tmpfs (RAM)
-            Some(20 * 1024 * 1024), // 20MB cap (tmpfs is 32MB total)
+            Some("/run/spotify"),  // audio cache on tmpfs (RAM) — /run is 150MB vs /tmp's 32MB
+            Some(64 * 1024 * 1024), // 64MB cap
         )
         .ok();
 
-        // Start Spotify Connect discovery (zeroconf/mDNS)
-        // Bind to wlan0 IP only — the default picks up ap0 (192.168.43.1)
-        // which is unreachable from the home WiFi network.
+        // Start Spotify Connect discovery (zeroconf/mDNS + HTTP server).
+        // Retry internally: librespot's libmdns may fail transiently (e.g. interface
+        // not fully ready) which kills the discovery stream. Encore's own mDNS handles
+        // service advertisement, so libmdns failures are non-fatal — we just need the
+        // HTTP server to come up eventually.
         let device_id = session_config.device_id.clone();
-        let wlan_ip = crate::network::get_wlan_ip();
-        info!("Spotify: starting discovery as '{}' (bind: {:?})", self.device_name, wlan_ip);
-
-        let mut builder = Discovery::builder(device_id, session_config.client_id.clone())
-            .name(self.device_name.clone())
-            .device_type(DeviceType::Speaker)
-            .port(ZEROCONF_PORT);
-        if let Some(ip) = wlan_ip {
-            builder = builder.zeroconf_ip(vec![ip]);
-        }
-        let mut discovery = builder
-            .launch()
-            .context("failed to start Spotify discovery")?;
-
-        // Wait for a Spotify client to authenticate via Connect
-        let credentials = loop {
-            tokio::select! {
-                event = discovery.next() => {
-                    match event {
-                        Some(creds) => {
-                            info!("Spotify: authenticated via Connect");
-                            break creds;
-                        }
-                        None => {
-                            anyhow::bail!("Spotify discovery stream ended");
+        let credentials = 'discovery: loop {
+            let wlan_ip = loop {
+                if let Some(ip) = crate::network::get_wlan_ip() {
+                    break ip;
+                }
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+                    Some(action) = cmd_rx.recv() => {
+                        if matches!(action, encore_common::protocol::SpotifyAction::SetEnabled { enabled: false }) {
+                            info!("Spotify: disabled by user (waiting for WiFi)");
+                            return Ok(());
                         }
                     }
+                    _ = ctx.shutdown.recv() => { return Ok(()); }
                 }
-                _ = ctx.shutdown.recv() => {
-                    return Ok(());
+            };
+
+            info!("Spotify: starting discovery as '{}' (bind: {})", self.device_name, wlan_ip);
+            let discovery = Discovery::builder(device_id.clone(), session_config.client_id.clone())
+                .name(self.device_name.clone())
+                .device_type(DeviceType::Speaker)
+                .port(ZEROCONF_PORT)
+                .zeroconf_ip(vec![wlan_ip])
+                .launch();
+
+            let mut discovery = match discovery {
+                Ok(d) => d,
+                Err(e) => {
+                    tracing::warn!("Spotify: discovery launch failed: {}, retrying in 5s", e);
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_secs(5)) => { continue 'discovery; }
+                        _ = ctx.shutdown.recv() => { return Ok(()); }
+                    }
+                }
+            };
+
+            // Wait for a Spotify client to authenticate via Connect
+            loop {
+                tokio::select! {
+                    event = discovery.next() => {
+                        match event {
+                            Some(creds) => {
+                                info!("Spotify: authenticated via Connect");
+                                break 'discovery creds;
+                            }
+                            None => {
+                                tracing::warn!("Spotify: discovery stream ended, retrying in 5s");
+                                tokio::select! {
+                                    _ = tokio::time::sleep(Duration::from_secs(5)) => { continue 'discovery; }
+                                    _ = ctx.shutdown.recv() => { return Ok(()); }
+                                }
+                            }
+                        }
+                    }
+                    Some(action) = cmd_rx.recv() => {
+                        if matches!(action, encore_common::protocol::SpotifyAction::SetEnabled { enabled: false }) {
+                            info!("Spotify: disabled by user (during discovery)");
+                            return Ok(());
+                        }
+                    }
+                    _ = ctx.shutdown.recv() => {
+                        return Ok(());
+                    }
                 }
             }
         };
@@ -249,11 +289,8 @@ impl Subsystem for SpotifySubsystem {
         let mut play_state = SpotifyPlayState::new();
         let ws_tx = self.ws_tx.clone();
 
-        // Event loop — take command/suspend receivers out of self for use in select!
+        // Event loop — take suspend receiver out of self for use in select!
         let group_cmd_tx = self.group_cmd_tx.clone();
-        let has_cmds = self.cmd_rx.is_some();
-        let (_dummy_tx, dummy_rx) = mpsc::channel::<encore_common::protocol::SpotifyAction>(1);
-        let mut cmd_rx = self.cmd_rx.take().unwrap_or(dummy_rx);
         let has_suspend = self.suspend_rx.is_some();
         let (_suspend_dummy_tx, suspend_dummy_rx) = mpsc::channel::<bool>(1);
         let mut suspend_rx = self.suspend_rx.take().unwrap_or(suspend_dummy_rx);
@@ -341,6 +378,12 @@ impl Subsystem for SpotifySubsystem {
                                 info!("Spotify: repeat track = {}", enabled);
                                 play_state.repeat_track = enabled;
                                 broadcast_status(&play_state, &ws_tx);
+                            }
+                        }
+                        SpotifyAction::SetEnabled { enabled } => {
+                            if !enabled {
+                                info!("Spotify: disabled by user");
+                                break;
                             }
                         }
                     }

@@ -98,7 +98,7 @@ script:
     fields:
       url:
         description: "HTTP URL to audio file"
-        example: "http://192.168.7.100:8123/local/doorbell.wav"
+        example: "http://homeassistant.local:8123/local/doorbell.wav"
     sequence:
       - service: mqtt.publish
         data:

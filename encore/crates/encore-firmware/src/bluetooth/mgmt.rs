@@ -129,7 +129,16 @@ impl MgmtSocket {
     ///
     /// Returns the adapter's BD_ADDR on success.
     pub async fn setup_adapter(&mut self, name: &str) -> Result<[u8; 6]> {
-        // 1. READ_INFO — get adapter address
+        // 1. Power on via management API (may already be UP from HCIDEVUP ioctl).
+        match self.send_and_wait(MGMT_OP_SET_POWERED, 0, &[0x01]).await {
+            Ok(_) => info!("Bluetooth mgmt: adapter powered on"),
+            Err(e) => warn!("Bluetooth mgmt: SET_POWERED: {} (may already be up)", e),
+        }
+
+        // Brief delay for firmware to finish initialization
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+        // 2. READ_INFO — get adapter address
         let info_data = self.send_and_wait(MGMT_OP_READ_INFO, 0, &[]).await
             .context("READ_INFO failed")?;
         let bdaddr = if info_data.len() >= 6 {
@@ -144,19 +153,24 @@ impl MgmtSocket {
             l2cap::bdaddr_to_string(&bdaddr)
         );
 
-        // 2. SET_IO_CAPABILITY — NoInputNoOutput (0x03)
+        // 3. SET_IO_CAPABILITY — NoInputNoOutput (0x03)
         self.send_and_wait(MGMT_OP_SET_IO_CAPABILITY, 0, &[0x03]).await
             .context("SET_IO_CAPABILITY failed")?;
 
-        // 3. SET_SSP — enable Secure Simple Pairing
-        self.send_and_wait(MGMT_OP_SET_SSP, 0, &[0x01]).await
-            .context("SET_SSP failed")?;
+        // 4. SET_SSP — enable Secure Simple Pairing (non-fatal on old kernels)
+        match self.send_and_wait(MGMT_OP_SET_SSP, 0, &[0x01]).await {
+            Ok(_) => info!("Bluetooth mgmt: SSP enabled"),
+            Err(e) => warn!("Bluetooth mgmt: SSP not available ({}), continuing with legacy pairing", e),
+        }
 
-        // 4. SET_DEV_CLASS — Audio (0x04), Loudspeaker (0x14)
-        self.send_and_wait(MGMT_OP_SET_DEV_CLASS, 0, &[0x14, 0x04]).await
-            .context("SET_DEV_CLASS failed")?;
+        // 5. SET_DEV_CLASS — Audio (0x04), Loudspeaker (0x14)
+        // Non-fatal: device class is cosmetic (affects phone icon) not functional.
+        match self.send_and_wait(MGMT_OP_SET_DEV_CLASS, 0, &[0x14, 0x04]).await {
+            Ok(_) => info!("Bluetooth mgmt: device class set (Audio/Loudspeaker)"),
+            Err(e) => warn!("Bluetooth mgmt: SET_DEV_CLASS: {} (continuing)", e),
+        }
 
-        // 5. SET_LOCAL_NAME — device name (249 bytes max, zero-padded)
+        // 6. SET_LOCAL_NAME — device name (249 bytes max, zero-padded)
         let mut name_buf = [0u8; 260]; // 249 name + 11 short_name
         let name_bytes = name.as_bytes();
         let len = name_bytes.len().min(248);
@@ -164,10 +178,10 @@ impl MgmtSocket {
         self.send_and_wait(MGMT_OP_SET_LOCAL_NAME, 0, &name_buf).await
             .context("SET_LOCAL_NAME failed")?;
 
-        // 6. LOAD_LINK_KEYS — restore paired devices
+        // 7. LOAD_LINK_KEYS — restore paired devices
         self.load_link_keys().await?;
 
-        // 7-10. Enable adapter features
+        // 8-10. Enable adapter features
         self.send_and_wait(MGMT_OP_SET_CONNECTABLE, 0, &[0x01]).await
             .context("SET_CONNECTABLE failed")?;
         self.send_and_wait(MGMT_OP_SET_PAIRABLE, 0, &[0x01]).await
@@ -176,9 +190,6 @@ impl MgmtSocket {
         // SET_DISCOVERABLE with timeout=0 (forever): [val: u8, timeout: u16 LE]
         self.send_and_wait(MGMT_OP_SET_DISCOVERABLE, 0, &[0x01, 0x00, 0x00]).await
             .context("SET_DISCOVERABLE failed")?;
-
-        self.send_and_wait(MGMT_OP_SET_POWERED, 0, &[0x01]).await
-            .context("SET_POWERED failed")?;
 
         info!("Bluetooth mgmt: adapter configured as '{}'", name);
         Ok(bdaddr)
@@ -211,9 +222,31 @@ impl MgmtSocket {
 
         loop {
             let mut guard = self.fd.writable().await?;
-            match guard.try_io(|inner| l2cap::raw_write(inner.get_ref().as_raw_fd(), &msg)) {
+            match guard.try_io(|inner| {
+                // Use send() instead of write() — more appropriate for datagram sockets
+                let fd = inner.get_ref().as_raw_fd();
+                let n = unsafe {
+                    libc::send(
+                        fd,
+                        msg.as_ptr() as *const libc::c_void,
+                        msg.len(),
+                        libc::MSG_NOSIGNAL,
+                    )
+                };
+                if n < 0 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(n as usize)
+                }
+            }) {
                 Ok(Ok(n)) if n == msg.len() => return Ok(()),
-                Ok(Ok(_)) => anyhow::bail!("short write on mgmt socket"),
+                Ok(Ok(n)) => {
+                    warn!(
+                        "mgmt: short write for opcode 0x{:04x}: wrote {}/{} bytes",
+                        opcode, n, msg.len()
+                    );
+                    anyhow::bail!("short write on mgmt socket ({}/{})", n, msg.len())
+                }
                 Ok(Err(e)) => return Err(e.into()),
                 Err(_would_block) => continue,
             }

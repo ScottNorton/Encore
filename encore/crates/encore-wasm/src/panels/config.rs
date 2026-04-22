@@ -40,22 +40,6 @@ pub fn render(container: &web_sys::Element) {
         field_toggle("cfg-bt-disc", "Discoverable", cfg.bluetooth_discoverable),
     ]);
 
-    // Home Assistant section
-    section(&form, "Home Assistant", &[
-        field_toggle("cfg-ha-en", "Enabled", cfg.homeassistant_enabled),
-        TextField::create("cfg-mqtt-host", "MQTT Host", cfg.mqtt_host.as_deref().unwrap_or(""), ""),
-        TextField::create("cfg-mqtt-port", "MQTT Port", &cfg.mqtt_port.map(|p| p.to_string()).unwrap_or_default(), ""),
-        TextField::create("cfg-mqtt-user", "MQTT User", cfg.mqtt_user.as_deref().unwrap_or(""), ""),
-        TextField::create("cfg-mqtt-pass", "MQTT Password", cfg.mqtt_password.as_deref().unwrap_or(""), ""),
-    ]);
-
-    // Wyoming section
-    section(&form, "Wyoming Voice", &[
-        field_toggle("cfg-wy-en", "Enabled", cfg.wyoming_enabled),
-        TextField::create("cfg-wy-host", "Server Host", cfg.wyoming_host.as_deref().unwrap_or(""), ""),
-        TextField::create("cfg-wy-port", "Server Port", &cfg.wyoming_port.map(|p| p.to_string()).unwrap_or_default(), ""),
-    ]);
-
     // Network section
     section(&form, "Network", &[
         TextField::create("cfg-wifi-ssid", "WiFi SSID", cfg.wifi_ssid.as_deref().unwrap_or(""), ""),
@@ -209,26 +193,14 @@ fn save_config() {
         }),
         bluetooth_enabled: get_checkbox("cfg-bt-en"),
         bluetooth_discoverable: get_checkbox("cfg-bt-disc"),
-        homeassistant_enabled: get_checkbox("cfg-ha-en"),
-        mqtt_host: {
-            let v = get_input_value("cfg-mqtt-host");
-            if v.is_empty() { None } else { Some(v) }
-        },
-        mqtt_port: get_input_value("cfg-mqtt-port").parse().ok(),
-        mqtt_user: {
-            let v = get_input_value("cfg-mqtt-user");
-            if v.is_empty() { None } else { Some(v) }
-        },
-        mqtt_password: {
-            let v = get_input_value("cfg-mqtt-pass");
-            if v.is_empty() { None } else { Some(v) }
-        },
-        wyoming_enabled: get_checkbox("cfg-wy-en"),
-        wyoming_host: {
-            let v = get_input_value("cfg-wy-host");
-            if v.is_empty() { None } else { Some(v) }
-        },
-        wyoming_port: get_input_value("cfg-wy-port").parse().ok(),
+        homeassistant_enabled: crate::state::with(|s| s.config.as_ref().map(|c| c.homeassistant_enabled).unwrap_or(false)),
+        mqtt_host: crate::state::with(|s| s.config.as_ref().and_then(|c| c.mqtt_host.clone())),
+        mqtt_port: crate::state::with(|s| s.config.as_ref().and_then(|c| c.mqtt_port)),
+        mqtt_user: crate::state::with(|s| s.config.as_ref().and_then(|c| c.mqtt_user.clone())),
+        mqtt_password: crate::state::with(|s| s.config.as_ref().and_then(|c| c.mqtt_password.clone())),
+        wyoming_enabled: crate::state::with(|s| s.config.as_ref().map(|c| c.wyoming_enabled).unwrap_or(false)),
+        wyoming_host: crate::state::with(|s| s.config.as_ref().and_then(|c| c.wyoming_host.clone())),
+        wyoming_port: crate::state::with(|s| s.config.as_ref().and_then(|c| c.wyoming_port)),
         wifi_ssid: {
             let v = get_input_value("cfg-wifi-ssid");
             if v.is_empty() { None } else { Some(v) }

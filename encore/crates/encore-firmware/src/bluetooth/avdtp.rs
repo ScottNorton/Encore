@@ -25,6 +25,7 @@ const AVDTP_START: u8 = 0x07;
 const AVDTP_CLOSE: u8 = 0x08;
 const AVDTP_SUSPEND: u8 = 0x09;
 const AVDTP_ABORT: u8 = 0x0A;
+const AVDTP_GET_ALL_CAPABILITIES: u8 = 0x0C;
 
 // Message type bits (in byte 0, bits 1-0)
 const MSG_TYPE_COMMAND: u8 = 0x00;
@@ -159,7 +160,7 @@ fn avdtp_loop(
                     if e.kind() == std::io::ErrorKind::Interrupted {
                         continue;
                     }
-                    debug!("AVDTP: signaling read error: {}", e);
+                    warn!("AVDTP: signaling read error: {} (kind={:?})", e, e.kind());
                     break 'session;
                 }
             };
@@ -170,14 +171,25 @@ fn avdtp_loop(
 
             let header = sig_buf[0];
             let txn_label = (header >> 4) & 0x0F;
+            let packet_type = (header >> 2) & 0x03;
             let msg_type = header & 0x03;
+
+            debug!(
+                "AVDTP: rx {} bytes: header=0x{:02x} txn={} ptype={} mtype={} raw={:02x?}",
+                n,
+                header,
+                txn_label,
+                packet_type,
+                msg_type,
+                &sig_buf[..n.min(16)]
+            );
 
             if msg_type != MSG_TYPE_COMMAND {
                 // We only process commands from the phone
                 continue;
             }
 
-            let signal_id = (sig_buf[1] >> 2) & 0x3F;
+            let signal_id = sig_buf[1] & 0x3F;
             let payload = &sig_buf[2..n];
 
             let response = match signal_id {
@@ -185,7 +197,7 @@ fn avdtp_loop(
                     debug!("AVDTP: DISCOVER");
                     handle_discover(txn_label)
                 }
-                AVDTP_GET_CAPABILITIES | AVDTP_GET_CONFIGURATION => {
+                AVDTP_GET_CAPABILITIES | AVDTP_GET_ALL_CAPABILITIES | AVDTP_GET_CONFIGURATION => {
                     let seid = if !payload.is_empty() {
                         (payload[0] >> 2) & 0x3F
                     } else {
@@ -368,7 +380,7 @@ fn restore_blocking(fd: std::os::fd::RawFd) {
 fn build_accept(txn_label: u8, signal_id: u8, payload: &[u8]) -> Vec<u8> {
     let mut msg = Vec::with_capacity(2 + payload.len());
     msg.push((txn_label << 4) | MSG_TYPE_ACCEPT); // single packet, accept
-    msg.push((signal_id << 2) & 0xFC);
+    msg.push(signal_id & 0x3F); // signal_id in bits 5:0, RFA=0 in bits 7:6
     msg.extend_from_slice(payload);
     msg
 }
@@ -377,7 +389,7 @@ fn build_accept(txn_label: u8, signal_id: u8, payload: &[u8]) -> Vec<u8> {
 fn build_reject(txn_label: u8, signal_id: u8, error: u8) -> Vec<u8> {
     vec![
         (txn_label << 4) | MSG_TYPE_REJECT,
-        (signal_id << 2) & 0xFC,
+        signal_id & 0x3F, // signal_id in bits 5:0, RFA=0 in bits 7:6
         error,
     ]
 }
@@ -507,7 +519,7 @@ mod tests {
     fn discover_response_has_3_seps() {
         let resp = handle_discover(0x05);
         assert_eq!(resp[0], (0x05 << 4) | MSG_TYPE_ACCEPT);
-        assert_eq!((resp[1] >> 2) & 0x3F, AVDTP_DISCOVER);
+        assert_eq!(resp[1] & 0x3F, AVDTP_DISCOVER);
         // 2 bytes header + 6 bytes (3 SEPs × 2 bytes)
         assert_eq!(resp.len(), 8);
     }
@@ -584,6 +596,6 @@ mod tests {
         let msg = build_accept(0x0A, AVDTP_OPEN, &[]);
         assert_eq!(msg.len(), 2);
         assert_eq!(msg[0], (0x0A << 4) | MSG_TYPE_ACCEPT);
-        assert_eq!((msg[1] >> 2) & 0x3F, AVDTP_OPEN);
+        assert_eq!(msg[1] & 0x3F, AVDTP_OPEN);
     }
 }

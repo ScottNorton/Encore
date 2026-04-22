@@ -12,7 +12,7 @@ use super::dsp_gpio::DspGpio;
 use super::io_expander::IoExpander;
 use anyhow::{bail, Context, Result};
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::os::unix::io::AsRawFd;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -59,10 +59,14 @@ const AVIO_REG_404: usize = 0xF7E8_0404;
 const AVIO_REG_400: usize = 0xF7E8_0400;
 const AUDIO_CLK_REG: usize = 0xF7EA_8008;
 
-// SoC register values
-const AVIO_SPI_MODE: u32 = 0x0000_0F28;
-const AVIO_CONFIG: u32 = 0x0000_0A08;
-const AUDIO_CLK_VALUE: u32 = 0x0118_D249;
+// Audio clock PLL enable bit (bit 24). Read-modify-write: set this bit
+// to enable MCLK output while preserving the kernel's clock dividers.
+const AUDIO_CLK_PLL_BIT: u32 = 0x0100_0000;
+
+// Audio clock upload mode bit (bit 27). Stock sets this DURING firmware
+// upload only (0x0918D249), then clears it after (back to 0x0118D249).
+// This configures the SPI clock source for the DSP boot kernel reception.
+const AUDIO_CLK_UPLOAD_BIT: u32 = 0x0800_0000;
 
 /// Pre-computed bit-reversal LUT.
 const BIT_REVERSE: [u8; 256] = {
@@ -113,13 +117,13 @@ pub struct Dsp {
 }
 
 impl Dsp {
-    /// Enable the SoC audio PLL/MCLK. Must be called well before DSP upload
-    /// so the WM8904 codec has time to lock its PLL and start generating I2S
-    /// clocks. The DSP firmware needs active I2S input clocks at boot to
-    /// configure its own I2S output (SCLK/LRCK to the DAC).
+    /// Enable the SoC audio PLL/MCLK. Read-modify-write: only sets the PLL
+    /// enable bit, preserving the kernel's clock divider configuration.
     pub fn enable_audio_clock() -> Result<()> {
-        devmem_write(AUDIO_CLK_REG, AUDIO_CLK_VALUE)?;
-        info!("DSP: audio clock enabled (0xF7EA8008 = 0x{:08X})", AUDIO_CLK_VALUE);
+        let cur = devmem_read(AUDIO_CLK_REG)?;
+        let val = cur | AUDIO_CLK_PLL_BIT;
+        devmem_write(AUDIO_CLK_REG, val)?;
+        info!("DSP: audio clock enabled (0xF7EA8008: 0x{:08X} → 0x{:08X})", cur, val);
         Ok(())
     }
 }
@@ -168,35 +172,103 @@ impl Dsp {
             *byte = BIT_REVERSE[*byte as usize];
         }
 
+        // Stock dspopen() Step 3-4: Configure GPIO pins via AVIO devmem BEFORE
+        // sysfs export. This sets the hardware direction/value at the pin mux level.
+        info!("DSP: configuring AVIO GPIO direction...");
+        let reg_404 = devmem_read(AVIO_REG_404)?;
+        // GPIO 4: output enable (set bit 4), GPIO 12/13/15: input (clear bits)
+        let new_404 = (reg_404 | (1 << 4)) & !(1u32 << 12) & !(1u32 << 13) & !(1u32 << 15);
+        devmem_write(AVIO_REG_404, new_404)?;
+        // GPIO 4: set HIGH (SPI CS idle)
+        let reg_400 = devmem_read(AVIO_REG_400)?;
+        devmem_write(AVIO_REG_400, reg_400 | (1 << 4))?;
+        info!("DSP: AVIO 0x404: 0x{:08X}→0x{:08X}, 0x400: GPIO4 HIGH", reg_404, new_404);
+
+        // Read GPIO input states (stock step 5)
+        let reg_450 = devmem_read(0xF7E8_0450)?;
+        info!("DSP: AVIO 0x450=0x{:08X} (GPIO inputs)", reg_450);
+
+        // Stock step 6-8: sysfs GPIO export + directions + values
+        info!("DSP: setting up GPIO sysfs...");
+        for &pin in &[4u32, 13, 12, 15] {  // stock export order
+            super::gpio::export(pin).ok();
+        }
+        thread::sleep(Duration::from_millis(50)); // sysfs settle
+        super::gpio::set_direction(4, true)?;   // output
+        super::gpio::set_direction(13, false)?;  // input (stock order: 13 before 12)
+        super::gpio::set_direction(12, false)?;  // input
+        super::gpio::set_direction(15, false)?;  // input
+        super::gpio::write_value(4, true)?;      // CS idle HIGH
+        info!("DSP: GPIO 4=out(H), 13=in, 12=in, 15=in");
+
         info!("DSP: resetting DSP...");
         io.reset_dsp()?;
 
+        // Stock dsp-client: FUN_0008df90(1) — set bits 24+27 for upload clock mode.
+        // Bit 24 = PLL/MCLK enable, bit 27 = upload clock mode (SPI clock source).
+        // This is CRITICAL — without bit 27 the DSP boot kernel can't receive firmware.
         info!("DSP: configuring SoC registers for upload...");
-        devmem_write(AUDIO_CLK_REG, AUDIO_CLK_VALUE)?;
-        devmem_write(AVIO_REG_404, AVIO_SPI_MODE)?;
-        devmem_write(AVIO_REG_400, AVIO_CONFIG)?;
+        let clk = devmem_read(AUDIO_CLK_REG)?;
+        let clk_upload = clk | AUDIO_CLK_PLL_BIT | AUDIO_CLK_UPLOAD_BIT;
+        devmem_write(AUDIO_CLK_REG, clk_upload)?;
+        info!("DSP: AUDIO_CLK 0x{:08X} → 0x{:08X} (upload mode)", clk, clk_upload);
 
-        info!("DSP: uploading {} bytes over SPI...", fw.len());
+        // Stock: configure GPIO 5 as output via AVIO devmem BEFORE sysfs export.
+        // FUN_0008e1f0(5,0) — set bit 5 in 0x404 (output enable)
+        let reg_404 = devmem_read(AVIO_REG_404)?;
+        devmem_write(AVIO_REG_404, reg_404 | (1 << 5))?;
+        // Stock: clear bit 5 in 0x400 (GPIO 5 LOW via AVIO)
+        let reg_400 = devmem_read(AVIO_REG_400)?;
+        devmem_write(AVIO_REG_400, reg_400 & !(1u32 << 5))?;
+        info!("DSP: AVIO GPIO 5 configured (output, LOW)");
+
+        // GPIO 5 = DSP upload chip-select. Stock dsp-client pulses this
+        // HIGH→LOW before SPI transfer begins, then sets HIGH after upload.
+        super::gpio::export(5)?;
+        super::gpio::set_direction(5, true)?;
+        super::gpio::write_value(5, true)?;
+        super::gpio::write_value(5, false)?;
+        info!("DSP: GPIO 5 pulsed (upload CS)");
+
+        info!("DSP: uploading {} bytes over SPI (using SPI_IOC_MESSAGE)...", fw.len());
         let mut blocks_sent = 0u32;
+        // Stock embeds speed_hz in each SPI_IOC_MESSAGE transfer struct.
+        // Boot kernel block (first 1536 bytes) at 1 MHz, rest at 58824 Hz.
+        let mut cur_speed = UPLOAD_SPEED;
 
         for offset in (0..fw.len()).step_by(CHUNK_SIZE) {
             let end = (offset + CHUNK_SIZE).min(fw.len());
             let len = end - offset;
             let mut chunk = [0u8; CHUNK_SIZE];
             chunk[..len].copy_from_slice(&fw[offset..end]);
-            self.spi_fd.write_all(&chunk)?;
+            self.spi_xfer(&chunk[..len], cur_speed)?;
 
             let bytes_sent = offset + CHUNK_SIZE;
             if bytes_sent % BLOCK_SIZE == 0 {
                 blocks_sent += 1;
+                // Stock drops from 1 MHz to messaging speed after the first
+                // 1536-byte block (the DSP boot kernel).
+                if blocks_sent == 1 {
+                    cur_speed = MESSAGE_SPEED;
+                    info!("DSP: boot kernel sent, speed → {} Hz", MESSAGE_SPEED);
+                }
                 thread::sleep(Duration::from_millis(10));
             }
         }
 
         info!("DSP: upload complete ({} blocks)", blocks_sent);
 
-        devmem_write(AVIO_REG_400, AVIO_CONFIG)?;
-        info!("DSP: AVIO in stock DSP mode (SPI+I2S)");
+        // Signal upload complete and release GPIO 5
+        super::gpio::write_value(5, true)?;
+        super::gpio::unexport(5);
+
+        // Stock: FUN_0008df90(0) — restore clock to PLL-only (clear bit 27, keep bit 24).
+        // Do NOT restore AVIO 0x400/0x404 — stock doesn't, and restoring would undo
+        // the GPIO configuration the DSP needs for I2S clock generation.
+        let clk_post = devmem_read(AUDIO_CLK_REG)?;
+        let clk_normal = (clk_post | AUDIO_CLK_PLL_BIT) & !AUDIO_CLK_UPLOAD_BIT;
+        devmem_write(AUDIO_CLK_REG, clk_normal)?;
+        info!("DSP: AUDIO_CLK 0x{:08X} → 0x{:08X} (normal mode)", clk_post, clk_normal);
 
         self.set_speed(MESSAGE_SPEED)?;
         info!("DSP: SPI speed set to {} Hz for messaging", MESSAGE_SPEED);
@@ -210,6 +282,28 @@ impl Dsp {
 
     fn set_speed(&self, speed: u32) -> Result<()> {
         unsafe { spi_wr_speed(self.spi_fd.as_raw_fd(), &speed).context("SPI set speed")?; }
+        Ok(())
+    }
+
+    /// Full-duplex SPI transfer at a specified speed. Used during firmware
+    /// upload where speed changes per-block (1 MHz boot kernel, then 58824 Hz).
+    /// Stock dsp-client uses SPI_IOC_MESSAGE for every 4-byte chunk — NOT write().
+    fn spi_xfer(&self, tx: &[u8], speed: u32) -> Result<()> {
+        let mut rx = [0u8; CHUNK_SIZE];
+        let len = tx.len().min(rx.len());
+        let xfer = SpiIocTransfer {
+            tx_buf: tx.as_ptr() as u64,
+            rx_buf: rx.as_mut_ptr() as u64,
+            len: len as u32,
+            speed_hz: speed,
+            delay_usecs: 0,
+            bits_per_word: 8,
+            cs_change: 0,
+            tx_nbits: 0,
+            rx_nbits: 0,
+            _pad: 0,
+        };
+        unsafe { spi_message(self.spi_fd.as_raw_fd(), &xfer).context("SPI upload transfer")? };
         Ok(())
     }
 
@@ -488,6 +582,38 @@ fn build_spi_message(msg_type: u16, data: &[u8]) -> Vec<u8> {
 }
 
 /// Write a 32-bit value to a physical SoC register via /dev/mem mmap.
+fn devmem_read(addr: usize) -> Result<u32> {
+    use nix::sys::mman::{mmap, munmap, MapFlags, ProtFlags};
+    use std::num::NonZeroUsize;
+
+    let page_size = 4096usize;
+    let page_base = addr & !(page_size - 1);
+    let offset = addr - page_base;
+
+    let fd = OpenOptions::new()
+        .read(true)
+        .open("/dev/mem")
+        .context("failed to open /dev/mem")?;
+
+    let map_len = NonZeroUsize::new(page_size).unwrap();
+    let ptr = unsafe {
+        mmap(
+            None, map_len,
+            ProtFlags::PROT_READ,
+            MapFlags::MAP_SHARED,
+            &fd, page_base as i64,
+        ).context("mmap /dev/mem failed")?
+    };
+
+    let value = unsafe {
+        let reg = ptr.as_ptr().cast::<u8>().add(offset) as *const u32;
+        std::ptr::read_volatile(reg)
+    };
+
+    unsafe { munmap(ptr, page_size).ok(); }
+    Ok(value)
+}
+
 fn devmem_write(addr: usize, value: u32) -> Result<()> {
     use nix::sys::mman::{mmap, munmap, MapFlags, ProtFlags};
     use std::num::NonZeroUsize;

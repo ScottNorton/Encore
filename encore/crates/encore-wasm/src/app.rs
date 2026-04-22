@@ -9,13 +9,13 @@ use std::cell::Cell;
 /// Tab definitions: (route_id, display_label)
 pub const TABS: &[(&str, &str)] = &[
     ("dashboard", "Dashboard"),
+    ("assistant", "Assistant"),
     ("spotify", "Spotify"),
     ("audio", "Audio"),
     ("lights", "Lights"),
     ("bluetooth", "Bluetooth"),
-    ("speakers", "Speakers"),
+    ("speakers", "Groups"),
     ("network", "Network"),
-    ("logs", "Logs"),
 ];
 
 thread_local! {
@@ -28,6 +28,7 @@ const MENU_ITEMS: &[(&str, &str)] = &[
     ("config", "Config"),
     ("health", "System Health"),
     ("crashes", "Crash Log"),
+    ("logs", "Logs"),
     ("", ""),
     ("update", "Firmware Update"),
     ("reboot", "Reboot"),
@@ -155,13 +156,6 @@ fn build_header() -> web_sys::Element {
 
     let left = dom::create_div();
     dom::set_class(&left, "header-left");
-
-    // Device name (populated when config arrives via WebSocket)
-    let name = dom::create_el("span");
-    name.set_id("device-name");
-    dom::set_class(&name, "header-device-name");
-    dom::append(&left, &name);
-
     dom::append(&header, &left);
 
     // Window control buttons — placed in a header-right container
@@ -170,6 +164,12 @@ fn build_header() -> web_sys::Element {
     dom::set_style(&right, "align-items", "center");
     dom::set_style(&right, "gap", "0px");
     dom::set_style(&right, "flex-shrink", "0");
+
+    // Device name (populated when config arrives via WebSocket)
+    let name = dom::create_el("span");
+    name.set_id("device-name");
+    dom::set_class(&name, "header-device-name");
+    dom::append(&right, &name);
 
     // Connection status dot (to the left of the hamburger)
     let dot = dom::create_el("span");
@@ -571,6 +571,7 @@ pub fn open_panel(id: &str) {
             "config" => "Configuration",
             "health" => "System Health",
             "crashes" => "Crash Log",
+            "logs" => "Logs",
             "update" => "Firmware Update",
             "reboot" => "Reboot",
             "about" => "About",

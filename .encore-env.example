@@ -1,0 +1,18 @@
+# Encore dev environment overrides (optional).
+#
+# Copy this file to `.encore-env` at the repo root and uncomment the
+# variables that apply to your setup. The `.encore-env` file is
+# gitignored — it's for your machine only and never committed.
+#
+# Scripts under scripts/device/ and scripts/kexec/ source this
+# automatically via scripts/common.sh.
+
+# Your speaker's address after it's joined your LAN.
+# Can be a DHCP-assigned IP, a static IP, or encore.local (mDNS).
+# Leave unset to default to the Encore AP IP (192.168.43.1), which
+# is what the speaker serves on first boot before WiFi setup.
+# export ENCORE_DEVICE_IP=192.168.1.42
+# export ENCORE_DEVICE_IP=encore.local
+
+# Override the root SSH password if you changed it from the default.
+# export ENCORE_SSH_PASS=your_password

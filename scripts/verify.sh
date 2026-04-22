@@ -16,16 +16,15 @@ if [ ! -f "$PATTERNS" ]; then
     echo ""
 else
     fail=0
+    # Only check tracked files — gitignored working-tree files won't be published.
+    tracked_files=$(cd "$REPO" && git ls-files \
+        '*.sh' '*.py' '*.rs' '*.toml' '*.conf*' '*.md' '*.html' '*.js' \
+        2>/dev/null | grep -vE '(\.verify-patterns|Makefile)')
+
     while IFS= read -r pattern || [ -n "$pattern" ]; do
         [ -z "$pattern" ] && continue
         case "$pattern" in \#*) continue;; esac
-        if grep -rn "$pattern" \
-            --include='*.sh' --include='*.py' --include='*.rs' \
-            --include='*.toml' --include='*.conf*' --include='*.md' \
-            --include='*.html' --include='*.js' \
-            "$REPO" 2>/dev/null \
-            | grep -v '\.verify-patterns' \
-            | grep -v 'Makefile'; then
+        if echo "$tracked_files" | (cd "$REPO" && xargs grep -Hn "$pattern" 2>/dev/null); then
             echo "FAIL: Found leak matching pattern"
             fail=1
         fi

@@ -1,5 +1,12 @@
 name: CI
 
+# Note on firmware artifacts: the `firmware` job builds the combined image
+# end-to-end as a CI smoke test, but intentionally does NOT upload the
+# resulting 83_IMAGE or rootfs.squashfs. Those outputs contain stock
+# Harman rootfs components and are not ours to redistribute. The build
+# is verification only; users run `make firmware` themselves against
+# their own stock image.
+
 on:
   workflow_dispatch:
   pull_request:
@@ -127,24 +134,14 @@ jobs:
       - name: Build firmware image
         run: sudo bash scripts/build/build_firmware.sh
 
-      - name: Verify build outputs
+      - name: Verify build outputs (not uploaded — contains stock rootfs)
         run: |
           ls -lh build/firmware/83_IMAGE
           ls -lh build/firmware/rootfs.squashfs
           echo "83_IMAGE size: $(wc -c < build/firmware/83_IMAGE) bytes"
           echo "rootfs.squashfs size: $(wc -c < build/firmware/rootfs.squashfs) bytes"
-
-      - name: Upload 83_IMAGE
-        uses: actions/upload-artifact@v4
-        with:
-          name: 83_IMAGE
-          path: build/firmware/83_IMAGE
-
-      - name: Upload rootfs.squashfs
-        uses: actions/upload-artifact@v4
-        with:
-          name: rootfs.squashfs
-          path: build/firmware/rootfs.squashfs
+          # Intentionally no upload-artifact step: the combined firmware
+          # contains Harman's rootfs and must not be redistributed.
 
   verify:
     name: Verify

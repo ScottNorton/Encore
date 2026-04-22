@@ -27,11 +27,14 @@ fn fnv_hash(s: &str) -> u64 {
 /// - `avg_rtt_us`: average round-trip time to all connected peers (microseconds)
 /// - `uptime_secs`: how long this speaker has been running
 /// - `peer_id`: unique identifier for deterministic tiebreaking
-pub fn election_score(avg_rtt_us: u64, uptime_secs: u64, peer_id: &str) -> u64 {
+/// - `has_audio`: whether this speaker has active audio sources
+pub fn election_score(avg_rtt_us: u64, uptime_secs: u64, peer_id: &str, has_audio: bool) -> u64 {
     let rtt_score = avg_rtt_us;
     let stability_bonus = uptime_secs.min(10_000) * 100; // up to 1M bonus reduction
     let tiebreak = fnv_hash(peer_id) % 1000;
-    rtt_score.saturating_sub(stability_bonus) + tiebreak
+    // Speakers without active audio get an overwhelming penalty so the audio source always wins
+    let audio_penalty = if has_audio { 0 } else { u64::MAX / 4 };
+    rtt_score.saturating_sub(stability_bonus) + tiebreak + audio_penalty
 }
 
 /// Tracks the state of an in-progress election.
@@ -264,23 +267,33 @@ mod tests {
 
     #[test]
     fn score_deterministic() {
-        let s1 = election_score(5000, 100, "peer-a");
-        let s2 = election_score(5000, 100, "peer-a");
+        let s1 = election_score(5000, 100, "peer-a", true);
+        let s2 = election_score(5000, 100, "peer-a", true);
         assert_eq!(s1, s2);
     }
 
     #[test]
     fn lower_rtt_wins() {
-        let good = election_score(1000, 100, "peer-a");
-        let bad = election_score(10000, 100, "peer-b");
+        let good = election_score(1000, 100, "peer-a", true);
+        let bad = election_score(10000, 100, "peer-b", true);
         assert!(good < bad, "good={} bad={}", good, bad);
     }
 
     #[test]
     fn uptime_bonus() {
-        let new = election_score(5000, 10, "peer-a");
-        let old = election_score(5000, 1000, "peer-a");
+        let new = election_score(5000, 10, "peer-a", true);
+        let old = election_score(5000, 1000, "peer-a", true);
         assert!(old < new, "old={} new={}", old, new);
+    }
+
+    #[test]
+    fn audio_source_always_wins() {
+        // Speaker with audio should always beat speaker without, regardless of RTT/uptime
+        let with_audio = election_score(50000, 10, "peer-z", true); // worst RTT, low uptime, late alphabet
+        let no_audio = election_score(100, 10000, "peer-a", false); // best RTT, high uptime, early alphabet
+        assert!(with_audio < no_audio, "with_audio={} no_audio={}", with_audio, no_audio);
+        // The no-audio penalty should be overwhelming
+        assert!(no_audio > u64::MAX / 8, "penalty should be huge, got {}", no_audio);
     }
 
     #[test]

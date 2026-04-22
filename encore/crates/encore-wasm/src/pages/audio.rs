@@ -39,6 +39,9 @@ pub fn render(container: &web_sys::Element) {
     // ── VU Meter ──
     render_vu_meter(container);
 
+    // ── Microphone Test ──
+    render_mic_test(container);
+
     // ── Audio Visualization ──
     render_visualization(container);
 
@@ -249,6 +252,88 @@ fn render_vu_meter(container: &web_sys::Element) {
     let vu_el: web_sys::Element = vu_canvas.into();
     dom::set_style(&vu_el, "width", "100%");
     dom::append(&card, &vu_el);
+
+    dom::append(container, &card);
+}
+
+// ─────────────────────── Microphone Test ───────────────────────
+
+fn render_mic_test(container: &web_sys::Element) {
+    let card = dom::create_div();
+    dom::set_class(&card, "card");
+
+    // Header row: title + mute indicator
+    let header = dom::create_div();
+    dom::set_class(&header, "flex justify-between items-center mb-8");
+
+    let title = dom::el("div", "card-title", Some("Microphone Test"));
+    dom::set_style(&title, "margin-bottom", "0");
+    dom::append(&header, &title);
+
+    let mute_hint = dom::el("span", "text-muted text-sm", Some("Mics muted"));
+    mute_hint.set_id("mic-mute-hint");
+    dom::set_style(&mute_hint, "display", "none");
+    dom::set_style(&mute_hint, "color", "var(--warning)");
+    dom::append(&header, &mute_hint);
+
+    dom::append(&card, &header);
+
+    let desc = dom::el("div", "text-muted text-sm mb-12", Some("Test the 7-mic beamformed array."));
+    dom::append(&card, &desc);
+
+    // Start/Stop button
+    let btn = dom::create_el("button");
+    btn.set_id("mic-test-btn");
+    dom::set_class(&btn, "btn btn-primary");
+    dom::set_text(&btn, "Start Test");
+    let cb = Closure::wrap(Box::new(|_: web_sys::Event| {
+        let testing = crate::state::with(|s| s.mic_testing);
+        if testing {
+            crate::ws::send_msg(&ClientMsg::StopMicTest);
+            crate::state::with_mut(|s| s.mic_testing = false);
+            if let Some(btn) = dom::get_el("mic-test-btn") {
+                dom::set_text(&btn, "Start Test");
+            }
+            if let Some(vu) = dom::get_el("mic-vu") {
+                dom::set_style(&vu, "display", "none");
+            }
+            if let Some(legend) = dom::get_el("mic-vu-legend") {
+                dom::set_style(&legend, "display", "none");
+            }
+        } else {
+            crate::ws::send_msg(&ClientMsg::StartMicTest);
+            crate::state::with_mut(|s| s.mic_testing = true);
+            if let Some(btn) = dom::get_el("mic-test-btn") {
+                dom::set_text(&btn, "Stop Test");
+            }
+            if let Some(vu) = dom::get_el("mic-vu") {
+                dom::set_style(&vu, "display", "block");
+            }
+            if let Some(legend) = dom::get_el("mic-vu-legend") {
+                dom::set_style(&legend, "display", "block");
+            }
+        }
+    }) as Box<dyn FnMut(_)>);
+    btn.add_event_listener_with_callback("click", cb.as_ref().unchecked_ref()).ok();
+    cb.forget();
+    dom::append(&card, &btn);
+
+    // VU canvas (hidden initially)
+    let (mic_canvas, _) = crate::graphics::create_canvas(320, 64);
+    mic_canvas.set_id("mic-vu");
+    let mic_el: web_sys::Element = mic_canvas.into();
+    dom::set_style(&mic_el, "width", "100%");
+    dom::set_style(&mic_el, "margin-top", "12px");
+    dom::set_style(&mic_el, "display", "none");
+    dom::append(&card, &mic_el);
+
+    // Legend (hidden initially)
+    let legend = dom::el("div", "text-muted text-sm", Some("Far-field (L) \u{00B7} Near-field (R)"));
+    legend.set_id("mic-vu-legend");
+    dom::set_style(&legend, "text-align", "center");
+    dom::set_style(&legend, "margin-top", "4px");
+    dom::set_style(&legend, "display", "none");
+    dom::append(&card, &legend);
 
     dom::append(container, &card);
 }
@@ -1094,6 +1179,29 @@ pub fn update() {
                     );
                 }
             }
+        }
+
+        // Mic VU meter (only when testing)
+        if s.mic_testing {
+            if let Some(canvas) = dom::get_el("mic-vu") {
+                if let Some(canvas) = canvas.dyn_ref::<web_sys::HtmlCanvasElement>() {
+                    if let Ok(Some(ctx)) = canvas.get_context("2d") {
+                        let ctx: web_sys::CanvasRenderingContext2d = ctx.unchecked_into();
+                        crate::graphics::vu_meter::draw_mic(
+                            &ctx, 320.0, 64.0,
+                            s.mic_left_rms, s.mic_right_rms,
+                            s.mic_left_peak, s.mic_right_peak,
+                        );
+                    }
+                }
+            }
+        }
+
+        // Mute indicator (show when testing + muted)
+        if let Some(hint) = dom::get_el("mic-mute-hint") {
+            let muted = s.dsp_info.as_ref().map(|d| d.mic_muted).unwrap_or(false);
+            let show = s.mic_testing && muted;
+            dom::set_style(&hint, "display", if show { "inline" } else { "none" });
         }
 
         // Spectrum analyzer

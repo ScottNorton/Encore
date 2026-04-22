@@ -2,8 +2,9 @@
 //!
 //! Followers send ClockSyncReq to the leader, who responds with timestamps.
 //! The follower computes the offset between its local clock and the leader's,
-//! using an exponential moving average for stability.
+//! using a rolling median filter for outlier rejection.
 
+use std::collections::VecDeque;
 use std::time::Instant;
 
 /// Boot-relative microsecond clock (monotonic).
@@ -14,25 +15,50 @@ pub fn now_us() -> u64 {
     epoch.elapsed().as_micros() as u64
 }
 
+/// Compute the median of a slice. Returns 0 for empty slices.
+fn median_i64(values: &[i64]) -> i64 {
+    if values.is_empty() {
+        return 0;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    sorted[sorted.len() / 2]
+}
+
+fn median_u64(values: &[u64]) -> u64 {
+    if values.is_empty() {
+        return 0;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    sorted[sorted.len() / 2]
+}
+
+/// Rolling median buffer capacity.
+const MEDIAN_CAPACITY: usize = 60;
+
 /// Tracks the clock offset between this speaker and a remote peer.
 pub struct ClockSync {
-    /// Estimated offset: remote_time = local_time + offset_us.
+    /// Rolling buffer of raw offset measurements.
+    offset_samples: VecDeque<i64>,
+    /// Rolling buffer of raw RTT measurements.
+    rtt_samples: VecDeque<u64>,
+    /// Current median offset: remote_time = local_time + offset_us.
     offset_us: i64,
-    /// Smoothed round-trip time in microseconds.
+    /// Current median RTT in microseconds.
     rtt_us: u64,
-    /// Number of samples collected.
+    /// Total number of samples processed.
     samples: u32,
-    /// EMA alpha for offset smoothing.
-    alpha: f64,
 }
 
 impl ClockSync {
     pub fn new() -> Self {
         Self {
+            offset_samples: VecDeque::with_capacity(MEDIAN_CAPACITY),
+            rtt_samples: VecDeque::with_capacity(MEDIAN_CAPACITY),
             offset_us: 0,
             rtt_us: 0,
             samples: 0,
-            alpha: 0.2,
         }
     }
 
@@ -51,18 +77,27 @@ impl ClockSync {
         let offset = ((t2 - t1) + (t3 - t4)) / 2;
         let rtt = ((t4 - t1) - (t3 - t2)).unsigned_abs();
 
-        if self.samples == 0 {
-            // First sample: use directly
-            self.offset_us = offset;
-            self.rtt_us = rtt;
-        } else {
-            // Exponential moving average
-            self.offset_us =
-                (self.alpha * offset as f64 + (1.0 - self.alpha) * self.offset_us as f64) as i64;
-            self.rtt_us =
-                (self.alpha * rtt as f64 + (1.0 - self.alpha) * self.rtt_us as f64) as u64;
+        // Reject measurements with RTT > 2x current median (asymmetric path)
+        if self.samples > 3 && self.rtt_us > 0 && rtt > self.rtt_us * 2 {
+            return;
         }
+
+        // Add to rolling buffers
+        if self.offset_samples.len() >= MEDIAN_CAPACITY {
+            self.offset_samples.pop_front();
+        }
+        if self.rtt_samples.len() >= MEDIAN_CAPACITY {
+            self.rtt_samples.pop_front();
+        }
+        self.offset_samples.push_back(offset);
+        self.rtt_samples.push_back(rtt);
         self.samples += 1;
+
+        // Compute medians
+        let offsets: Vec<i64> = self.offset_samples.iter().copied().collect();
+        let rtts: Vec<u64> = self.rtt_samples.iter().copied().collect();
+        self.offset_us = median_i64(&offsets);
+        self.rtt_us = median_u64(&rtts);
     }
 
     /// Current estimated offset: remote = local + offset.
@@ -82,7 +117,7 @@ impl ClockSync {
 
     /// Whether we've converged (enough samples for reasonable accuracy).
     pub fn converged(&self) -> bool {
-        self.samples >= 4
+        self.samples >= 3
     }
 
     /// Convert a remote timestamp to local time.
@@ -97,10 +132,12 @@ impl ClockSync {
 
     /// How often to send sync requests (microseconds).
     pub fn sync_interval_us(&self) -> u64 {
-        if self.samples < 16 {
-            2_000_000 // 2s during convergence
+        if self.samples < 8 {
+            500_000 // 500ms during early convergence
+        } else if self.samples < 20 {
+            1_000_000 // 1s during convergence
         } else {
-            10_000_000 // 10s steady-state
+            2_000_000 // 2s steady-state
         }
     }
 }
@@ -112,7 +149,6 @@ mod tests {
     #[test]
     fn zero_offset_zero_rtt() {
         let mut cs = ClockSync::new();
-        // Symmetric: T1=100, T2=100, T3=100, T4=100 → offset=0, rtt=0
         cs.process_response(100, 100, 100, 100);
         assert_eq!(cs.offset_us(), 0);
         assert_eq!(cs.rtt_us(), 0);
@@ -123,7 +159,6 @@ mod tests {
     fn positive_offset() {
         let mut cs = ClockSync::new();
         // Remote clock is 1000us ahead
-        // T1=0, T2=1000, T3=1000, T4=0 → offset = ((1000-0)+(1000-0))/2 = 1000
         cs.process_response(0, 1000, 1000, 0);
         assert_eq!(cs.offset_us(), 1000);
     }
@@ -132,7 +167,6 @@ mod tests {
     fn negative_offset() {
         let mut cs = ClockSync::new();
         // Remote clock is 500us behind
-        // T1=1000, T2=500, T3=500, T4=1000 → offset = ((500-1000)+(500-1000))/2 = -500
         cs.process_response(1000, 500, 500, 1000);
         assert_eq!(cs.offset_us(), -500);
     }
@@ -140,31 +174,31 @@ mod tests {
     #[test]
     fn rtt_calculation() {
         let mut cs = ClockSync::new();
-        // 2ms RTT: T1=0, T2=1001, T3=1001, T4=2000
-        // offset = ((1001-0)+(1001-2000))/2 = (1001-999)/2 = 1
-        // rtt = (2000-0)-(1001-1001) = 2000
+        // 2ms RTT
         cs.process_response(0, 1001, 1001, 2000);
         assert_eq!(cs.rtt_us(), 2000);
     }
 
     #[test]
-    fn ema_smoothing() {
+    fn median_rejects_outliers() {
         let mut cs = ClockSync::new();
-        // First sample: offset=1000
-        cs.process_response(0, 1000, 1000, 0);
+        // Feed 5 consistent samples at offset=1000
+        for _ in 0..5 {
+            cs.process_response(0, 1000, 1000, 0);
+        }
         assert_eq!(cs.offset_us(), 1000);
 
-        // Second sample: offset=2000, EMA with alpha=0.2
-        // expected = 0.2*2000 + 0.8*1000 = 400 + 800 = 1200
-        cs.process_response(0, 2000, 2000, 0);
-        assert_eq!(cs.offset_us(), 1200);
+        // Feed one massive outlier — median should barely change
+        cs.process_response(0, 50000, 50000, 0);
+        // With 6 samples [1000, 1000, 1000, 1000, 1000, 50000], median = 1000
+        assert_eq!(cs.offset_us(), 1000);
     }
 
     #[test]
     fn convergence() {
         let mut cs = ClockSync::new();
         assert!(!cs.converged());
-        for _ in 0..4 {
+        for _ in 0..3 {
             cs.process_response(0, 0, 0, 0);
         }
         assert!(cs.converged());
@@ -174,7 +208,6 @@ mod tests {
     fn remote_to_local_conversion() {
         let mut cs = ClockSync::new();
         cs.process_response(0, 500, 500, 0); // offset = 500
-        // remote 1500 → local 1500 - 500 = 1000
         assert_eq!(cs.remote_to_local(1500), 1000);
     }
 
@@ -182,17 +215,36 @@ mod tests {
     fn local_to_remote_conversion() {
         let mut cs = ClockSync::new();
         cs.process_response(0, 500, 500, 0); // offset = 500
-        // local 1000 → remote 1000 + 500 = 1500
         assert_eq!(cs.local_to_remote(1000), 1500);
     }
 
     #[test]
     fn sync_interval_decreases_after_convergence() {
         let mut cs = ClockSync::new();
-        assert_eq!(cs.sync_interval_us(), 2_000_000);
-        for _ in 0..16 {
+        assert_eq!(cs.sync_interval_us(), 500_000);
+        for _ in 0..8 {
             cs.process_response(0, 0, 0, 0);
         }
-        assert_eq!(cs.sync_interval_us(), 10_000_000);
+        assert_eq!(cs.sync_interval_us(), 1_000_000);
+        for _ in 0..12 {
+            cs.process_response(0, 0, 0, 0);
+        }
+        assert_eq!(cs.sync_interval_us(), 2_000_000);
+    }
+
+    #[test]
+    fn high_rtt_samples_rejected() {
+        let mut cs = ClockSync::new();
+        // Establish baseline: offset=1000, RTT=500
+        for _ in 0..5 {
+            cs.process_response(0, 1250, 1250, 500);
+        }
+        let offset_before = cs.offset_us();
+        let rtt_before = cs.rtt_us();
+
+        // Feed a sample with RTT=5000 (10x baseline) — should be rejected
+        cs.process_response(0, 3500, 3500, 5000);
+        assert_eq!(cs.offset_us(), offset_before);
+        assert_eq!(cs.rtt_us(), rtt_before);
     }
 }

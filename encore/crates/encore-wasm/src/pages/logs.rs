@@ -226,7 +226,3 @@ fn fetch_log_history() {
         }
     });
 }
-
-pub fn update() {
-    // Log output is updated via append_entries, not the general update cycle
-}

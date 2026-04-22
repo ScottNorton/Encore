@@ -62,6 +62,8 @@ pub struct AppState {
     pub boot_source: String,
     /// Cached WiFi connect result for reconnecting clients (set by network subsystem).
     pub wifi_result_cache: crate::network::WifiResultCache,
+    /// Cached network state for reconnecting clients (set by network subsystem).
+    pub network_state_cache: crate::network::NetworkStateCache,
 }
 
 /// Web server subsystem.
@@ -85,6 +87,8 @@ pub struct WebSubsystem {
     boot_source: String,
     /// Cached WiFi connect result (shared with network subsystem).
     wifi_result_cache: crate::network::WifiResultCache,
+    /// Cached network state (shared with network subsystem).
+    network_state_cache: crate::network::NetworkStateCache,
 }
 
 impl WebSubsystem {
@@ -101,6 +105,7 @@ impl WebSubsystem {
             safe_mode: false,
             boot_source: "unknown".to_string(),
             wifi_result_cache: Arc::new(std::sync::Mutex::new(None)),
+            network_state_cache: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -147,6 +152,11 @@ impl WebSubsystem {
     pub fn set_wifi_result_cache(&mut self, cache: crate::network::WifiResultCache) {
         self.wifi_result_cache = cache;
     }
+
+    /// Set the shared network state cache (from network subsystem).
+    pub fn set_network_state_cache(&mut self, cache: crate::network::NetworkStateCache) {
+        self.network_state_cache = cache;
+    }
 }
 
 #[async_trait::async_trait]
@@ -168,6 +178,7 @@ impl Subsystem for WebSubsystem {
             safe_mode: self.safe_mode,
             boot_source: self.boot_source.clone(),
             wifi_result_cache: self.wifi_result_cache.clone(),
+            network_state_cache: self.network_state_cache.clone(),
         });
 
         // Spawn 1Hz system status broadcaster

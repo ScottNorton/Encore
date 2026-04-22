@@ -9,10 +9,12 @@ use std::collections::HashMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tracing::{info, trace, warn};
 
-/// TCP listen port for group mesh connections.
+/// TCP listen port for group mesh control connections.
 pub const GROUP_PORT: u16 = 48200;
+/// UDP port for group audio streaming (fire-and-forget, no backpressure).
+pub const GROUP_AUDIO_PORT: u16 = 48201;
 
 /// Information about a connected peer.
 #[derive(Debug, Clone)]
@@ -209,17 +211,15 @@ impl PeerManager {
     }
 
     /// Broadcast a packet to all connected peers.
+    /// Skips peers with full write channels — health checks handle dead peers.
     pub fn broadcast(&mut self, packet: &GroupPacket) {
         self.seq = self.seq.wrapping_add(1);
         let data = wire::encode(packet, self.seq);
-        self.writers.retain(|id, writer| {
+        for (id, writer) in self.writers.iter() {
             if writer.tx.try_send(data.clone()).is_err() {
-                warn!("Group: write backpressure to peer {}, dropping", id);
-                false
-            } else {
-                true
+                trace!("Group: skipped packet to peer {} (backpressure)", id);
             }
-        });
+        }
     }
 
     /// Send a packet to a specific peer. Returns false if peer not found.
@@ -235,6 +235,11 @@ impl PeerManager {
     /// Number of connected peers.
     pub fn peer_count(&self) -> usize {
         self.writers.len()
+    }
+
+    /// Get the set of connected peer IDs (for iterating without borrow conflicts).
+    pub fn connected_peer_ids(&self) -> Vec<String> {
+        self.writers.keys().cloned().collect()
     }
 }
 
@@ -299,6 +304,13 @@ async fn handle_connection(
     };
     let peer_channel = peer_info.1;
 
+    // Reject self-connections (mDNS can discover our own service)
+    if peer_id == local_id {
+        info!("Group: dropping self-connection at {} [{}]",
+              address, if is_initiator { "outbound" } else { "inbound" });
+        return;
+    }
+
     info!(
         "Group: handshake complete with {} ({}) at {} [{}]",
         peer_name,
@@ -307,8 +319,24 @@ async fn handle_connection(
         if is_initiator { "outbound" } else { "inbound" }
     );
 
+    // Duplicate connection resolution: when both sides connect simultaneously,
+    // only the connection initiated by the smaller peer_id survives.
+    // The inbound side (larger peer_id) drops its inbound if it also initiated outbound.
+    if !is_initiator && local_id < peer_id {
+        // We have the smaller ID, so we should be the initiator.
+        // Drop this inbound — our outbound will be the canonical connection.
+        info!("Group: dropping duplicate inbound from {} (we should be initiator)", peer_id);
+        return;
+    }
+    if is_initiator && local_id >= peer_id {
+        // We have the larger ID, so we should NOT be the initiator.
+        // This shouldn't happen with the connect_to_peer guard, but defend against it.
+        info!("Group: dropping outbound to {} (they should be initiator)", peer_id);
+        return;
+    }
+
     // Set up write channel
-    let (write_tx, mut write_rx) = mpsc::channel::<Vec<u8>>(128);
+    let (write_tx, mut write_rx) = mpsc::channel::<Vec<u8>>(512);
     let peer_writer = PeerWriter { tx: write_tx };
 
     // Notify group subsystem of connection (includes writer for PeerManager)

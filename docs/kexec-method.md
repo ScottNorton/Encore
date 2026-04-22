@@ -382,8 +382,8 @@ bash scripts/build/build_kexec.sh tools    # kexec-tools only
 
 ### Upload to device
 ```bash
-# From WSL:
-DEVICE=192.168.43.1  # or 192.168.7.235
+# From WSL (or just use scripts/kexec/deploy_kexec.sh which handles this):
+DEVICE="${ENCORE_DEVICE_IP:-192.168.43.1}"  # AP default; set .encore-env for LAN IP
 SSH="sshpass -p ridiculous ssh -o HostKeyAlgorithms=+ssh-rsa \
   -o PubkeyAcceptedKeyTypes=+ssh-rsa -o StrictHostKeyChecking=no root@$DEVICE"
 

@@ -188,6 +188,9 @@ pub enum AudioCmd {
     DspMemoryDump { start_page: u16, num_pages: u16, reply: tokio::sync::oneshot::Sender<anyhow::Result<Vec<u8>>> },
     DspDumpToFile { path: String, reply: tokio::sync::oneshot::Sender<anyhow::Result<usize>> },
     DspPollEvents { reply: tokio::sync::oneshot::Sender<anyhow::Result<Vec<String>>> },
+    // Mic test
+    StartMicTest,
+    StopMicTest,
 }
 
 /// Handles returned when registering an audio source.
@@ -220,6 +223,8 @@ pub struct AudioSubsystem {
     standby_timeout_secs: u32,
     /// Whether to power-gate the DSP in Standby (adds ~3.5s resume).
     dsp_power_gate: bool,
+    /// Shared flag: mic test active (mic monitor task reads this).
+    mic_test_active: Arc<AtomicBool>,
 }
 
 impl AudioSubsystem {
@@ -242,6 +247,7 @@ impl AudioSubsystem {
             idle_timeout_secs: 5,
             standby_timeout_secs: 60,
             dsp_power_gate: false,
+            mic_test_active: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -268,6 +274,11 @@ impl AudioSubsystem {
         let slot = MixerSlot::new();
         self.sources.push(slot.clone());
         AudioSource { slot }
+    }
+
+    /// Get a clone of the mic test active flag (shared with mic monitor task).
+    pub fn mic_test_flag(&self) -> Arc<AtomicBool> {
+        self.mic_test_active.clone()
     }
 
     /// Register a capture consumer for a specific mic channel.
@@ -307,27 +318,30 @@ impl AudioSubsystem {
         });
     }
 
-    /// Transition: Active → Idle (mute AMP, keep DAC/PCM active for fast resume).
-    fn transition_to_idle(&self, io: &mut IoExpander) {
-        info!("Audio: Active → Idle (muting AMP)");
-        io.mute_amp().ok();
+    /// Transition: Active → Idle.
+    ///
+    /// Stock firmware never mutes amp/DAC after silence — it stays fully
+    /// active at all times. We keep the state for dashboard reporting but
+    /// do NOT touch hardware (no amp mute, no DAC standby). This matches
+    /// stock behavior and avoids the TAS5756M standby register (0x02)
+    /// which the stock firmware never writes.
+    fn transition_to_idle(&self, _io: &mut IoExpander) {
+        info!("Audio: Active → Idle");
         self.bridge.set_state(AudioPowerState::Idle);
         self.broadcast_power_state();
     }
 
-    /// Transition: Idle → Standby (DAC standby, optionally power-gate DSP).
+    /// Transition: Idle → Standby.
     ///
-    /// The mixer thread keeps writing silence to maintain WM8904 I2S clocks —
-    /// the ADSP-21489 SHARC requires continuous I2S input to keep generating
-    /// output to the DAC. Closing the PCM kills the clocks and the DSP gets
-    /// stuck, so we only park the mixer when DSP power gating is enabled
-    /// (which requires a full firmware re-upload on resume anyway).
-    fn transition_to_standby(&self, io: &mut IoExpander, dac: &mut Dac, dsp: &mut Dsp) {
-        info!("Audio: Idle → Standby (DAC standby)");
-        io.mute_dac().ok();
-        dac.enter_standby().ok();
+    /// DOES NOT put the DAC in standby or mute amp/DAC. Stock firmware
+    /// never uses TAS5756M register 0x02 (power/standby), and writing it
+    /// can leave the DAC in a state it cannot recover from. We only
+    /// power-gate the DSP if explicitly configured.
+    fn transition_to_standby(&self, io: &mut IoExpander, _dac: &mut Dac, dsp: &mut Dsp) {
+        info!("Audio: Idle → Standby");
 
         if self.dsp_power_gate {
+            io.mute_dac().ok();
             self.bridge.request_park(); // close PCM only when DSP is gated
             io.dsp_power_off().ok();
             dsp.reset_fw_state();
@@ -338,14 +352,14 @@ impl AudioSubsystem {
         self.broadcast_power_state();
     }
 
-    /// Transition: Idle/Standby → Active (full resume with stock-matching timing).
+    /// Transition: Idle/Standby → Active (full resume).
     async fn transition_to_active(&self, io: &mut IoExpander, dac: &mut Dac, dsp: &mut Dsp) {
         let prev = self.bridge.state();
         info!("Audio: {} → Active", prev.as_str());
 
-        if prev == AudioPowerState::Standby {
+        if prev == AudioPowerState::Standby && self.dsp_power_gate {
             // Re-power DSP if it was gated (mixer is parked, PCM closed)
-            if self.dsp_power_gate && self.bridge.is_parked() {
+            if self.bridge.is_parked() {
                 io.dsp_power_on().ok();
                 if let Err(e) = dsp.upload_firmware(io) {
                     warn!("Audio: DSP firmware re-upload failed: {}", e);
@@ -356,15 +370,13 @@ impl AudioSubsystem {
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             }
 
-            // Exit DAC standby
-            dac.exit_standby().ok();
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            // Unmute DAC after DSP restore
+            io.unmute_dac().ok();
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
 
-        // Stock unmute sequence: DAC first, 100ms, AMP second
-        io.unmute_dac().ok();
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        io.unmute_amp().ok();
+        // Ensure DAC is active (undo any prior standby from older firmware)
+        dac.exit_standby().ok();
 
         self.bridge.set_state(AudioPowerState::Active);
         self.bridge.silence_count.store(0, Ordering::Release);
@@ -398,19 +410,15 @@ impl Subsystem for AudioSubsystem {
         let mut dac = Dac::open().context("DAC init failed")?;
         dac.init()?;
 
-        // NOTE: dac.init_eq() intentionally NOT called at boot.
-        // Python never selects HybridFlow 6 or programs biquads, and audio works.
-        // HybridFlow selection may put the DAC's miniDSP into a broken state.
-        // EQ can be enabled later via dashboard command if needed.
+        // NOTE: dac.init_eq() NOT called at boot — selecting HybridFlow 6
+        // causes a CPU hang on some boots (I2C bus contention with DSP).
+        // DAC EQ can be enabled at runtime via dashboard command.
 
         // Enable the SoC audio PLL/MCLK early.
         Dsp::enable_audio_clock()?;
 
-        // Upload DSP firmware BEFORE opening PCM.
-        // In the working stock/Python boot, the PCM device is NOT open during
-        // DSP upload — librespot opens it afterward. Opening PCM activates the
-        // WM8904 as I2S master, which may conflict with the DSP configuring its
-        // own I2S interface during firmware boot.
+        // Upload DSP firmware BEFORE opening PCM (matches stock boot order).
+        // AVIO registers are now read-modify-write to preserve kernel's I2S routing.
         let mut dsp = Dsp::open().context("DSP init failed")?;
         dsp.upload_firmware(&mut io)?;
 
@@ -427,11 +435,6 @@ impl Subsystem for AudioSubsystem {
             }
         };
 
-        // NOTE: GPIO flow control (pins 4/12/13/15) NOT initialized at boot.
-        // These pins are DSP SPI flow control and are UNVERIFIED — exporting them
-        // at boot can peg a CPU core and freeze the MCU. GPIO init is available
-        // via the debug REST API (/api/debug/gpio/*) for manual testing only.
-
         // Configure WM8904 codec mixer levels before unmuting.
         init_wm8904_mixer();
 
@@ -439,16 +442,17 @@ impl Subsystem for AudioSubsystem {
         info!("Audio: waiting 2s for DSP boot...");
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-        // Set DSP volume once at boot (matches stock Python: dsp.set_volume(70)).
-        // Runtime volume is controlled via DAC registers, not DSP SPI commands.
-        if let Err(e) = dsp.set_volume(70) {
+        // Set DSP volume to maximum — the DSP's internal processing (crossover,
+        // speaker EQ, bass enhancement) works best at full scale. Volume control
+        // is handled downstream by the DAC digital registers (0x3D/0x3E).
+        if let Err(e) = dsp.set_volume(100) {
             warn!("Audio: initial DSP volume set failed (non-fatal): {}", e);
         }
-        io.unmute()?;
-        info!("Audio: hardware initialized, unmuted (DSP volume=70)");
 
-        // NOW open PCM — after DSP is fully booted and hardware is configured.
-        // This mirrors the stock boot where librespot opens PCM after all init.
+        io.unmute()?;
+        info!("Audio: hardware initialized, unmuted (DSP volume=100)");
+
+        // Open PCM after DSP is fully booted (matches stock boot order).
         let mut pcm = AlsaPcm::open(&PcmConfig::default())
             .context("PCM open failed")?;
 
@@ -556,10 +560,14 @@ impl Subsystem for AudioSubsystem {
                         continue;
                     }
 
-                    // In Standby, check source slots for new audio
+                    // Check if any source is actively streaming (e.g., BT connected).
+                    // This prevents power-down transitions while a source is active,
+                    // even if the mixer hasn't seen data yet (codec warmup latency).
+                    let any_source_active = self.sources.iter().any(|s| s.is_active());
+
+                    // In Standby, wake up if any source is active
                     if current_state == AudioPowerState::Standby {
-                        let has_audio = self.sources.iter().any(|s| s.is_active() && s.available() > 0);
-                        if has_audio {
+                        if any_source_active {
                             self.transition_to_active(&mut io, &mut dac, &mut dsp).await;
                             idle_elapsed_secs = 0;
                         }
@@ -571,16 +579,23 @@ impl Subsystem for AudioSubsystem {
 
                     match current_state {
                         AudioPowerState::Active => {
-                            if silence_secs >= self.idle_timeout_secs {
+                            // Don't go Idle if any source is actively streaming
+                            if silence_secs >= self.idle_timeout_secs && !any_source_active {
                                 self.transition_to_idle(&mut io);
                                 idle_elapsed_secs = 0;
                             }
                         }
                         AudioPowerState::Idle => {
-                            idle_elapsed_secs += 1;
-                            if idle_elapsed_secs >= self.standby_timeout_secs {
-                                self.transition_to_standby(&mut io, &mut dac, &mut dsp);
+                            if any_source_active {
+                                // Source became active while in Idle — wake up
+                                self.transition_to_active(&mut io, &mut dac, &mut dsp).await;
                                 idle_elapsed_secs = 0;
+                            } else {
+                                idle_elapsed_secs += 1;
+                                if idle_elapsed_secs >= self.standby_timeout_secs {
+                                    self.transition_to_standby(&mut io, &mut dac, &mut dsp);
+                                    idle_elapsed_secs = 0;
+                                }
                             }
                         }
                         AudioPowerState::Standby => {} // handled above
@@ -723,6 +738,14 @@ impl Subsystem for AudioSubsystem {
                             });
                             let _ = reply.send(result);
                         }
+                        Some(AudioCmd::StartMicTest) => {
+                            self.mic_test_active.store(true, Ordering::Relaxed);
+                            info!("Audio: mic test started");
+                        }
+                        Some(AudioCmd::StopMicTest) => {
+                            self.mic_test_active.store(false, Ordering::Relaxed);
+                            info!("Audio: mic test stopped");
+                        }
                         None => {
                             info!("Audio: command channel closed");
                             break;
@@ -768,12 +791,11 @@ impl Subsystem for AudioSubsystem {
 /// Set WM8904 codec ALSA mixer controls to optimal levels.
 ///
 /// The SoC's I2S output goes through a WM8904 codec before reaching the
-/// DAC/amplifier chain. The kernel defaults are far too low:
+/// DAC/amplifier chain. The kernel defaults are far too low,
+///  but current setup could be too loud for the hardware:
 ///   Master:    16/100 → 90/100 (near 0 dB)
 ///   Headphone: 34/63  → 50/63  (-7 dB)
 ///   DAC OSRx2: off    → on     (2x oversampling, better quality)
-///
-/// Uses direct ALSA control ioctls on /dev/snd/controlC1 — no amixer binary.
 fn init_wm8904_mixer() {
     let ctl = match AlsaCtl::open(1) {
         Ok(c) => c,
@@ -968,6 +990,7 @@ fn mixer_thread(
 
     let mut pcm: Option<AlsaPcm> = Some(pcm);
     let mut mix_buf = vec![0i32; samples_per_period];
+    let mut logged_first_audio = false;
 
     // Software DRC processor
     let mut drc = DrcProcessor::new();
@@ -1054,6 +1077,16 @@ fn mixer_thread(
             if drc_sync_counter >= LEVELS_INTERVAL {
                 drc.sync_params(&shared_drc);
                 drc_sync_counter = 0;
+            }
+
+            // Log first non-silent mixer output for diagnostics
+            if !logged_first_audio {
+                let max_abs = mix_buf.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
+                if max_abs > 0 {
+                    info!("Mixer: first audio output, max_abs={} ({:.1}dBFS)",
+                        max_abs, 20.0 * (max_abs as f64 / i32::MAX as f64).log10());
+                    logged_first_audio = true;
+                }
             }
 
             // Apply software DRC (in-place, before VU metering)

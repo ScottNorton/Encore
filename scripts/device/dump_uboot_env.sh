@@ -11,9 +11,10 @@
 #   mtd14 = senv (secure environment, 128KB)
 
 set -euo pipefail
+. "$(dirname "$0")/../common.sh"
 
-DEVICE_IP="${1:-192.168.7.235}"
-SSH="sshpass -p ridiculous ssh -o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedKeyTypes=+ssh-rsa -o StrictHostKeyChecking=no root@${DEVICE_IP}"
+DEVICE_IP="${1:-$ENCORE_DEVICE_IP}"
+SSH="sshpass -p $ENCORE_SSH_PASS ssh $ENCORE_SSH_OPTS root@$DEVICE_IP"
 OUTDIR="$(cd "$(dirname "$0")/../.." && pwd)/firmware/env_dumps"
 mkdir -p "$OUTDIR"
 

@@ -1,12 +1,11 @@
-//! Bluetooth A2DP sink subsystem — pure kernel interface, no BlueZ/D-Bus.
+//! Bluetooth A2DP sink subsystem - pure interface
 //!
 //! Manages the entire Bluetooth lifecycle using three kernel sockets:
 //! 1. Management API (HCI channel 3) — adapter config, pairing, link keys
 //! 2. SDP server (L2CAP PSM 1) — advertises A2DP Sink service record
 //! 3. AVDTP (L2CAP PSM 25) — codec negotiation and media transport
 //!
-//! Incoming A2DP audio is decoded (RTP → SBC/aptX/aptX HD → PCM) and pushed
-//! into a MixerSlot for playback.
+//! Incoming A2DP audio is decoded (RTP → SBC/aptX/aptX HD → PCM) and pushed into a MixerSlot for playback.
 
 #[cfg(target_os = "linux")]
 mod aptx;
@@ -134,6 +133,14 @@ impl Subsystem for BluetoothSubsystem {
             if let Err(e) = wait_for_hci().await {
                 warn!("Bluetooth: hci0 not found ({}), continuing anyway", e);
             }
+        }
+
+        // ── Phase 1.5: Unblock rfkill, bring adapter UP, set device class ──
+        #[cfg(target_os = "linux")]
+        {
+            unblock_bt_rfkill().await; // This may not affect states anymore
+            hci_dev_up().await;
+            set_device_class_hci();
         }
 
         // ── Phase 2: Management socket — configure adapter ──
@@ -396,6 +403,168 @@ impl BluetoothSubsystem {
 
 // ── Phase 1 helpers: hardware infrastructure setup ──
 
+/// Unblock Bluetooth rfkill if it's soft-blocked.
+/// The Marvell bt8xxx driver registers an rfkill device that starts blocked.
+/// rfkill sysfs: state=0 means blocked, state=1 means unblocked.
+/// soft=0 means not soft-blocked, soft=1 means soft-blocked.
+#[cfg(target_os = "linux")]
+async fn unblock_bt_rfkill() { // still unsure if this is affective anymore
+    let Ok(entries) = std::fs::read_dir("/sys/class/rfkill") else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let type_path = path.join("type");
+        if let Ok(t) = std::fs::read_to_string(&type_path) {
+            if t.trim() == "bluetooth" {
+                // Read current state for logging
+                let state_before = std::fs::read_to_string(path.join("state"))
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                let soft_before = std::fs::read_to_string(path.join("soft"))
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                info!(
+                    "Bluetooth: rfkill {} before: state={} soft={}",
+                    path.display(),
+                    state_before,
+                    soft_before
+                );
+
+                // Clear soft block by writing "0" to the soft file
+                let soft_path = path.join("soft");
+                if std::fs::write(&soft_path, "0").is_err() {
+                    // Fallback: write "1" to state (1 = unblock)
+                    let _ = std::fs::write(path.join("state"), "1");
+                }
+
+                // Brief delay for rfkill state to settle
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+                // Verify
+                let state_after = std::fs::read_to_string(path.join("state"))
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                let soft_after = std::fs::read_to_string(path.join("soft"))
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                info!(
+                    "Bluetooth: rfkill {} after: state={} soft={}",
+                    path.display(),
+                    state_after,
+                    soft_after
+                );
+
+                if state_after == "1" {
+                    info!("Bluetooth: rfkill unblocked successfully");
+                } else {
+                    warn!("Bluetooth: rfkill still blocked after unblock attempt");
+                }
+            }
+        }
+    }
+}
+
+/// Set the Bluetooth Class of Device via raw HCI command.
+/// The management API SET_DEV_CLASS doesn't work on kernel 3.8.13,
+/// so we send HCI Write_Class_of_Device (opcode 0x0C24) directly.
+/// CoD 0x240428 = Audio/Video major class, Loudspeaker minor, Rendering+Audio service.
+#[cfg(target_os = "linux")]
+fn set_device_class_hci() {
+    use std::os::fd::FromRawFd;
+
+    // Open raw HCI socket bound to hci0 (channel 0 = HCI_CHANNEL_RAW)
+    let fd = unsafe { libc::socket(l2cap::AF_BLUETOOTH, libc::SOCK_RAW, l2cap::BTPROTO_HCI) };
+    if fd < 0 {
+        warn!("Bluetooth: failed to create HCI raw socket for CoD");
+        return;
+    }
+
+    let addr = l2cap::SockaddrHci {
+        hci_family: l2cap::AF_BLUETOOTH as u16,
+        hci_dev: 0, // hci0
+        hci_channel: 0, // HCI_CHANNEL_RAW
+    };
+
+    let ret = unsafe {
+        libc::bind(
+            fd,
+            &addr as *const l2cap::SockaddrHci as *const libc::sockaddr,
+            std::mem::size_of::<l2cap::SockaddrHci>() as libc::socklen_t,
+        )
+    };
+    if ret < 0 {
+        let e = std::io::Error::last_os_error();
+        warn!("Bluetooth: failed to bind HCI raw socket: {}", e);
+        unsafe { libc::close(fd) };
+        return;
+    }
+
+    // HCI command: Write_Class_of_Device (OGF=0x03, OCF=0x0024, opcode=0x0C24)
+    // CoD: 0x240428 → bytes [0x28, 0x04, 0x24] (little-endian)
+    let cmd: [u8; 7] = [
+        0x01,       // HCI command packet type
+        0x24, 0x0C, // Opcode 0x0C24 (little-endian)
+        0x03,       // Parameter length
+        0x28,       // CoD byte 0: minor=Loudspeaker(0x0A<<2=0x28)
+        0x04,       // CoD byte 1: major=Audio/Video(0x04)
+        0x24,       // CoD byte 2: service=Rendering(0x04)|Audio(0x20)=0x24
+    ];
+
+    let n = unsafe {
+        libc::write(fd, cmd.as_ptr() as *const libc::c_void, cmd.len())
+    };
+
+    if n == cmd.len() as isize {
+        info!("Bluetooth: Class of Device set to 0x240428 (Audio/Loudspeaker)");
+    } else if n < 0 {
+        let e = std::io::Error::last_os_error();
+        warn!("Bluetooth: Write_Class_of_Device failed: {}", e);
+    } else {
+        warn!("Bluetooth: Write_Class_of_Device short write: {}/{}", n, cmd.len());
+    }
+
+    unsafe { libc::close(fd) };
+}
+
+/// Bring hci0 UP via HCIDEVUP ioctl.
+/// The bt8xxx vendor driver creates the HCI adapter but doesn't bring it up.
+/// On this old kernel (3.8.13), the management API SET_POWERED doesn't
+/// reliably call hci_dev_open(), so we do it explicitly.
+#[cfg(target_os = "linux")]
+async fn hci_dev_up() {
+    use std::os::fd::FromRawFd;
+
+    // HCIDEVUP ioctl number on ARM: _IOW('H', 201, int) = 0x400448C9
+    const HCIDEVUP: libc::c_int = 0x400448C9u32 as libc::c_int;
+
+    let fd = unsafe { libc::socket(l2cap::AF_BLUETOOTH, libc::SOCK_RAW, l2cap::BTPROTO_HCI) };
+    if fd < 0 {
+        warn!("Bluetooth: failed to create HCI control socket");
+        return;
+    }
+    let _owned = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
+
+    let ret = unsafe { libc::ioctl(fd, HCIDEVUP, 0 as libc::c_int) };
+    if ret < 0 {
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() == Some(libc::EALREADY) {
+            info!("Bluetooth: hci0 already UP");
+        } else {
+            warn!("Bluetooth: HCIDEVUP failed: {} — adapter may need management API power-on", err);
+        }
+    } else {
+        info!("Bluetooth: hci0 brought UP via ioctl");
+    }
+
+    // Give the adapter time to initialize
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+}
+
 /// Ensure bt8xxx.ko is loaded. If not, derive BT MAC from WiFi MAC and insmod.
 #[cfg(target_os = "linux")]
 async fn ensure_bt_module_loaded() -> Result<()> {
@@ -418,6 +587,8 @@ async fn ensure_bt_module_loaded() -> Result<()> {
     let output = tokio::process::Command::new("insmod")
         .arg(BT_MODULE_PATH)
         .arg(format!("bt_mac={}", bt_mac))
+        .arg("fw_name=mrvl/sd8887_bt_a2_new.bin")
+        .arg("bt_fw_serial=0")
         .output()
         .await
         .context("failed to run insmod")?;

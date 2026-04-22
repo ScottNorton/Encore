@@ -88,3 +88,8 @@ fi
 
 chmod 0600 ${CONFIG_FILE}
 chown wifi ${CONFIG_FILE}
+
+# Tell wpa_supplicant to re-read its config — it may have started before
+# /lsync was mounted (init.rc starts it early), so the initial config read
+# may have failed or used stale data.
+wpa_cli -i wlan0 reconfigure >/dev/null 2>&1 || true

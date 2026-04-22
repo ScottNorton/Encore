@@ -205,14 +205,51 @@ pub fn api_origin() -> String {
 
 /// Check if running as a standalone app (not served from the speaker).
 pub fn is_standalone() -> bool {
+    has_tauri() || get_local("encore_speaker_host").is_some()
+}
+
+/// Check if the Tauri runtime is available.
+pub fn has_tauri() -> bool {
     let w = window();
     let w_ref: &wasm_bindgen::JsValue = w.as_ref();
     if let Ok(tauri) = js_sys::Reflect::get(w_ref, &"__TAURI__".into()) {
-        if !tauri.is_undefined() && !tauri.is_null() {
-            return true;
+        !tauri.is_undefined() && !tauri.is_null()
+    } else {
+        false
+    }
+}
+
+/// Invoke a Tauri command by name. Returns the result, or None on error.
+pub async fn tauri_invoke(cmd: &str) -> Option<wasm_bindgen::JsValue> {
+    let code = format!("window.__TAURI__.core.invoke('{}')", cmd);
+    let promise: js_sys::Promise = js_sys::eval(&code).ok()?.dyn_into().ok()?;
+    wasm_bindgen_futures::JsFuture::from(promise).await.ok()
+}
+
+/// Discover speakers via Tauri mDNS backend. Returns (name, host_ip) pairs.
+pub async fn tauri_discover_speakers() -> Vec<(String, String)> {
+    let Some(result) = tauri_invoke("discover_speakers").await else {
+        return Vec::new();
+    };
+    let Some(arr) = result.dyn_ref::<js_sys::Array>() else {
+        return Vec::new();
+    };
+    let mut speakers = Vec::new();
+    for i in 0..arr.length() {
+        let item = arr.get(i);
+        let name = js_sys::Reflect::get(&item, &"name".into())
+            .ok()
+            .and_then(|v| v.as_string())
+            .unwrap_or_default();
+        let host = js_sys::Reflect::get(&item, &"host".into())
+            .ok()
+            .and_then(|v| v.as_string())
+            .unwrap_or_default();
+        if !host.is_empty() {
+            speakers.push((name, host));
         }
     }
-    get_local("encore_speaker_host").is_some()
+    speakers
 }
 
 /// Check if running as a Tauri desktop app (not mobile, not browser).

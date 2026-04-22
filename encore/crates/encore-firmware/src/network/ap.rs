@@ -15,7 +15,7 @@
 
 use anyhow::Result;
 use std::process::Command;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use tracing::{info, warn};
 
 const AP_SCRIPT: &str = "/sbin/start_ap.sh";
@@ -30,8 +30,37 @@ const DNSMASQ_PID: &str = "/tmp/dnsmasq-ap.pid";
 static HOSTAPD_FAILURES: AtomicU8 = AtomicU8::new(0);
 const MAX_HOSTAPD_RETRIES: u8 = 2;
 
+/// Whether we're running in uaputl mode (only set after hostapd exhausts retries).
+/// When false, is_ap_running() skips the uaputl check (which can hang the driver).
+static USING_UAPUTL: AtomicBool = AtomicBool::new(false);
+
+/// Guard against concurrent AP restarts. The monitor loop skips AP health
+/// checks while this is true, preventing races with startup or resets.
+static AP_RESTARTING: AtomicBool = AtomicBool::new(false);
+
+/// Check if an AP restart is in progress. Used by the monitor loop to
+/// skip AP health checks and avoid spawning duplicate restarts.
+pub fn is_restarting() -> bool {
+    AP_RESTARTING.load(Ordering::Relaxed)
+}
+
+/// Set the restarting flag directly. Used by the TX-error reset path
+/// which needs to hold the flag across stop + reset + start.
+pub fn set_restarting(v: bool) {
+    AP_RESTARTING.store(v, Ordering::SeqCst);
+}
+
+/// Start AP without acquiring the restart lock. Caller must hold it.
+pub fn ensure_ap_unlocked() -> Result<()> {
+    if is_ap_running() {
+        return Ok(());
+    }
+    ensure_ap_inner()
+}
+
 /// Check if the AP is currently running.
-/// Checks hostapd first (primary), then uaputl BSS status (fallback).
+/// Checks hostapd first (primary). Only checks uaputl if we're in uaputl mode
+/// (uaputl.exe can hang the Marvell driver during interface resets).
 pub fn is_ap_running() -> bool {
     // Primary: hostapd alive AND p2p0 has IP
     let hostapd_alive = Command::new("pgrep")
@@ -44,8 +73,13 @@ pub fn is_ap_running() -> bool {
         return true;
     }
 
-    // Fallback: check if uAP firmware mode is active
-    is_uaputl_bss_started() && interface_has_ip(AP_IFACE, AP_IP)
+    // Only check uaputl if we've actually entered uaputl mode.
+    // Calling uaputl.exe on a freshly-reset interface can hang indefinitely.
+    if USING_UAPUTL.load(Ordering::Relaxed) {
+        return is_uaputl_bss_started() && interface_has_ip(AP_IFACE, AP_IP);
+    }
+
+    false
 }
 
 /// Check if the Marvell uAP BSS is started via uaputl.
@@ -79,30 +113,90 @@ pub fn wait_for_ap(timeout_secs: u32) -> bool {
 }
 
 /// Ensure AP is running. Tries hostapd first, falls back to uaputl.
-/// NOTE: Only call this from the monitoring loop, NOT at startup.
-/// At startup, use wait_for_ap() to avoid racing with the boot script.
+/// Uses AP_RESTARTING flag to prevent concurrent restarts.
 pub fn ensure_ap() -> Result<()> {
     if is_ap_running() {
         return Ok(());
     }
 
+    // Acquire restart lock — if another thread is already restarting, bail out.
+    if AP_RESTARTING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        info!("AP: restart already in progress, skipping");
+        return Ok(());
+    }
+
+    // Re-check after acquiring lock (may have come up while we waited)
+    if is_ap_running() {
+        AP_RESTARTING.store(false, Ordering::SeqCst);
+        return Ok(());
+    }
+
+    let result = ensure_ap_inner();
+    AP_RESTARTING.store(false, Ordering::SeqCst);
+    result
+}
+
+/// Inner AP startup logic. Caller must hold AP_RESTARTING lock.
+fn ensure_ap_inner() -> Result<()> {
     let failures = HOSTAPD_FAILURES.load(Ordering::Relaxed);
     if failures < MAX_HOSTAPD_RETRIES {
-        // Try hostapd (primary)
-        info!("AP: starting via {} (attempt {})", AP_SCRIPT, failures + 1);
-        let status = Command::new(AP_SCRIPT)
-            .status()
-            .map_err(|e| anyhow::anyhow!("failed to run {}: {}", AP_SCRIPT, e))?;
+        // Start hostapd directly — do NOT delegate to start_ap.sh because
+        // it exits early when Encore is running (we ARE Encore).
+        info!("AP: starting hostapd (attempt {})", failures + 1);
 
-        if !status.success() {
-            warn!("AP: {} exited with {}", AP_SCRIPT, status);
+        let (ap_ssid, ap_pass) = read_ap_credentials();
+        let config = format!(
+            "interface={iface}\n\
+             driver=nl80211\n\
+             ssid={ssid}\n\
+             hw_mode=g\n\
+             channel=6\n\
+             ieee80211n=1\n\
+             ctrl_interface=/data/wifi\n\
+             ignore_broadcast_ssid=0\n\
+             wpa=2\n\
+             wpa_passphrase={pass}\n\
+             wpa_key_mgmt=WPA-PSK\n\
+             wpa_pairwise=CCMP\n\
+             rsn_pairwise=CCMP\n",
+            iface = AP_IFACE,
+            ssid = ap_ssid,
+            pass = ap_pass,
+        );
+
+        std::fs::create_dir_all("/data/wifi").ok();
+        let _ = std::fs::write("/data/wifi/hostapd_ap.conf", &config);
+
+        let _ = Command::new("killall").arg("hostapd").output();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        let _ = Command::new("/bin/hostapd")
+            .args(["-B", "/data/wifi/hostapd_ap.conf"])
+            .status();
+
+        // Poll for hostapd to come up instead of blind 3s sleep
+        let mut ready = false;
+        for _ in 0..6 {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            if interface_has_ip(AP_IFACE, AP_IP) {
+                ready = true;
+                break;
+            }
         }
 
-        std::thread::sleep(std::time::Duration::from_secs(2));
+        if !ready {
+            // Set IP ourselves — hostapd may be up but ifconfig not done
+            let _ = Command::new("ifconfig")
+                .args([AP_IFACE, AP_IP, "netmask", "255.255.255.0", "up"])
+                .status();
+        }
+
+        ensure_dnsmasq();
 
         if is_ap_running() {
             info!("AP: started successfully via hostapd");
             HOSTAPD_FAILURES.store(0, Ordering::Relaxed);
+            super::AP_FREQ_MHZ.store(2437, std::sync::atomic::Ordering::Relaxed);
             return Ok(());
         }
 
@@ -167,6 +261,9 @@ fn ensure_ap_uaputl() -> Result<()> {
 
     if interface_has_ip(AP_IFACE, AP_IP) {
         warn!("AP: running in uaputl mode (OPEN network — no WPA2)");
+        USING_UAPUTL.store(true, Ordering::Relaxed);
+        // uaputl uses firmware default (2.4GHz auto channel)
+        super::AP_FREQ_MHZ.store(2437, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     } else {
         warn!("AP: uaputl fallback also failed");
@@ -195,6 +292,8 @@ fn ensure_dnsmasq() {
         let conf = format!(
             "interface={iface}\n\
              bind-interfaces\n\
+             listen-address={ip}\n\
+             except-interface=lo\n\
              dhcp-range=192.168.43.100,192.168.43.155,255.255.255.0,12h\n\
              dhcp-option=option:router,{ip}\n\
              dhcp-authoritative\n\
@@ -224,8 +323,20 @@ fn ensure_dnsmasq() {
 
 /// Start AP on the same band as the given STA frequency.
 /// Writes a custom hostapd config with the appropriate hw_mode and channel,
-/// then starts hostapd. Falls back to ensure_ap() on failure.
+/// then starts hostapd.
 pub fn start_ap_on_band(sta_freq_mhz: u32) -> Result<()> {
+    // Acquire restart lock
+    if AP_RESTARTING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        info!("AP: restart already in progress, skipping band switch");
+        return Ok(());
+    }
+
+    let result = start_ap_on_band_inner(sta_freq_mhz);
+    AP_RESTARTING.store(false, Ordering::SeqCst);
+    result
+}
+
+fn start_ap_on_band_inner(sta_freq_mhz: u32) -> Result<()> {
     let (hw_mode, channel) = super::wpa::freq_to_ap_channel(sta_freq_mhz);
     info!(
         "AP: starting on band hw_mode={} channel={} (STA freq={}MHz)",
@@ -266,7 +377,7 @@ pub fn start_ap_on_band(sta_freq_mhz: u32) -> Result<()> {
 
     // Kill existing hostapd
     let _ = Command::new("killall").arg("hostapd").output();
-    std::thread::sleep(std::time::Duration::from_secs(1));
+    std::thread::sleep(std::time::Duration::from_millis(500));
 
     // Start hostapd in daemon mode
     let status = Command::new("/bin/hostapd")
@@ -278,22 +389,32 @@ pub fn start_ap_on_band(sta_freq_mhz: u32) -> Result<()> {
         warn!("AP: hostapd exited with {}", status);
     }
 
-    std::thread::sleep(std::time::Duration::from_secs(3));
+    // Poll for AP to come up
+    for _ in 0..6 {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        if interface_has_ip(AP_IFACE, AP_IP) {
+            break;
+        }
+    }
 
-    // Set IP
-    let _ = Command::new("ifconfig")
-        .args([AP_IFACE, AP_IP, "netmask", "255.255.255.0", "up"])
-        .status();
+    if !interface_has_ip(AP_IFACE, AP_IP) {
+        let _ = Command::new("ifconfig")
+            .args([AP_IFACE, AP_IP, "netmask", "255.255.255.0", "up"])
+            .status();
+    }
 
     ensure_dnsmasq();
 
     if interface_has_ip(AP_IFACE, AP_IP) {
         info!("AP: started on hw_mode={} ch{}", hw_mode, channel);
         HOSTAPD_FAILURES.store(0, Ordering::Relaxed);
+        // Cache AP frequency for NetworkState reporting
+        let freq_mhz = channel_to_freq(hw_mode, channel);
+        super::AP_FREQ_MHZ.store(freq_mhz, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     } else {
-        warn!("AP: failed to start on hw_mode={} ch{}, falling back to default", hw_mode, channel);
-        ensure_ap()
+        warn!("AP: failed to start on hw_mode={} ch{}", hw_mode, channel);
+        Err(anyhow::anyhow!("AP failed to start on hw_mode={} ch{}", hw_mode, channel))
     }
 }
 
@@ -343,8 +464,7 @@ pub fn stop_ap() -> Result<()> {
     let _ = Command::new(UAPUTL)
         .args(["-i", AP_IFACE, "bss_stop"])
         .output();
-    // Kill only the AP's dnsmasq via its pidfile — do NOT killall dnsmasq,
-    // as the system dnsmasq (for wlan0 DNS) must stay alive.
+    // Kill AP's dnsmasq via its pidfile.
     if let Ok(pid) = std::fs::read_to_string(DNSMASQ_PID) {
         let pid = pid.trim();
         if !pid.is_empty() {
@@ -366,6 +486,45 @@ pub fn client_count() -> u8 {
         .unwrap_or(0)
 }
 
+/// Convert hostapd hw_mode + channel to frequency in MHz.
+fn channel_to_freq(hw_mode: &str, channel: u8) -> u32 {
+    if hw_mode == "a" {
+        5000 + (channel as u32) * 5
+    } else if channel <= 13 {
+        2407 + (channel as u32) * 5
+    } else {
+        2484
+    }
+}
+
+/// Parse TX error/packet counts and determine if AP is unhealthy.
+/// Unhealthy = TX errors > 0 AND TX packets == 0 (interface broken).
+fn parse_tx_health(errors: u64, packets: u64) -> bool {
+    errors > 0 && packets == 0
+}
+
+/// Check if p2p0 has TX errors with no successful packets (broken interface).
+pub fn has_tx_errors() -> bool {
+    let tx_errors = std::fs::read_to_string("/sys/class/net/p2p0/statistics/tx_errors")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .unwrap_or(0);
+    let tx_packets = std::fs::read_to_string("/sys/class/net/p2p0/statistics/tx_packets")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .unwrap_or(0);
+    parse_tx_health(tx_errors, tx_packets)
+}
+
+/// Reset p2p0 interface (down/up cycle) to clear stale driver state.
+pub fn reset_interface() {
+    info!("AP: resetting p2p0 interface to clear TX errors");
+    let _ = Command::new("ifconfig").args([AP_IFACE, "down"]).status();
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    let _ = Command::new("ifconfig").args([AP_IFACE, "up"]).status();
+    std::thread::sleep(std::time::Duration::from_secs(1));
+}
+
 /// Check if a network interface has a specific IP address.
 fn interface_has_ip(iface: &str, expected_ip: &str) -> bool {
     Command::new("ifconfig")
@@ -376,4 +535,44 @@ fn interface_has_ip(iface: &str, expected_ip: &str) -> bool {
             text.contains(expected_ip)
         })
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tx_health_no_errors() {
+        assert!(!parse_tx_health(0, 100));
+    }
+
+    #[test]
+    fn tx_health_errors_with_no_packets_is_broken() {
+        assert!(parse_tx_health(10, 0));
+    }
+
+    #[test]
+    fn tx_health_errors_with_packets_is_ok() {
+        // Some TX errors but packets are flowing — not broken
+        assert!(!parse_tx_health(2, 500));
+    }
+
+    #[test]
+    fn tx_health_zero_everything_is_ok() {
+        // Fresh interface, no traffic yet — not broken
+        assert!(!parse_tx_health(0, 0));
+    }
+
+    #[test]
+    fn channel_to_freq_2g() {
+        assert_eq!(channel_to_freq("g", 1), 2412);
+        assert_eq!(channel_to_freq("g", 6), 2437);
+        assert_eq!(channel_to_freq("g", 11), 2462);
+    }
+
+    #[test]
+    fn channel_to_freq_5g() {
+        assert_eq!(channel_to_freq("a", 36), 5180);
+        assert_eq!(channel_to_freq("a", 149), 5745);
+    }
 }

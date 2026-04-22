@@ -27,9 +27,9 @@ pub const ARC_RING_SVG: &str = r##"<div class="logo-glow"></div>
 <svg class="logo-ring" viewBox="0 0 100 100">
   <defs>
     <linearGradient id="logo-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#58a6ff"/>
-      <stop offset="50%" stop-color="#a371f7"/>
-      <stop offset="100%" stop-color="#58a6ff"/>
+      <stop offset="0%" stop-color="#C8A55C"/>
+      <stop offset="50%" stop-color="#F0E6D0"/>
+      <stop offset="100%" stop-color="#C8A55C"/>
     </linearGradient>
   </defs>
   <circle class="logo-track" cx="50" cy="50" r="42" fill="none" stroke-width="3"/>

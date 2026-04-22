@@ -8,8 +8,9 @@
 # Usage (from WSL):
 #   bash scripts/device/remove_encore_next.sh [ip]
 
-IP="${1:-${ENCORE_DEVICE_IP:-192.168.7.235}}"
-SSH_OPTS="-o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedKeyTypes=+ssh-rsa -o StrictHostKeyChecking=no -o ConnectTimeout=5"
+. "$(dirname "$0")/../common.sh"
+IP="${1:-$ENCORE_DEVICE_IP}"
+SSH_OPTS="$ENCORE_SSH_OPTS -o ConnectTimeout=5"
 
 echo "=== Remove encore_next ==="
 echo "Target: $IP"
@@ -25,7 +26,7 @@ else
 fi
 '
 
-RESULT=$(sshpass -p ridiculous ssh $SSH_OPTS root@"$IP" "$CMD" 2>&1)
+RESULT=$(sshpass -p $ENCORE_SSH_PASS ssh $SSH_OPTS root@"$IP" "$CMD" 2>&1)
 RC=$?
 
 if [ $RC -ne 0 ]; then

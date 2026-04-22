@@ -172,6 +172,12 @@ impl Dac {
     pub fn init(&mut self) -> Result<()> {
         info!("DAC init: writing {} registers", INIT_SEQUENCE.len());
 
+        // Ensure DAC is not in standby (reg 0x02). Stock firmware never
+        // writes this register, but a previous firmware version may have
+        // left it in standby mode. The TAS5756M retains register state
+        // across soft resets.
+        self.write_paged(0, REG_POWER, POWER_ACTIVE)?;
+
         for (reg, val) in &INIT_SEQUENCE {
             self.bus.write_reg(*reg, *val)?;
         }

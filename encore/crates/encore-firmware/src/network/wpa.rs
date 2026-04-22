@@ -287,8 +287,11 @@ impl WpaClient {
         self.cli_ok(&["enable_network", net_id])
             .context("enable_network failed")?;
 
+        // save_config is best-effort: on this device, wpa_supplicant uses the
+        // Android socket FD mechanism and may not have a writable config path.
+        // WiFi credential persistence is handled via config.toml instead.
         if let Err(e) = self.cli_ok(&["save_config"]) {
-            warn!("wpa: save_config failed (non-fatal): {}", e);
+            debug!("wpa: save_config failed (expected on Android socket): {}", e);
         }
 
         info!("wpa: network {} configured and enabled (ssid={})", net_id, ssid);

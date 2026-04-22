@@ -229,7 +229,39 @@ async fn main() -> anyhow::Result<()> {
         let wyoming_mic = audio.add_capture_consumer(audio::capture::CaptureChannel::Left);
         let wakeword_mic = audio.add_capture_consumer(audio::capture::CaptureChannel::Left);
 
+        // Mic monitor consumers (one per beamformed channel for VU meters)
+        let mic_monitor_l = audio.add_capture_consumer(audio::capture::CaptureChannel::Left);
+        let mic_monitor_r = audio.add_capture_consumer(audio::capture::CaptureChannel::Right);
+        let mic_test_active = audio.mic_test_flag();
+
         mgr.start(Box::new(audio));
+
+        // ── Mic monitor task (computes levels from capture, sends to dashboard) ──
+        {
+            let ws_tx_mic = ws_tx.clone();
+            let active = mic_test_active;
+            let mut left_rx = mic_monitor_l.rx;
+            let mut right_rx = mic_monitor_r.rx;
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        Some(l_chunk) = left_rx.recv() => {
+                            if !active.load(std::sync::atomic::Ordering::Relaxed) { continue; }
+                            let r_chunk = right_rx.try_recv().ok();
+                            let (l_rms, l_peak) = mic_compute_levels(&l_chunk);
+                            let (r_rms, r_peak) = r_chunk.map(|c| mic_compute_levels(&c)).unwrap_or((0.0, 0.0));
+                            let msg = encore_common::protocol::ServerMsg::MicLevels {
+                                left_rms: l_rms, right_rms: r_rms,
+                                left_peak: l_peak, right_peak: r_peak,
+                            };
+                            let _ = ws_tx_mic.send(serde_json::to_string(&msg).unwrap_or_default());
+                        }
+                        Some(_) = right_rx.recv() => { /* drain R when L hasn't arrived */ }
+                        else => break,
+                    }
+                }
+            });
+        }
 
         // ── Watchdog (feeds both Linux /dev/watchdog AND MCU I2C heartbeat) ──
         let mut wdt = watchdog::WatchdogSubsystem::new();
@@ -238,6 +270,21 @@ async fn main() -> anyhow::Result<()> {
         }
         mgr.start(Box::new(wdt));
 
+        // ── Resolve group peer_id early (before mDNS starts advertising) ──
+        let group_peer_id = {
+            let cfg = encore_common::config::EncoreConfigFile::load(
+                std::path::Path::new("/lsync/encore/config.toml"),
+            ).unwrap_or_default();
+            cfg.group.peer_id.clone().unwrap_or_else(|| {
+                let id = format!("{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
+                    rand_u32(), rand_u16(), rand_u16(), rand_u16(), rand_u48());
+                let mut save_cfg = cfg;
+                save_cfg.group.peer_id = Some(id.clone());
+                let _ = save_cfg.save(std::path::Path::new("/lsync/encore/config.toml"));
+                id
+            })
+        };
+
         // ── Network ──
         let (network_cmd_tx, network_cmd_rx) = mpsc::channel::<network::NetworkCmd>(32);
         let mdns_services = {
@@ -245,7 +292,7 @@ async fn main() -> anyhow::Result<()> {
                 std::path::Path::new("/lsync/encore/config.toml"),
             ).unwrap_or_default();
             let group_txt = group::discovery::format_txt_records(
-                cfg.group.peer_id.as_deref().unwrap_or("unknown"),
+                &group_peer_id,
                 &cfg.group.group_name,
                 match cfg.group.channel.as_str() {
                     "left" => group::wire::ChannelAssignment::Left,
@@ -254,6 +301,12 @@ async fn main() -> anyhow::Result<()> {
                 },
             );
             vec![
+                network::mdns::MdnsService {
+                    service_type: "_encore._tcp".into(),
+                    instance_name: cfg.device.name.clone(),
+                    port: 80,
+                    txt: vec!["VERSION=1.0".into()],
+                },
                 network::mdns::MdnsService {
                     service_type: "_spotify-connect._tcp".into(),
                     instance_name: "Invoke".into(),
@@ -288,13 +341,8 @@ async fn main() -> anyhow::Result<()> {
 
         let mut net_sub = network::NetworkSubsystem::new(Some(ws_tx.clone()), Some(network_cmd_rx), ap_active.clone(), mdns_services);
         web.set_wifi_result_cache(net_sub.wifi_result_cache());
-        {
-            let cfg = encore_common::config::EncoreConfigFile::load(
-                std::path::Path::new("/lsync/encore/config.toml"),
-            ).unwrap_or_default();
-            let peer_id = cfg.group.peer_id.clone().unwrap_or_default();
-            net_sub.set_discovery(mdns_discovery_tx, peer_id);
-        }
+        web.set_network_state_cache(net_sub.network_state_cache());
+        net_sub.set_discovery(mdns_discovery_tx, group_peer_id.clone());
         mgr.start(Box::new(net_sub));
 
         // ── VPN (WireGuard tunnel) ──
@@ -332,17 +380,6 @@ async fn main() -> anyhow::Result<()> {
             )
             .unwrap_or_default();
 
-            // Generate peer_id if not set
-            let peer_id = cfg.group.peer_id.clone().unwrap_or_else(|| {
-                let id = format!("{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
-                    rand_u32(), rand_u16(), rand_u16(), rand_u16(), rand_u48());
-                // Save it back to config
-                let mut save_cfg = cfg.clone();
-                save_cfg.group.peer_id = Some(id.clone());
-                let _ = save_cfg.save(std::path::Path::new("/lsync/encore/config.toml"));
-                id
-            });
-
             let channel = match cfg.group.channel.as_str() {
                 "left" => group::wire::ChannelAssignment::Left,
                 "right" => group::wire::ChannelAssignment::Right,
@@ -350,7 +387,7 @@ async fn main() -> anyhow::Result<()> {
             };
 
             let mut group_sub = group::GroupSubsystem::new(
-                peer_id,
+                group_peer_id.clone(),
                 cfg.device.name.clone(),
                 cfg.group.group_name.clone(),
                 channel,
@@ -378,10 +415,17 @@ async fn main() -> anyhow::Result<()> {
 
         // ── Spotify Connect ──
         {
-            let mut spotify_sub = spotify::SpotifySubsystem::new(spotify_slot, None, Some(spotify_cmd_rx), Some(ws_tx.clone()));
-            spotify_sub.set_suspend_rx(spotify_suspend_rx);
-            spotify_sub.set_group_tx(group_cmd_tx.clone());
-            mgr.start(Box::new(spotify_sub));
+            let cfg = encore_common::config::EncoreConfigFile::load(
+                std::path::Path::new("/lsync/encore/config.toml"),
+            ).unwrap_or_default();
+            if cfg.spotify.enabled {
+                let mut spotify_sub = spotify::SpotifySubsystem::new(spotify_slot, Some(cfg.device.name.clone()), Some(spotify_cmd_rx), Some(ws_tx.clone()));
+                spotify_sub.set_suspend_rx(spotify_suspend_rx);
+                spotify_sub.set_group_tx(group_cmd_tx.clone());
+                mgr.start(Box::new(spotify_sub));
+            } else {
+                info!("Spotify: disabled in config, skipping");
+            }
         }
 
         // ── Bluetooth A2DP sink ──
@@ -627,8 +671,10 @@ async fn main() -> anyhow::Result<()> {
                         ClientMsg::SaveConfig(config) => {
                             let vol_step = config.volume_ring_step;
                             let device_name = config.device_name.clone();
+                            let spotify_enabled = config.spotify_enabled;
                             let existing = encore_common::config::EncoreConfigFile::load(config_path)
                                 .unwrap_or_default();
+                            let old_spotify_enabled = existing.spotify.enabled;
                             let cfg = config.to_file_merge(&existing);
                             if let Err(e) = cfg.save(config_path) {
                                 warn!("ClientMsg: config save failed: {}", e);
@@ -642,6 +688,12 @@ async fn main() -> anyhow::Result<()> {
                                 let _ = network_cmd_tx.try_send(
                                     network::NetworkCmd::SetDeviceName(device_name),
                                 );
+                                // Notify Spotify subsystem if enabled state changed
+                                if spotify_enabled != old_spotify_enabled {
+                                    let _ = spotify_cmd_tx.try_send(
+                                        encore_common::protocol::SpotifyAction::SetEnabled { enabled: spotify_enabled },
+                                    );
+                                }
                             }
                         }
                         ClientMsg::RequestConfig => {
@@ -660,10 +712,12 @@ async fn main() -> anyhow::Result<()> {
                         }
                         ClientMsg::SetWifi(creds) => {
                             info!("ClientMsg: SetWifi(ssid={})", creds.ssid);
-                            let _ = network_cmd_tx.try_send(network::NetworkCmd::ConnectWifi {
+                            if let Err(e) = network_cmd_tx.try_send(network::NetworkCmd::ConnectWifi {
                                 ssid: creds.ssid,
                                 password: creds.password,
-                            });
+                            }) {
+                                warn!("ClientMsg: SetWifi failed to send to network subsystem: {}", e);
+                            }
                         }
                         ClientMsg::RequestNetworkState => {
                             let _ = network_cmd_tx.try_send(network::NetworkCmd::RequestState);
@@ -825,6 +879,12 @@ async fn main() -> anyhow::Result<()> {
                         ClientMsg::RequestGroupStatus => {
                             let _ = group_tx.try_send(group::GroupCmd::RequestStatus);
                         }
+                        ClientMsg::StartMicTest => {
+                            let _ = audio_tx.try_send(audio::subsystem::AudioCmd::StartMicTest);
+                        }
+                        ClientMsg::StopMicTest => {
+                            let _ = audio_tx.try_send(audio::subsystem::AudioCmd::StopMicTest);
+                        }
                     }
                 }
             });
@@ -871,6 +931,20 @@ fn rand_u48() -> u64 {
     let a = rand_u32() as u64;
     let b = rand_u16() as u64;
     (a << 16) | b
+}
+
+/// Compute RMS and peak levels from 16kHz mono S16 samples.
+#[cfg(target_os = "linux")]
+fn mic_compute_levels(samples: &[i16]) -> (f32, f32) {
+    let n = samples.len().max(1) as f64;
+    let scale = 1.0 / 32768.0;
+    let (mut sum_sq, mut peak) = (0.0_f64, 0.0_f64);
+    for &s in samples {
+        let v = s as f64 * scale;
+        sum_sq += v * v;
+        peak = peak.max(v.abs());
+    }
+    ((sum_sq / n).sqrt() as f32, peak as f32)
 }
 
 /// Load Home Assistant MQTT config from /lsync/encore/config.toml.

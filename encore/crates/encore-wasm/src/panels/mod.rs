@@ -11,6 +11,7 @@ pub fn render(id: &str, container: &web_sys::Element) {
         "config" => config::render(container),
         "health" => health::render(container),
         "crashes" => render_crashes(container),
+        "logs" => crate::pages::logs::render(container),
         "update" => update::render(container),
         "reboot" => render_reboot(container),
         "about" => about::render(container),

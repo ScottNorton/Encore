@@ -114,20 +114,20 @@ impl JitterBuffer {
     }
 
     /// Monitor buffer fill level and apply micro-corrections.
-    /// If buffer is overfull: skip 1 sample per 1000 frames (~0.1% speedup)
-    /// If buffer is underfull: duplicate 1 sample per 1000 frames (~0.1% slowdown)
+    /// If buffer is overfull: skip 1 sample per 480 frames (~0.2% speedup)
+    /// If buffer is underfull: duplicate 1 sample per 480 frames (~0.2% slowdown)
     fn apply_drift_correction(&mut self, samples: &mut Vec<i32>) {
         let current_depth_us = self.buffer_depth_us();
         let target_half = self.target_depth_us / 2;
 
         // Check if we're significantly off target
-        let drift_threshold_us = 10_000; // 10ms
+        let drift_threshold_us = 3_000; // 3ms
         let frames = samples.len() / 2;
 
         if current_depth_us > target_half + drift_threshold_us && frames > 2 {
-            // Overfull: skip one stereo frame every 1000 frames
+            // Overfull: skip one stereo frame every 480 frames (one per chunk)
             self.drift_accumulator += 1;
-            if self.drift_accumulator >= 1000 {
+            if self.drift_accumulator >= 480 {
                 // Remove one stereo frame (2 samples) from the middle
                 let mid = (samples.len() / 2) & !1; // align to frame boundary
                 if mid + 2 <= samples.len() {
@@ -136,9 +136,9 @@ impl JitterBuffer {
                 self.drift_accumulator = 0;
             }
         } else if current_depth_us + drift_threshold_us < target_half && frames > 2 {
-            // Underfull: duplicate one stereo frame every 1000 frames
+            // Underfull: duplicate one stereo frame every 480 frames
             self.drift_accumulator -= 1;
-            if self.drift_accumulator <= -1000 {
+            if self.drift_accumulator <= -480 {
                 let mid = (samples.len() / 2) & !1;
                 if mid + 2 <= samples.len() {
                     let l = samples[mid];

@@ -1,33 +1,37 @@
 //! Leader streaming task — reads from the mixer network tap and
-//! distributes audio chunks to all follower peers.
+//! sends audio chunks to followers via UDP.
 
 use super::clock;
-use super::wire::GroupPacket;
+use super::wire::{self, GroupPacket};
 use crate::audio::mixer::MixerSlot;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use tokio::net::UdpSocket;
 
 /// Frames per audio chunk sent to followers (10ms @ 48kHz).
 const CHUNK_FRAMES: usize = 480;
 /// Samples per chunk (stereo).
 const CHUNK_SAMPLES: usize = CHUNK_FRAMES * 2;
 
-/// Read from the mixer tap and send audio chunks to followers.
+/// Read from the mixer tap and send audio chunks to followers via UDP.
 ///
 /// Runs on a dedicated tokio task. Reads from `network_tap` whenever
 /// enough samples are available, wraps in AudioChunk with a play_at
-/// timestamp, and broadcasts to all connected followers via PeerManager.
+/// timestamp, and sends via UDP unicast to each follower.
 ///
-/// The `buffer_ms` parameter is added to the current time to create
-/// the play_at timestamp, giving followers time to buffer and sync.
+/// `play_at = now + buffer_ms` gives followers timing control: they hold
+/// audio in the jitter buffer until play_at arrives, matching the leader's
+/// pipeline delay for synchronized playback (Snapcast model).
 pub async fn leader_stream_task(
     network_tap: Arc<MixerSlot>,
     tap_active: Arc<AtomicBool>,
-    peer_tx: tokio::sync::mpsc::Sender<LeaderAction>,
+    udp_socket: Arc<UdpSocket>,
+    follower_addrs: Vec<std::net::SocketAddr>,
     buffer_ms: u64,
 ) {
     let mut read_buf = vec![0i32; CHUNK_SAMPLES];
     let mut interval = tokio::time::interval(std::time::Duration::from_millis(10));
+    let mut seq: u32 = 0;
 
     while tap_active.load(Ordering::Relaxed) {
         interval.tick().await;
@@ -52,19 +56,13 @@ pub async fn leader_stream_task(
                 pcm: read_buf[..CHUNK_SAMPLES].to_vec(),
             };
 
-            if peer_tx
-                .send(LeaderAction::BroadcastAudio(packet))
-                .await
-                .is_err()
-            {
-                break;
+            seq = seq.wrapping_add(1);
+            let data = wire::encode(&packet, seq);
+
+            // Fire-and-forget UDP unicast to each follower
+            for addr in &follower_addrs {
+                let _ = udp_socket.send_to(&data, addr).await;
             }
         }
     }
-}
-
-/// Actions from the leader stream task to the group subsystem.
-#[derive(Debug)]
-pub enum LeaderAction {
-    BroadcastAudio(GroupPacket),
 }

@@ -8,8 +8,9 @@
 # Usage (from WSL):
 #   bash scripts/device/emergency_disable_encore.sh [ip]
 
-IP="${1:-${ENCORE_DEVICE_IP:-encore.local}}"
-SSH_OPTS="-o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedKeyTypes=+ssh-rsa -o StrictHostKeyChecking=no -o ConnectTimeout=1 -o ServerAliveInterval=1"
+. "$(dirname "$0")/../common.sh"
+IP="${1:-$ENCORE_DEVICE_IP}"
+SSH_OPTS="$ENCORE_SSH_OPTS -o ConnectTimeout=1 -o ServerAliveInterval=1"
 CMD='touch /lsync/encore/disabled && echo 0 > /lsync/encore/boot_crashes && echo DISABLED'
 
 echo "=== Emergency Encore Disable ==="
@@ -20,7 +21,7 @@ echo ""
 ATTEMPT=0
 while true; do
     ATTEMPT=$((ATTEMPT + 1))
-    RESULT=$(sshpass -p ridiculous ssh $SSH_OPTS root@"$IP" "$CMD" 2>/dev/null)
+    RESULT=$(sshpass -p $ENCORE_SSH_PASS ssh $SSH_OPTS root@"$IP" "$CMD" 2>/dev/null)
     if [ "$RESULT" = "DISABLED" ]; then
         echo ""
         echo "=== SUCCESS on attempt $ATTEMPT ==="
@@ -29,7 +30,7 @@ while true; do
         echo ""
         echo "Verifying..."
         sleep 1
-        sshpass -p ridiculous ssh $SSH_OPTS root@"$IP" \
+        sshpass -p $ENCORE_SSH_PASS ssh $SSH_OPTS root@"$IP" \
             "ls -la /lsync/encore/disabled; cat /lsync/encore/boot_crashes; ps | grep -E 'encore|python|librespot' | grep -v grep" 2>/dev/null
         exit 0
     fi

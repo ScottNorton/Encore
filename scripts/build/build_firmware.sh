@@ -87,6 +87,13 @@ remove_bloat() {
     # Perl — unused
     rm -rf "$HYBRID/usr/lib/perl"
 
+    # Stock dnsmasq DNS cacher — listens on 127.0.0.1:53 with empty config,
+    # serves no purpose. Encore's AP dnsmasq on 192.168.43.1 is separate.
+    rm -f "$HYBRID/etc/init.d/dnsmasq"
+    rm -f "$HYBRID/etc/rc"*".d/"[SK]"20dnsmasq"
+    rm -f "$HYBRID/etc/dnsmasq.conf" "$HYBRID/etc/dnsmasq-default.conf"
+    rm -f "$HYBRID/etc/dnsmasq-resolv.conf" "$HYBRID/etc/dnsmasq-hosts"
+
     du -sh "$HYBRID" | awk '{print "After bloat removal: "$1}'
 }
 
@@ -132,6 +139,12 @@ remove_harman_binaries() {
 apply_overlay() {
     echo ''
     echo '=== Applying rootfs overlay ==='
+
+    # TODO: Marvell WLAN SDK config files currently ship in
+    # rootfs/usr/share/factory/misc_config/. They live on a separate stock
+    # NAND partition (not in 83_IMAGE) and should ideally be extracted from
+    # the user's own stock image at build time rather than distributed
+    # in-tree. See rootfs/usr/share/factory/misc_config/README.md.
 
     # Copy all overlay files
     cp -a "$REPO_ROOT/rootfs/"* "$HYBRID/"

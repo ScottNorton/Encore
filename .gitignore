@@ -19,7 +19,17 @@ firmware/initramfs/
 firmware/initramfs_tiny/
 firmware/kernel_test/
 firmware/wifi_firmware/
-tools/
+
+# Third-party build tools (upstream sources, kept locally only)
+tools/*
+# Carve out user-authored C sources that accompany tracked binaries in rootfs/
+!tools/i2c_mute.c
+!tools/i2c_diag.c
+
+# Local-only / experimental device scripts (underscore-prefix convention).
+# These often contain copies of stock proprietary binaries, one-off
+# strace/debug captures, or throwaway deployment helpers.
+scripts/device/_*
 
 # Design docs and local tools
 docs/plans/
@@ -27,6 +37,9 @@ docs/serve.bat
 
 # Vendor (RE reference material — not part of the release)
 vendor/
+
+# Worktrees
+.worktrees/
 
 # OS / editor
 .DS_Store
@@ -41,6 +54,7 @@ NUL
 # Tool config
 .claude/
 CLAUDE.md
+.aider.conventions.md
 
 # Python
 __pycache__/
@@ -51,6 +65,9 @@ __pycache__/
 
 # Verify patterns (personal credentials — never commit)
 .verify-patterns
+
+# Local device / SSH overrides (device IP, SSH password). See .encore-env.example.
+.encore-env
 
 # Credentials (should never exist, but just in case)
 spotify_client_id.txt

@@ -6,16 +6,17 @@
 #
 # Usage:
 #   ./scripts/kexec/deploy_kexec.sh [DEVICE_IP]
-#   ./scripts/kexec/deploy_kexec.sh 192.168.7.235
 #   ./scripts/kexec/deploy_kexec.sh 192.168.43.1
+#   # Or set ENCORE_DEVICE_IP in .encore-env for a persistent default.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+. "$REPO_ROOT/scripts/common.sh"
 
-DEVICE_IP="${1:-192.168.7.235}"
-SSH_OPTS="-o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedKeyTypes=+ssh-rsa -o StrictHostKeyChecking=no -o ConnectTimeout=5"
-SSH_CMD="sshpass -p ridiculous ssh $SSH_OPTS root@$DEVICE_IP"
+DEVICE_IP="${1:-$ENCORE_DEVICE_IP}"
+SSH_OPTS="$ENCORE_SSH_OPTS -o ConnectTimeout=5"
+SSH_CMD="sshpass -p $ENCORE_SSH_PASS ssh $SSH_OPTS root@$DEVICE_IP"
 
 KEXEC_MOD="$REPO_ROOT/tools/kexec-module/kernel/kexec-mod.ko"
 REDIR_SO="$REPO_ROOT/tools/kexec-module/user/redir.so"

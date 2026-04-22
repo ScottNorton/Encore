@@ -34,6 +34,7 @@ pub enum SpotifyAction {
     Shuffle { enabled: bool },
     Repeat { enabled: bool },
     RepeatTrack { enabled: bool },
+    SetEnabled { enabled: bool },
 }
 
 /// Bluetooth control actions
@@ -396,6 +397,7 @@ pub enum ServerMsg {
     GroupStatus(GroupStatus),
     BootMode { safe_mode: bool, #[serde(default)] boot_source: String },
     AudioPowerState { state: String },
+    MicLevels { left_rms: f32, right_rms: f32, left_peak: f32, right_peak: f32 },
 }
 
 /// Dashboard -> Firmware messages
@@ -442,6 +444,9 @@ pub enum ClientMsg {
     SetGroupVolume(u8),
     SetPartyMode(bool),
     RequestGroupStatus,
+    // Mic test
+    StartMicTest,
+    StopMicTest,
 }
 
 /// Full config mirror for dashboard editor
@@ -599,8 +604,12 @@ impl EncoreConfig {
                 server_port: self.wyoming_port,
             },
             network: NetworkConfig {
-                wifi_ssid: self.wifi_ssid.clone(),
-                wifi_password: self.wifi_password.clone(),
+                // Preserve existing WiFi credentials if the config panel sends None.
+                // The scan-list WiFi connect path only sends SetWifi (not SaveConfig),
+                // so connect_wifi_inner saves creds directly. A subsequent SaveConfig
+                // from any other panel must not wipe them.
+                wifi_ssid: self.wifi_ssid.clone().or_else(|| existing.network.wifi_ssid.clone()),
+                wifi_password: self.wifi_password.clone().or_else(|| existing.network.wifi_password.clone()),
                 ap_keep_alive: self.ap_keep_alive,
                 ap_ssid: self.ap_ssid.clone(),
                 ap_password: self.ap_password.clone(),
@@ -1061,6 +1070,7 @@ mod tests {
             ServerMsg::AudioPowerState { state: "active".into() },
             ServerMsg::AudioPowerState { state: "idle".into() },
             ServerMsg::AudioPowerState { state: "standby".into() },
+            ServerMsg::MicLevels { left_rms: 0.15, right_rms: 0.22, left_peak: 0.65, right_peak: 0.71 },
         ];
         for msg in &msgs {
             let _: ServerMsg = rkyv_rt!(msg, ServerMsg);
@@ -1110,6 +1120,8 @@ mod tests {
             ClientMsg::DspPollEvents,
             ClientMsg::RequestNetworkState,
             ClientMsg::SetCustomAnimation { frames: vec![LedFrame { colors: [(255,0,0); 13], duration_ms: 100 }] },
+            ClientMsg::StartMicTest,
+            ClientMsg::StopMicTest,
         ];
         for msg in &msgs {
             let _: ClientMsg = rkyv_rt!(msg, ClientMsg);
@@ -1470,6 +1482,30 @@ mod tests {
                 assert!((right_peak - 0.87).abs() < f32::EPSILON);
             }
             _ => panic!("Expected AudioLevels variant"),
+        }
+    }
+
+    #[test]
+    fn server_msg_mic_levels_round_trip() {
+        let msg = ServerMsg::MicLevels {
+            left_rms: 0.15,
+            right_rms: 0.22,
+            left_peak: 0.65,
+            right_peak: 0.71,
+        };
+        let _: ServerMsg = rkyv_rt!(&msg, ServerMsg);
+        let json = serde_json::to_string(&msg).unwrap();
+        let rt: ServerMsg = serde_json::from_str(&json).unwrap();
+        let val: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(val["type"].as_str(), Some("MicLevels"));
+        match rt {
+            ServerMsg::MicLevels { left_rms, right_rms, left_peak, right_peak } => {
+                assert!((left_rms - 0.15).abs() < f32::EPSILON);
+                assert!((right_rms - 0.22).abs() < f32::EPSILON);
+                assert!((left_peak - 0.65).abs() < f32::EPSILON);
+                assert!((right_peak - 0.71).abs() < f32::EPSILON);
+            }
+            _ => panic!("Expected MicLevels variant"),
         }
     }
 

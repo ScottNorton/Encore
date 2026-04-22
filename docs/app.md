@@ -23,7 +23,7 @@ only -- cross-compilation requires each platform's native toolchain.
 
 On launch, the app shows a **Connect** screen:
 
-1. Enter your speaker's IP address (e.g., `192.168.7.235`) or hostname (`encore.local`
+1. Enter your speaker's IP address (e.g., `192.168.1.42`) or hostname (`encore.local`
    if mDNS works on your network).
 2. Tap **Connect**. The app saves this address in local storage and reconnects automatically
    on next launch.

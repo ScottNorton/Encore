@@ -12,6 +12,8 @@ const DB_RANGE: f64 = 60.0; // DB_MAX - DB_MIN
 thread_local! {
     static PEAK_HOLD_L: Cell<f32> = const { Cell::new(0.0) };
     static PEAK_HOLD_R: Cell<f32> = const { Cell::new(0.0) };
+    static MIC_PEAK_HOLD_L: Cell<f32> = const { Cell::new(0.0) };
+    static MIC_PEAK_HOLD_R: Cell<f32> = const { Cell::new(0.0) };
 }
 
 /// Convert linear amplitude (0.0-1.0) to dB.
@@ -49,6 +51,32 @@ pub fn draw(
     left: f32, right: f32,
     left_peak: f32, right_peak: f32,
 ) {
+    PEAK_HOLD_L.with(|lh| PEAK_HOLD_R.with(|rh| {
+        draw_impl(ctx, w, h, left, right, left_peak, right_peak, lh, rh, "L", "R");
+    }));
+}
+
+/// Draw horizontal VU meter bars for microphone input.
+/// Uses separate peak hold state from output meters.
+pub fn draw_mic(
+    ctx: &CanvasRenderingContext2d,
+    w: f64, h: f64,
+    left: f32, right: f32,
+    left_peak: f32, right_peak: f32,
+) {
+    MIC_PEAK_HOLD_L.with(|lh| MIC_PEAK_HOLD_R.with(|rh| {
+        draw_impl(ctx, w, h, left, right, left_peak, right_peak, lh, rh, "Far", "Near");
+    }));
+}
+
+fn draw_impl(
+    ctx: &CanvasRenderingContext2d,
+    w: f64, h: f64,
+    left: f32, right: f32,
+    left_peak: f32, right_peak: f32,
+    peak_hold_l: &Cell<f32>, peak_hold_r: &Cell<f32>,
+    label_l: &str, label_r: &str,
+) {
     ctx.clear_rect(0.0, 0.0, w, h);
 
     // Convert linear to dB-proportional meter position
@@ -58,22 +86,20 @@ pub fn draw(
     let r_peak_pos = db_to_pos(linear_to_db(right_peak as f64));
 
     // Peak hold: latch new peaks, decay old ones (~10Hz update rate)
-    let (l_hold, r_hold) = PEAK_HOLD_L.with(|lh| PEAK_HOLD_R.with(|rh| {
-        let mut lv = lh.get();
-        let mut rv = rh.get();
-        if l_peak_pos as f32 > lv { lv = l_peak_pos as f32; }
-        else { lv *= 0.93; }
-        if r_peak_pos as f32 > rv { rv = r_peak_pos as f32; }
-        else { rv *= 0.93; }
-        if lv < 0.005 { lv = 0.0; }
-        if rv < 0.005 { rv = 0.0; }
-        lh.set(lv);
-        rh.set(rv);
-        (lv as f64, rv as f64)
-    }));
+    let mut lv = peak_hold_l.get();
+    let mut rv = peak_hold_r.get();
+    if l_peak_pos as f32 > lv { lv = l_peak_pos as f32; }
+    else { lv *= 0.93; }
+    if r_peak_pos as f32 > rv { rv = r_peak_pos as f32; }
+    else { rv *= 0.93; }
+    if lv < 0.005 { lv = 0.0; }
+    if rv < 0.005 { rv = 0.0; }
+    peak_hold_l.set(lv);
+    peak_hold_r.set(rv);
+    let (l_hold, r_hold) = (lv as f64, rv as f64);
 
     // Layout
-    let label_w = 14.0;
+    let label_w = if label_l.len() > 1 { 28.0 } else { 14.0 };
     let bar_x = label_w;
     let bar_w = w - label_w - 4.0;
     let scale_h = 14.0;
@@ -97,8 +123,8 @@ pub fn draw(
     ctx.set_font("bold 10px system-ui");
     ctx.set_text_align("left");
     ctx.set_text_baseline("middle");
-    ctx.fill_text("L", 2.0, y_l + bar_h / 2.0).ok();
-    ctx.fill_text("R", 2.0, y_r + bar_h / 2.0).ok();
+    ctx.fill_text(label_l, 2.0, y_l + bar_h / 2.0).ok();
+    ctx.fill_text(label_r, 2.0, y_r + bar_h / 2.0).ok();
 
     // dB scale labels
     ctx.set_font("9px system-ui");

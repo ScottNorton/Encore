@@ -45,6 +45,13 @@ pub struct AppState {
     pub audio_left_peak: f32,
     pub audio_right_peak: f32,
 
+    // ── Mic test levels ──
+    pub mic_left_rms: f32,
+    pub mic_right_rms: f32,
+    pub mic_left_peak: f32,
+    pub mic_right_peak: f32,
+    pub mic_testing: bool,
+
     // ── Audio visualization ──
     pub audio_spectrum: Option<[f32; 32]>,
     pub audio_waveform: Option<Vec<f32>>,
@@ -123,6 +130,11 @@ impl Default for AppState {
             audio_right_rms: 0.0,
             audio_left_peak: 0.0,
             audio_right_peak: 0.0,
+            mic_left_rms: 0.0,
+            mic_right_rms: 0.0,
+            mic_left_peak: 0.0,
+            mic_right_peak: 0.0,
+            mic_testing: false,
             audio_spectrum: None,
             audio_waveform: None,
             viz_mode: "spectrum".into(),

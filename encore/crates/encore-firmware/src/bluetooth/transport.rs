@@ -6,6 +6,7 @@
 //! into a MixerSlot.
 
 use crate::audio::mixer::MixerSlot;
+use crate::audio::resample::resample_i32_stereo;
 use crate::bluetooth::aptx::{AptxDecoder, APTX_MAX_SAMPLES};
 use crate::bluetooth::sbc::{SbcDecoder, SBC_MAX_SAMPLES};
 use crate::bluetooth::A2dpCodec;
@@ -15,6 +16,11 @@ use std::os::fd::{FromRawFd, IntoRawFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
+
+/// Bluetooth A2DP source sample rate (44100 Hz for virtually all phones/computers).
+const BT_SOURCE_RATE: u32 = 44100;
+/// Mixer/PCM output sample rate.
+const MIXER_RATE: u32 = 48000;
 
 /// RTP header size (12 bytes).
 const RTP_HEADER_SIZE: usize = 12;
@@ -46,21 +52,26 @@ fn parse_rtp_sbc(buf: &[u8]) -> Option<(usize, u8)> {
 
 /// Parse an RTP header for aptX/aptX HD packets.
 ///
-/// aptX packets have RTP header (12 bytes) but NO A2DP media header —
-/// payload immediately follows the RTP header.
-///
-/// Returns payload offset or None if invalid.
-fn parse_rtp_aptx(buf: &[u8]) -> Option<usize> {
-    if buf.len() < RTP_HEADER_SIZE {
-        return None;
+/// Returns the payload offset. Some A2DP implementations (notably Windows)
+/// send raw aptX codewords WITHOUT RTP headers — in that case, offset is 0.
+fn parse_rtp_aptx(buf: &[u8], has_rtp: &mut Option<bool>) -> usize {
+    // Once we've determined RTP presence, use cached result
+    if let Some(rtp) = *has_rtp {
+        return if rtp { RTP_HEADER_SIZE } else { 0 };
     }
 
-    let version = (buf[0] >> 6) & 0x03;
-    if version != 2 {
-        return None;
+    // Auto-detect: check if first byte looks like RTP v2
+    if buf.len() >= RTP_HEADER_SIZE {
+        let version = (buf[0] >> 6) & 0x03;
+        if version == 2 {
+            *has_rtp = Some(true);
+            return RTP_HEADER_SIZE;
+        }
     }
 
-    Some(RTP_HEADER_SIZE)
+    // Not RTP — raw aptX codewords directly on L2CAP
+    *has_rtp = Some(false);
+    0
 }
 
 /// Spawn a dedicated reader thread for the A2DP transport FD.
@@ -140,9 +151,11 @@ fn reader_loop_sbc(
                     pos += consumed;
                     // Upscale i16 → i32 (shift left 16 bits for 32-bit pipeline)
                     let s32: Vec<i32> = pcm_buf[..samples].iter().map(|&s| (s as i32) << 16).collect();
-                    let written = slot.push(&s32);
-                    if written < samples {
-                        debug!("BT A2DP SBC: ring full, dropped {} samples", samples - written);
+                    // Resample 44100 → 48000 Hz
+                    let resampled = resample_i32_stereo(&s32, BT_SOURCE_RATE, MIXER_RATE);
+                    let written = slot.push(&resampled);
+                    if written < resampled.len() {
+                        debug!("BT A2DP SBC: ring full, dropped {} samples", resampled.len() - written);
                     }
                 }
                 Err(e) => {
@@ -179,6 +192,10 @@ fn reader_loop_aptx(
 
     let codec_name = if hd { "aptX HD" } else { "aptX" };
     let mut pcm_buf = vec![0i32; APTX_MAX_SAMPLES];
+    let mut total_packets: u64 = 0;
+    let mut total_samples: u64 = 0;
+    let mut zero_sample_packets: u64 = 0;
+    let mut has_rtp: Option<bool> = None;
 
     slot.set_active(true);
 
@@ -200,25 +217,61 @@ fn reader_loop_aptx(
 
         let packet = &buf[..n];
 
-        let payload_offset = match parse_rtp_aptx(packet) {
-            Some(v) => v,
-            None => continue,
-        };
+        // Auto-detect RTP presence on first packet
+        if total_packets == 0 {
+            debug!(
+                "BT A2DP {}: first packet {} bytes, header: {:02x?}",
+                codec_name, n, &packet[..n.min(16)]
+            );
+        }
+
+        let payload_offset = parse_rtp_aptx(packet, &mut has_rtp);
+
+        if total_packets == 0 {
+            debug!(
+                "BT A2DP {}: RTP {}detected, offset={}",
+                codec_name,
+                if has_rtp == Some(true) { "" } else { "NOT " },
+                payload_offset
+            );
+        }
 
         let payload = &packet[payload_offset..];
 
+        total_packets += 1;
         match decoder.decode(payload, &mut pcm_buf) {
-            Ok((_consumed, samples)) => {
+            Ok((consumed, samples)) => {
                 if samples > 0 {
-                    // aptx.rs already outputs i32 in full 32-bit range
-                    let written = slot.push(&pcm_buf[..samples]);
-                    if written < samples {
-                        debug!("BT A2DP {}: ring full, dropped {} samples", codec_name, samples - written);
+                    if total_samples == 0 {
+                        info!(
+                            "BT A2DP {}: first decode output: {} samples from {} bytes consumed (pkt #{})",
+                            codec_name, samples, consumed, total_packets
+                        );
                     }
+                    total_samples += samples as u64;
+                    // Resample 44100 → 48000 Hz
+                    let resampled = resample_i32_stereo(&pcm_buf[..samples], BT_SOURCE_RATE, MIXER_RATE);
+                    let written = slot.push(&resampled);
+                    if written < resampled.len() {
+                        debug!("BT A2DP {}: ring full, dropped {} samples", codec_name, resampled.len() - written);
+                    }
+                } else {
+                    zero_sample_packets += 1;
+                    if zero_sample_packets <= 3 {
+                        info!("BT A2DP {}: decode returned 0 samples (consumed={}, pkt #{})", codec_name, consumed, total_packets);
+                    }
+                }
+                // Log decode stats periodically (every 5000 packets ≈ every ~100 seconds)
+                if total_packets % 5000 == 0 {
+                    info!(
+                        "BT A2DP {}: packets={} samples={} zero_decode={} slot_avail={}",
+                        codec_name, total_packets, total_samples, zero_sample_packets,
+                        slot.available()
+                    );
                 }
             }
             Err(e) => {
-                debug!("BT A2DP {}: decode error: {}", codec_name, e);
+                warn!("BT A2DP {}: decode error: {}", codec_name, e);
             }
         }
     }

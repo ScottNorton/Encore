@@ -20,6 +20,10 @@ use tokio::sync::{broadcast, mpsc};
 /// Shared cache for the most recent WifiConnectResult, so reconnecting
 /// WebSocket clients can retrieve the result they missed during WiFi transition.
 pub type WifiResultCache = Arc<std::sync::Mutex<Option<WifiConnectResult>>>;
+
+/// Shared cache for the most recent NetworkState, so reconnecting
+/// WebSocket clients receive state immediately without a round-trip.
+pub type NetworkStateCache = Arc<std::sync::Mutex<Option<NetworkState>>>;
 use tokio::time::{interval, Duration};
 use tracing::{debug, info, warn};
 use wpa::WpaClient;
@@ -46,14 +50,17 @@ enum NetState {
     /// AP up, WiFi connecting via wpa_supplicant.
     ApConnecting { ssid: String },
     /// AP up, WiFi connected, waiting for NTP or ap_keep_alive=true.
-    ApConnected { ssid: String, ip: String, signal: i8 },
+    ApConnected { ssid: String, ip: String, signal: i8, sta_freq: u32, ap_freq: u32 },
     /// AP intentionally stopped (WiFi + NTP synced, user opted out of AP).
-    WifiOnly { ssid: String, ip: String, signal: i8 },
+    WifiOnly { ssid: String, ip: String, signal: i8, sta_freq: u32 },
     /// WiFi dropped, restarting AP + attempting WiFi reconnect.
     Recovering { ssid: String },
 }
 
 const MONITOR_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Cached AP frequency in MHz (set by start_ap_on_band, read by to_protocol_state).
+static AP_FREQ_MHZ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 const CONFIG_PATH: &str = "/lsync/encore/config.toml";
 /// Lazily cached AP SSID (derived from MAC on first call).
 fn ap_ssid() -> String {
@@ -81,6 +88,8 @@ pub struct NetworkSubsystem {
     our_peer_id: String,
     /// Cached WiFi connect result for reconnecting WebSocket clients.
     wifi_result_cache: WifiResultCache,
+    /// Cached network state for immediate delivery on WebSocket connect.
+    network_state_cache: NetworkStateCache,
 }
 
 impl NetworkSubsystem {
@@ -100,12 +109,18 @@ impl NetworkSubsystem {
             discovery_tx: None,
             our_peer_id: String::new(),
             wifi_result_cache: Arc::new(std::sync::Mutex::new(None)),
+            network_state_cache: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
     /// Get a clone of the WiFi result cache Arc for sharing with the web module.
     pub fn wifi_result_cache(&self) -> WifiResultCache {
         self.wifi_result_cache.clone()
+    }
+
+    /// Get a clone of the network state cache Arc for sharing with the web module.
+    pub fn network_state_cache(&self) -> NetworkStateCache {
+        self.network_state_cache.clone()
     }
 
     /// Set the mDNS discovery channel and peer ID for group peer discovery.
@@ -116,6 +131,10 @@ impl NetworkSubsystem {
 
     /// Broadcast network state change to dashboard via WebSocket.
     fn broadcast_state(&self, state: &NetworkState) {
+        // Update cache for reconnecting WebSocket clients
+        if let Ok(mut guard) = self.network_state_cache.lock() {
+            *guard = Some(state.clone());
+        }
         if let Some(ref tx) = self.ws_tx {
             let msg = ServerMsg::NetworkChanged(state.clone());
             if let Ok(json) = serde_json::to_string(&msg) {
@@ -186,27 +205,27 @@ impl NetworkSubsystem {
             NetState::ApOnly => NetworkState::ApMode {
                 ssid: ap_ssid(),
                 clients: ap::client_count(),
-                ap_frequency_mhz: 0,
+                ap_frequency_mhz: AP_FREQ_MHZ.load(Ordering::Relaxed),
             },
             NetState::ApConnecting { ssid } => NetworkState::Connecting {
                 ssid: ssid.clone(),
             },
-            NetState::ApConnected { ssid, ip, signal } => NetworkState::ConnectedWithAp {
+            NetState::ApConnected { ssid, ip, signal, sta_freq, ap_freq } => NetworkState::ConnectedWithAp {
                 ssid: ssid.clone(),
                 ip: ip.clone(),
                 signal: *signal,
                 hostname: self.hostname.clone(),
-                frequency_mhz: 0,
+                frequency_mhz: *sta_freq,
                 ap_ssid: ap_ssid(),
                 ap_clients: ap::client_count(),
-                ap_frequency_mhz: 0,
+                ap_frequency_mhz: *ap_freq,
             },
-            NetState::WifiOnly { ssid, ip, signal } => NetworkState::Connected {
+            NetState::WifiOnly { ssid, ip, signal, sta_freq } => NetworkState::Connected {
                 ssid: ssid.clone(),
                 ip: ip.clone(),
                 signal: *signal,
                 hostname: self.hostname.clone(),
-                frequency_mhz: 0,
+                frequency_mhz: *sta_freq,
             },
             NetState::Recovering { ssid } => NetworkState::Connecting {
                 ssid: ssid.clone(),
@@ -242,31 +261,41 @@ impl Subsystem for NetworkSubsystem {
         // Reset to WIFI_RETRY_TICKS when WiFi connects successfully.
         let mut wifi_retry_ticks: u16 = WIFI_RETRY_TICKS;
         let mut poor_signal_ticks: u8 = 0;
+        // Guard flag: set during WiFi connect operations to prevent the
+        // monitor loop from racing (restarting AP, false recovery transitions)
+        let wifi_connecting = Arc::new(AtomicBool::new(false));
 
         // Compute hostname from config
         self.hostname = sanitize_hostname(&cfg.device.name);
 
-        // Wait for AP to come up (boot script starts it concurrently).
-        // Only call ensure_ap() if it doesn't appear within 30s.
-        let ap_ok = tokio::task::spawn_blocking(|| {
-            for i in 0..15 {
-                if ap::is_ap_running() {
-                    info!("Network: AP already running (checked after {}s)", i * 2);
-                    return true;
+        // Spawn AP init as background task — don't block the select loop.
+        // AP will be started by start_ap.sh (p2p0 ready) or by us after 30s.
+        let (ap_ready_tx, ap_ready_rx) = tokio::sync::oneshot::channel::<bool>();
+        let ap_active_init = self.ap_active.clone();
+        tokio::task::spawn_blocking(move || {
+            // Check for p2p0_ready sentinel (from modified start_ap.sh) or running AP
+            for i in 0..60 {
+                if std::path::Path::new("/tmp/p2p0_ready").exists()
+                    || ap::is_ap_running()
+                {
+                    if i > 0 {
+                        info!("Network: p2p0 ready after {}ms", i * 500);
+                    }
+                    break;
                 }
-                std::thread::sleep(std::time::Duration::from_secs(2));
+                std::thread::sleep(std::time::Duration::from_millis(500));
             }
-            warn!("Network: AP not up after 30s, starting it ourselves");
-            ap::ensure_ap().is_ok()
-        }).await.unwrap_or(false);
-        self.ap_active.store(ap_ok, Ordering::Relaxed);
+            // Start AP ourselves (we are the sole AP manager when running)
+            let ok = ap::ensure_ap().is_ok();
+            ap_active_init.store(ok, Ordering::Relaxed);
+            let _ = ap_ready_tx.send(ok);
+        });
 
-        // Ensure DNS + RPS are set early (covers the boot race — Issue 6).
-        // The boot script may not have run yet, so we set them ourselves.
+        // Fire-and-forget DNS + RPS init (idempotent, no synchronization needed)
         tokio::task::spawn_blocking(|| {
             refresh_rps();
             update_resolv_conf();
-        }).await.ok();
+        });
 
         // Determine initial state
         let mut state = if has_wifi {
@@ -275,7 +304,12 @@ impl Subsystem for NetworkSubsystem {
             // Check if already connected (stock init may have done it)
             if let Some(ip) = read_interface_ip("wlan0") {
                 info!("Network: wlan0 already has IP {}", ip);
-                NetState::ApConnected { ssid, ip, signal: read_wifi_signal().unwrap_or(0) }
+                let sta_freq = wpa::WpaClient::connect()
+                    .ok()
+                    .and_then(|w| w.connected_frequency())
+                    .unwrap_or(0);
+                let ap_freq = AP_FREQ_MHZ.load(Ordering::Relaxed);
+                NetState::ApConnected { ssid, ip, signal: read_wifi_signal().unwrap_or(0), sta_freq, ap_freq }
             } else {
                 NetState::ApConnecting { ssid }
             }
@@ -296,17 +330,38 @@ impl Subsystem for NetworkSubsystem {
             let hn_clone = dhcp_name(&self.hostname);
             connecting_ticks = 0;
             info!("Network: starting initial WiFi connection to {}", ssid_clone);
+            let wc = wifi_connecting.clone();
+            let ws = self.ws_tx.clone();
+            let ap = self.ap_active.clone();
+            let cache = self.wifi_result_cache.clone();
             tokio::task::spawn_blocking(move || {
-                connect_wifi_blocking(&ssid_clone, &pw_clone, &hn_clone)
+                wc.store(true, Ordering::Relaxed);
+                let result = connect_wifi_blocking(&ssid_clone, &pw_clone, &hn_clone);
+                wc.store(false, Ordering::Relaxed);
+                // Update AP flag and cache result (like user-initiated path)
+                ap.store(ap::is_ap_running(), Ordering::Relaxed);
+                if let Ok(mut guard) = cache.lock() {
+                    *guard = Some(result.clone());
+                }
+                if let Some(tx) = ws {
+                    let msg = ServerMsg::WifiConnectResult(result);
+                    if let Ok(json) = serde_json::to_string(&msg) {
+                        let _ = tx.send(json);
+                    }
+                }
             });
         }
 
         let proto_state = self.to_protocol_state(&state);
         self.broadcast_state(&proto_state);
 
+        let mut ap_ready_rx = Some(ap_ready_rx);
         let mut time_synced = ntp::is_time_synced();
         let mut ticker = interval(MONITOR_INTERVAL);
         let mut cmd_rx = self.cmd_rx.take();
+        // Cooldown ticks after AP TX-error reset — skip TX checks to let
+        // the interface stabilize (counters reset, beacons start flowing).
+        let mut tx_reset_cooldown: u8 = 6; // skip first 30s (boot settling)
 
         loop {
             tokio::select! {
@@ -321,20 +376,60 @@ impl Subsystem for NetworkSubsystem {
                     let mut state_changed = false;
 
                     // 1. AP health: if AP should be up and hostapd dead, restart
-                    let ap_should_be_up = matches!(
+                    // Skip AP health checks while WiFi is connecting — AP is
+                    // intentionally stopped during connect → DHCP → band restart
+                    let skip_ap_check = wifi_connecting.load(Ordering::Relaxed);
+                    let ap_should_be_up = !skip_ap_check && matches!(
                         state,
                         NetState::ApOnly | NetState::ApConnecting { .. } |
                         NetState::ApConnected { .. } | NetState::Recovering { .. }
                     );
-                    if ap_should_be_up {
-                        let ap_running = tokio::task::spawn_blocking(|| ap::is_ap_running())
+                    if ap_should_be_up && !ap::is_restarting() {
+                        let check_tx = tx_reset_cooldown == 0;
+                        if tx_reset_cooldown > 0 {
+                            tx_reset_cooldown -= 1;
+                        }
+
+                        let (ap_running, tx_broken) = if check_tx {
+                            tokio::task::spawn_blocking(|| {
+                                (ap::is_ap_running(), ap::has_tx_errors())
+                            }).await.unwrap_or((false, false))
+                        } else {
+                            let running = tokio::task::spawn_blocking(|| ap::is_ap_running())
+                                .await.unwrap_or(false);
+                            (running, false) // skip TX check during cooldown
+                        };
+
+                        if !ap_running || tx_broken {
+                            if tx_broken && ap_running {
+                                warn!("Network: AP has TX errors with no packets — resetting p2p0");
+                                let task = tokio::task::spawn_blocking(|| {
+                                    ap::set_restarting(true);
+                                    ap::stop_ap().ok();
+                                    ap::reset_interface();
+                                    let r = ap::ensure_ap_unlocked();
+                                    ap::set_restarting(false);
+                                    r
+                                });
+                                match tokio::time::timeout(std::time::Duration::from_secs(20), task).await {
+                                    Ok(_) => {}
+                                    Err(_) => warn!("Network: AP reset timed out after 20s"),
+                                }
+                                tx_reset_cooldown = 6; // 30s cooldown after reset
+                            } else {
+                                warn!("Network: AP died, restarting");
+                                let task = tokio::task::spawn_blocking(|| ap::ensure_ap());
+                                match tokio::time::timeout(std::time::Duration::from_secs(15), task).await {
+                                    Ok(_) => {}
+                                    Err(_) => warn!("Network: AP restart timed out after 15s"),
+                                }
+                            }
+                        }
+                        // Re-check actual state rather than assuming success
+                        let still_running = tokio::task::spawn_blocking(|| ap::is_ap_running())
                             .await
                             .unwrap_or(false);
-                        if !ap_running {
-                            warn!("Network: AP died, restarting");
-                            let _ = tokio::task::spawn_blocking(|| ap::ensure_ap()).await;
-                        }
-                        self.ap_active.store(true, Ordering::Relaxed);
+                        self.ap_active.store(still_running, Ordering::Relaxed);
                     }
 
                     // 2. WiFi status poll
@@ -350,10 +445,17 @@ impl Subsystem for NetworkSubsystem {
                                     refresh_rps();
                                     update_resolv_conf();
                                 });
+                                let sta_freq = wpa::WpaClient::connect()
+                                    .ok()
+                                    .and_then(|w| w.connected_frequency())
+                                    .unwrap_or(0);
+                                let ap_freq = AP_FREQ_MHZ.load(Ordering::Relaxed);
                                 state = NetState::ApConnected {
                                     ssid: ssid.clone(),
                                     ip,
                                     signal: read_wifi_signal().unwrap_or(0),
+                                    sta_freq,
+                                    ap_freq,
                                 };
                                 self.register_mdns();
                                 state_changed = true;
@@ -367,8 +469,12 @@ impl Subsystem for NetworkSubsystem {
                                     let pw_c = wifi_password.clone();
                                     let hn_c = dhcp_name(&self.hostname);
                                     warn!("Network: WiFi not connected, retrying (next retry in {}s)", wifi_retry_ticks as u32 * 5);
+                                    let wc = wifi_connecting.clone();
                                     tokio::task::spawn_blocking(move || {
-                                        connect_wifi_blocking(&ssid_c, &pw_c, &hn_c)
+                                        wc.store(true, Ordering::Relaxed);
+                                        let r = connect_wifi_blocking(&ssid_c, &pw_c, &hn_c);
+                                        wc.store(false, Ordering::Relaxed);
+                                        r
                                     });
                                 }
                             }
@@ -394,8 +500,12 @@ impl Subsystem for NetworkSubsystem {
                                         state_changed = true;
                                     }
                                 }
-                            } else {
+                            } else if !wifi_connecting.load(Ordering::Relaxed) {
                                 warn!("Network: WiFi dropped while AP+WiFi");
+                                // Clear stale "success" result — WiFi is no longer connected
+                                if let Ok(mut guard) = self.wifi_result_cache.lock() {
+                                    *guard = None;
+                                }
                                 self.unregister_mdns();
                                 connecting_ticks = 0;
                                 poor_signal_ticks = 0;
@@ -407,6 +517,9 @@ impl Subsystem for NetworkSubsystem {
                             // WiFi-only: if WiFi drops, restart AP and recover
                             if read_interface_ip("wlan0").is_none() {
                                 warn!("Network: WiFi dropped in WifiOnly mode, restarting AP");
+                                if let Ok(mut guard) = self.wifi_result_cache.lock() {
+                                    *guard = None;
+                                }
                                 self.unregister_mdns();
                                 connecting_ticks = 0;
                                 poor_signal_ticks = 0;
@@ -447,10 +560,17 @@ impl Subsystem for NetworkSubsystem {
                                     refresh_rps();
                                     update_resolv_conf();
                                 });
+                                let sta_freq = wpa::WpaClient::connect()
+                                    .ok()
+                                    .and_then(|w| w.connected_frequency())
+                                    .unwrap_or(0);
+                                let ap_freq = AP_FREQ_MHZ.load(Ordering::Relaxed);
                                 state = NetState::ApConnected {
                                     ssid: ssid.clone(),
                                     ip,
                                     signal: read_wifi_signal().unwrap_or(0),
+                                    sta_freq,
+                                    ap_freq,
                                 };
                                 self.register_mdns();
                                 state_changed = true;
@@ -464,8 +584,12 @@ impl Subsystem for NetworkSubsystem {
                                     let pw_c = wifi_password.clone();
                                     let hn_c = dhcp_name(&self.hostname);
                                     warn!("Network: WiFi recovery retry (next retry in {}s)", wifi_retry_ticks as u32 * 5);
+                                    let wc = wifi_connecting.clone();
                                     tokio::task::spawn_blocking(move || {
-                                        connect_wifi_blocking(&ssid_c, &pw_c, &hn_c)
+                                        wc.store(true, Ordering::Relaxed);
+                                        let r = connect_wifi_blocking(&ssid_c, &pw_c, &hn_c);
+                                        wc.store(false, Ordering::Relaxed);
+                                        r
                                     });
                                 }
                             }
@@ -486,7 +610,7 @@ impl Subsystem for NetworkSubsystem {
                     }
 
                     // 4. AP lifecycle: if Connected + NTP synced + !ap_keep_alive → stop AP
-                    if let NetState::ApConnected { ref ssid, ref ip, signal } = state {
+                    if let NetState::ApConnected { ref ssid, ref ip, signal, sta_freq, .. } = state {
                         if time_synced && !ap_keep_alive {
                             info!("Network: NTP synced and ap_keep_alive=false, stopping AP");
                             let _ = tokio::task::spawn_blocking(|| ap::stop_ap()).await;
@@ -495,6 +619,7 @@ impl Subsystem for NetworkSubsystem {
                                 ssid: ssid.clone(),
                                 ip: ip.clone(),
                                 signal,
+                                sta_freq,
                             };
                             state_changed = true;
                         }
@@ -551,8 +676,11 @@ impl Subsystem for NetworkSubsystem {
                             let ap_active = self.ap_active.clone();
                             let hn = dhcp_name(&self.hostname);
                             let cache = self.wifi_result_cache.clone();
+                            let wc = wifi_connecting.clone();
                             tokio::task::spawn_blocking(move || {
+                                wc.store(true, Ordering::Relaxed);
                                 let result = connect_wifi_user(&ssid, &password, &hn);
+                                wc.store(false, Ordering::Relaxed);
                                 // Update ap_active flag (AP may have been restarted on STA band, or left running on failure)
                                 ap_active.store(ap::is_ap_running(), Ordering::Relaxed);
                                 // Cache result for reconnecting clients
@@ -578,7 +706,7 @@ impl Subsystem for NetworkSubsystem {
                             ap_keep_alive = keep;
                             // If turning off and conditions met, stop AP now
                             if !keep && time_synced {
-                                if let NetState::ApConnected { ref ssid, ref ip, signal } = state {
+                                if let NetState::ApConnected { ref ssid, ref ip, signal, sta_freq, .. } = state {
                                     info!("Network: stopping AP per user request");
                                     let _ = tokio::task::spawn_blocking(|| ap::stop_ap()).await;
                                     self.ap_active.store(false, Ordering::Relaxed);
@@ -586,6 +714,7 @@ impl Subsystem for NetworkSubsystem {
                                         ssid: ssid.clone(),
                                         ip: ip.clone(),
                                         signal,
+                                        sta_freq,
                                     };
                                     let proto = self.to_protocol_state(&state);
                                     self.broadcast_state(&proto);
@@ -595,8 +724,9 @@ impl Subsystem for NetworkSubsystem {
                             if keep && matches!(state, NetState::WifiOnly { .. }) {
                                 let _ = tokio::task::spawn_blocking(|| ap::ensure_ap()).await;
                                 self.ap_active.store(true, Ordering::Relaxed);
-                                if let NetState::WifiOnly { ssid, ip, signal } = state.clone() {
-                                    state = NetState::ApConnected { ssid, ip, signal };
+                                if let NetState::WifiOnly { ssid, ip, signal, sta_freq } = state.clone() {
+                                    let ap_freq = AP_FREQ_MHZ.load(Ordering::Relaxed);
+                                    state = NetState::ApConnected { ssid, ip, signal, sta_freq, ap_freq };
                                     let proto = self.to_protocol_state(&state);
                                     self.broadcast_state(&proto);
                                 }
@@ -629,6 +759,24 @@ impl Subsystem for NetworkSubsystem {
                             break;
                         }
                     }
+                }
+
+                // AP init completion (oneshot, fires once)
+                result = async {
+                    if let Some(ref mut rx) = ap_ready_rx {
+                        rx.await
+                    } else {
+                        std::future::pending().await
+                    }
+                } => {
+                    ap_ready_rx = None; // consumed
+                    if let Ok(ok) = result {
+                        info!("Network: AP init complete (ok={})", ok);
+                        self.ap_active.store(ok, Ordering::Relaxed);
+                    }
+                    // Broadcast initial state now that AP is confirmed
+                    let proto = self.to_protocol_state(&state);
+                    self.broadcast_state(&proto);
                 }
 
                 _ = ctx.shutdown.recv() => {
@@ -832,19 +980,12 @@ fn connect_wifi_inner(ssid: &str, password: &str, dhcp_hostname: &str, scan_firs
         };
     }
 
-    // SUCCESS: refresh RPS before DHCP (affects packet handling performance).
+    // SUCCESS: STA associated. Run DHCP while AP is still alive to minimize
+    // AP downtime. The driver tolerates AP+STA on different bands for ~35s,
+    // which is more than enough for DHCP (typically 1-3s).
     refresh_rps();
 
-    // Now stop AP to take control of when/how it restarts on the STA band.
-    // If we didn't stop it here, the Marvell driver would kill hostapd ~35s after
-    // STA associates on 5GHz anyway. Stopping it now lets us restart cleanly.
-    info!("Network: STA associated, stopping AP to restart on STA band");
-    if let Err(e) = ap::stop_ap() {
-        warn!("Network: failed to stop AP: {}", e);
-    }
-
-    // Trigger DHCP (15s timeout, one retry on failure)
-    info!("Network: wpa associated, running DHCP");
+    info!("Network: STA associated, running DHCP (AP still alive)");
     if !run_dhcp(dhcp_hostname) {
         warn!("Network: DHCP failed, retrying in 2s");
         std::thread::sleep(std::time::Duration::from_secs(2));
@@ -853,33 +994,47 @@ fn connect_wifi_inner(ssid: &str, password: &str, dhcp_hostname: &str, scan_firs
         }
     }
 
-    // Update DNS resolution with the new gateway
     update_resolv_conf();
 
-    // Brief pause for IP assignment to fully propagate
-    std::thread::sleep(std::time::Duration::from_secs(1));
-
-    // Restart AP on the same band as the connected STA
-    let sta_freq = wpa.connected_frequency();
-    if let Some(freq) = sta_freq {
-        info!("Network: STA connected at {}MHz, restarting AP on same band", freq);
-        if let Err(e) = ap::start_ap_on_band(freq) {
-            warn!("Network: failed to restart AP on band: {}, trying default", e);
-            let _ = ap::ensure_ap();
-        }
-    } else {
-        info!("Network: could not determine STA frequency, restarting AP on default band");
-        let _ = ap::ensure_ap();
-    }
-
-    // Save credentials now that connection succeeded
+    // Save credentials to config.toml BEFORE AP restart — the AP band switch
+    // can fail or panic, and credential persistence is critical. This is the
+    // primary persistence mechanism: wpa_supplicant's save_config is broken on
+    // this platform (Android socket FD mechanism).
     let config_path = std::path::Path::new(CONFIG_PATH);
     let mut file_cfg = encore_common::config::EncoreConfigFile::load(config_path)
         .unwrap_or_default();
     file_cfg.network.wifi_ssid = Some(ssid.to_string());
     file_cfg.network.wifi_password = Some(password.to_string());
-    if let Err(e) = file_cfg.save(config_path) {
-        warn!("Network: config save failed: {}", e);
+    match file_cfg.save(config_path) {
+        Ok(()) => {
+            // Flush to NAND — yaffs2 may buffer writes
+            let _ = std::process::Command::new("sync").status();
+            info!("Network: WiFi credentials saved to config.toml (ssid={})", ssid);
+        }
+        Err(e) => {
+            warn!("Network: CRITICAL — config save failed, WiFi won't persist across reboot: {}", e);
+        }
+    }
+
+    // Now stop AP and restart on STA band (minimizes downtime to ~4s)
+    let sta_freq = wpa.connected_frequency();
+    info!("Network: stopping AP to restart on STA band");
+    if let Err(e) = ap::stop_ap() {
+        warn!("Network: failed to stop AP: {}", e);
+    }
+    // Driver stabilization delay — prevent nl80211 corruption from rapid churn
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // Restart AP on the same band as STA
+    if let Some(freq) = sta_freq {
+        info!("Network: STA at {}MHz, restarting AP on same band", freq);
+        if let Err(e) = ap::start_ap_on_band(freq) {
+            warn!("Network: band-matched AP restart failed: {}, trying default", e);
+            let _ = ap::ensure_ap();
+        }
+    } else {
+        info!("Network: unknown STA frequency, restarting AP on default band");
+        let _ = ap::ensure_ap();
     }
 
     WifiConnectResult {

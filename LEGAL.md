@@ -28,6 +28,10 @@ Industries, Incorporated, a subsidiary of Samsung Electronics Co., Ltd.
 
 "Home Assistant" is a trademark of Nabu Casa, Inc.
 
+"aptX" and "aptX HD" are trademarks of Qualcomm Technologies, Inc.
+
+"WireGuard" is a registered trademark of Jason A. Donenfeld.
+
 This project is not affiliated with, endorsed by, sponsored by, or associated
 with any of these companies. All trademarks are the property of their
 respective owners and are used here solely for identification and
@@ -229,9 +233,13 @@ Encore incorporates or depends on the following open-source projects:
 | wasm-bindgen | MIT / Apache-2.0 | WebAssembly bindings |
 | Zig | MIT | Cross-compilation toolchain |
 | tracing | MIT | Structured logging |
+| libfreeaptx | LGPL-2.1-or-later | aptX / aptX HD Bluetooth codec decoder (vendored, statically linked) |
+| libsbc | Apache-2.0 | SBC Bluetooth codec decoder (vendored, statically linked) |
 
-The complete dependency list with pinned versions is specified in
-`encore/Cargo.toml`.
+The complete Rust dependency list with pinned versions is specified in
+`encore/Cargo.toml`. Vendored C sources for the Bluetooth codecs are in
+`encore/crates/encore-firmware/csrc/` with their upstream license files
+preserved alongside the code.
 
 ## Contact
 

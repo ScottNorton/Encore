@@ -8,24 +8,9 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 
 pub fn render(container: &web_sys::Element) {
-    // Request fresh network state on page open
+    // Server sends cached state on connect. Single fallback request
+    // in case state changed since the WebSocket connected.
     crate::ws::send_msg(&ClientMsg::RequestNetworkState);
-
-    // Retry if state is still None after 2s (network subsystem may be
-    // in its 30s AP startup wait and not processing commands yet)
-    dom::set_timeout(|| {
-        let needs_retry = crate::state::with(|s| s.network.is_none());
-        if needs_retry {
-            crate::ws::send_msg(&ClientMsg::RequestNetworkState);
-            // One more retry after another 5s
-            dom::set_timeout(|| {
-                let still_none = crate::state::with(|s| s.network.is_none());
-                if still_none {
-                    crate::ws::send_msg(&ClientMsg::RequestNetworkState);
-                }
-            }, 5_000);
-        }
-    }, 2_000);
 
     // ── WiFi Status card ──
     let wifi_card = dom::create_div();

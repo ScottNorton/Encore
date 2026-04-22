@@ -1,8 +1,7 @@
-//! Raw ALSA PCM interface via kernel ioctls — RW (WRITEI) mode.
+//! Raw ALSA PCM interface via kernel i/o controls — RW (WRITEI) mode.
 //!
-//! Talks directly to /dev/snd/pcmC*D*p without libasound2.
-//! Uses RW_INTERLEAVED access with WRITEI_FRAMES ioctl, matching
-//! speaker-test's proven working configuration on Marvell BG2CDP kernel 3.8.
+//! Talks directly to /dev/snd/pcmC*D*p.
+//! Uses RW_INTERLEAVED access with WRITEI_FRAMES ioctl
 //!
 //! Format: S32_LE stereo 48kHz, period=256, buffer=4096.
 //! Struct layouts are for 32-bit ARM (kernel 3.8 ABI-compatible).

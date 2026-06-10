@@ -22,8 +22,8 @@ dual-core ARM SoC.
 
 Encore replaces the stock software with a single open-source Rust binary. It adds Spotify
 Connect, Bluetooth with aptX HD, multi-room playback, Home Assistant integration, optional
-WireGuard remote access, and a web dashboard served from the speaker itself. Everything runs
-locally. No cloud account, no subscription, no telemetry.
+WireGuard remote access, and a web dashboard served from the speaker itself. All of it runs
+on the speaker; there is no companion cloud service.
 
 > By flashing this firmware you accept the risks and terms described in [LEGAL.md](LEGAL.md),
 > which also covers trademarks, reverse engineering disclosures, and your rights as a device owner.
@@ -52,7 +52,7 @@ Bug reports from other hardware are among the most useful contributions this pro
 
 The Invoke appears as a Spotify Connect device on your network, built on
 [librespot](https://github.com/librespot-org/librespot). Open Spotify on any device, pick
-the speaker, play. No account linking and nothing to install.
+the speaker, and play.
 
 ### Bluetooth A2DP
 
@@ -134,9 +134,10 @@ it; you shouldn't either.
   </picture>
 </p>
 
-Encore is one statically linked ARM binary (~6.6 MB, musl) that manages 13 async subsystems
-on the Invoke's dual-core Cortex-A7. Idle usage is roughly 40 MB RAM and 1-3% CPU; Spotify
-playback at maximum quality averages about 20% CPU across both cores.
+Encore is one statically linked ARM binary (musl) that manages a set of async subsystems
+on the Invoke's dual-core Cortex-A7. Measured on the developer's device, idle usage sits
+around 40 MB of RAM and a few percent CPU, and Spotify playback at maximum quality averages
+about 20% across both cores.
 
 | Subsystem | Purpose | Auto-Restart |
 |-----------|---------|:---:|

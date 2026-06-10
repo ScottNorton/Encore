@@ -106,7 +106,8 @@ The Makefile auto-detects the OS:
   no WSL required.
 
 The WSL path is resolved with `wslpath` and cached in `REPO_WSL`. If detection
-fails, you can override it: `make REPO_WSL=/mnt/g/HKInvoke firmware`.
+fails, you can override it with the repo's WSL path, e.g.
+`make REPO_WSL=/mnt/c/path/to/HKInvoke firmware`.
 
 ## CI Workflows
 

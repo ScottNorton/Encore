@@ -354,8 +354,7 @@ sudo apt install gcc-arm-linux-gnueabihf make bc flex bison
 
 ### Build everything
 ```bash
-# From WSL:
-cd /mnt/g/HKInvoke
+# From WSL, in the repo root:
 bash scripts/build/build_kexec.sh
 ```
 

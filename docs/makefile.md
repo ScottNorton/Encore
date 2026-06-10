@@ -114,7 +114,8 @@ The GitHub Actions workflows use the same Makefile targets:
 
 ### CI (`ci.yml`)
 
-Runs on every push and PR to `main`. Three parallel jobs:
+Runs on pull requests to `main` and on manual dispatch (Actions tab → CI → Run workflow).
+Direct pushes do not trigger it. Three parallel jobs:
 
 | Job | What it runs | Purpose |
 |-----|-------------|---------|

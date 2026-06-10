@@ -31,7 +31,8 @@ on the speaker; there is no companion cloud service.
 ## Project Status
 
 **Encore is a working hobby project, not a finished product.** It is developed and tested on
-one developer's hardware. Treat every feature below as "works for the developer" until more
+one developer's hardware, and most features are first working implementations rather than
+hardened subsystems. Treat every feature below as "works for the developer" until more
 people have flashed it and reported back. What this project can promise is documentation: the
 hardware, protocols, and boot chain are written up in enough detail that you can learn how
 the device works and pick up where the current work stops.
@@ -40,7 +41,8 @@ the device works and pick up where the current work stops.
 |------|--------|
 | Spotify Connect, Bluetooth A2DP, web dashboard, LED ring, OTA updates | Working on real hardware |
 | Multi-speaker groups, WireGuard VPN, desktop/Android app | Implemented, lightly tested |
-| Home Assistant (MQTT), Wyoming voice satellite | Implemented, **not yet tested against a live Home Assistant instance** |
+| Home Assistant (MQTT) | Proof of concept: tested against a live Home Assistant instance with a single speaker. Group entities untested |
+| Wyoming voice satellite | Implemented, **not yet validated end-to-end against a live instance** |
 | Wake word detection | Framework only. The built-in detector is a stub that never triggers; it needs a real engine |
 | Linux 6.1 kernel via kexec | Research in progress, documented in [docs/kernel-porting.md](docs/kernel-porting.md) |
 
@@ -81,8 +83,8 @@ channels to form pairs. See [docs/groups.md](docs/groups.md).
 
 ### Home Assistant (experimental)
 
-> Implemented but not yet validated against a live Home Assistant instance.
-> Testing feedback is welcome.
+> Proof-of-concept stage: tested against a live Home Assistant instance with a single
+> speaker. The group-related entities have not been tested. Feedback is welcome.
 
 MQTT integration with auto-discovery. The speaker registers as a media player, light
 (LED ring), and sensors in Home Assistant. See [docs/home-assistant.md](docs/home-assistant.md).

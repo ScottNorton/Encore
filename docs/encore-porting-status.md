@@ -7,6 +7,12 @@ against Encore's Rust implementation status.
 **Vendor source**: `vendor/firmware/squashfs-root/` (stock rootfs), `vendor/kernel/` (full kernel source)
 **Encore source**: `encore/crates/` (Rust workspace), `rootfs/` (overlay)
 
+> **Note (snapshot):** This audit is a point-in-time cross-reference (see the date at the
+> bottom). Some items listed below as not-yet-ported have since landed in Encore — most
+> notably native microphone capture (`audio/capture.rs`, replacing `arecord`) and DSP event
+> handling (bootup, version, mic mute) in `mcu/dsp.rs`. When a row disagrees with the
+> source tree, trust the source tree.
+
 ---
 
 ## Legend

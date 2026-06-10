@@ -1,8 +1,7 @@
 # Contributing
 
-Thanks for your interest in this project. The Harman Kardon Invoke community firmware gives
-discontinued speakers a second life, and contributions of all kinds are welcome — code,
-documentation, hardware research, testing, bug reports.
+Contributions of all kinds are welcome: code, documentation, hardware research, testing
+on other hardware revisions, and bug reports.
 
 ## Getting Started
 

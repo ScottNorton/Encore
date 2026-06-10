@@ -490,26 +490,30 @@ Note: `alert:playing` cancels on ANY button (action, bluetooth, micmute, volumeu
 | `encore/crates/encore-firmware/src/mcu/i2c.rs` | Low-level I2C bus access (retry, backoff) |
 | `encore/crates/encore-firmware/src/led.rs` | LED ring subsystem: animations, volume arc, button routing |
 
-### Encore Button Mapping (Current)
+### Encore Button Mapping
 
-| MCU Event | Current Action | Planned Action |
-|-----------|---------------|----------------|
-| TouchShortPress | (logged, no action yet) | Play/pause Spotify |
-| TouchLongPress | (logged, no action yet) | Voice trigger (Wyoming push-to-talk) |
-| BluetoothShort | (logged, no action yet) | Toggle BT pairing |
-| BluetoothLong | (logged, no action yet) | (reserved) |
-| MicShort | (logged, no action yet) | Toggle mic mute (DSP hardware mute) |
-| MicLong | (logged, no action yet) | Enter WiFi setup / AP mode |
-| ResetShort | (logged, no action yet) | (reserved / factory reset) |
-| ResetLong | (logged, no action yet) | (reserved / factory reset) |
-| VolumeUp(n) | Adjust volume +3% per step, show LED arc | — |
-| VolumeDown(n) | Adjust volume -3% per step, show LED arc | — |
+| MCU Event | Action |
+|-----------|--------|
+| TouchShortPress | Play/pause |
+| TouchLongPress | Voice trigger (push-to-talk) |
+| BluetoothShort | Toggle Bluetooth pairing |
+| BluetoothLong | Logged only (reserved) |
+| MicShort | Toggle mic mute |
+| MicLong | Enter WiFi setup / AP mode |
+| ResetShort / ResetLong | Logged only (the reset itself is handled in hardware) |
+| VolumeUp(n) / VolumeDown(n) | Adjust volume by `volume_ring_step` (default 2) per step, show LED arc |
 
 ## Appendix: Source Material
 
-- `vendor/firmware/cortana_mcu_disasm_proper.txt` — annotated MSP430 disassembly (4,743 lines, 4,091 instructions, 121+ functions)
-- `scripts/dsp/disasm_mcu.py` — rerunnable disassembly script (ELF wrapper, peripheral annotations, cross-references)
-- `vendor/ghidra_output/mcu-interface.c` — Ghidra decompilation of stock ARM binary
-- `vendor/ghidra_output/audio-ui.c` — Button-to-action state machine
-- `vendor/firmware/squashfs-root/usr/share/mcu/cortana_mcu.bin` — MCU firmware binary (13,312 bytes)
+The research inputs below live in a local `vendor/` tree that is **not** part of this
+repository (it is extracted from the stock firmware, which is not redistributed). All of
+it can be reproduced from your own copy of the stock image:
+
+- `cortana_mcu.bin` (13,312 bytes) — extract from the stock rootfs at `/usr/share/mcu/`
+- Annotated MSP430 disassembly (4,743 lines, 121+ functions) — regenerate with
+  `scripts/dsp/disasm_mcu.py` (rerunnable: builds an ELF wrapper, annotates peripherals,
+  adds cross-references)
+- Ghidra decompilations of the stock `mcu-interface` and `audio-ui` ARM binaries (command
+  dispatch and the button-to-action state machine) — produce with Ghidra headless analysis
+  against binaries from your stock rootfs
 - MSP430 toolchain: `apt install binutils-msp430` in WSL for `msp430-objdump` / `msp430-objcopy`

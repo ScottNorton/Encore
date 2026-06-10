@@ -53,6 +53,7 @@ NUL
 
 # Tool config
 .claude/
+.superpowers/
 CLAUDE.md
 .aider.conventions.md
 

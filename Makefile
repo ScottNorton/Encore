@@ -83,7 +83,7 @@ app-dist: wasm
 
 app-icons:
 	@echo "=== Generating Tauri app icons ==="
-	cd encore/crates/encore-app && cargo tauri icon ../../../branding/pwa-icon-512-dark.png
+	cd encore/crates/encore-app && cargo tauri icon ../../../branding/app-icon-dark.png
 
 app: app-dist app-icons
 	@# Clear WebView2 cache to prevent stale frontend content

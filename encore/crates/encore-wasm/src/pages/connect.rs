@@ -123,7 +123,7 @@ pub fn connect_to_speaker(host: &str) {
     });
 
     // Transition logo to connecting state and hide connect form
-    crate::app::set_logo_state("connecting");
+    crate::brand::set_state(crate::brand::LogoState::Connecting);
     set_connect_form_visible(false);
 
     // Kick off async connection + verification
@@ -176,7 +176,7 @@ async fn verify_connection(host: String) {
     if let Some(nav) = dom::get_el("tab-nav-wrap") {
         dom::set_style(&nav, "display", "");
     }
-    crate::app::set_logo_state("header");
+    crate::brand::set_state(crate::brand::LogoState::Header);
     crate::app::check_setup_status();
     dom::window().location().set_hash("dashboard").ok();
 }
@@ -188,7 +188,7 @@ fn connection_failed(host: &str, reason: &str) {
     crate::ws::disconnect();
 
     set_logo_status("");
-    crate::app::set_logo_state("hero");
+    crate::brand::set_state(crate::brand::LogoState::Hero);
     set_connect_form_visible(true);
 
     if let Some(el) = dom::get_el("connect-host-input") {

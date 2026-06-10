@@ -13,6 +13,13 @@
 <link rel="apple-touch-icon" sizes="192x192" href="/branding/pwa-icon-192-dark.png">
 <link rel="apple-touch-icon" sizes="512x512" href="/branding/pwa-icon-512-dark.png">
 <title>Encore</title>
+<!--
+  KEEP IN SYNC with encore/crates/encore-wasm/src/brand/palette.rs
+  and the speaker_svg() / arc_ring_svg() templates in brand/mod.rs.
+  The inline CSS and SVG below exist because the loading screen must render
+  before WASM loads. When changing colors, SVG paths, or animation timings,
+  update both places together.
+-->
 <style>
   *{margin:0;padding:0;box-sizing:border-box}
   body{background:#0a0a0a;color:#e8e6e3;font-family:system-ui,-apple-system,sans-serif}

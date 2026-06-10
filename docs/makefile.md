@@ -129,12 +129,13 @@ Triggered by pushing a `v*` tag. Three sequential jobs:
 | Job | What it runs | Purpose |
 |-----|-------------|---------|
 | **Build** | Same as CI build job | Produces the Encore ARM binary |
-| **Firmware** | Downloads stock image → `build_firmware.sh` | Produces 83_IMAGE + rootfs.squashfs |
-| **Release** | Collects artifacts, generates SHA256 checksums | Creates GitHub release with 3 downloadable assets |
+| **Firmware** | Downloads stock image → `build_firmware.sh` | Verification gate only: proves the combined image builds end-to-end |
+| **Release** | Collects the binary, generates a SHA256 checksum | Creates the GitHub release |
 
-Release assets are named with the tag version:
-- `encore-v1.0.0-arm` — OTA binary update
-- `encore-v1.0.0.squashfs` — OTA rootfs update
-- `encore-v1.0.0-83_IMAGE` — USB boot full flash
+The only published release asset is the Encore ARM binary (`encore-<tag>-arm`, for OTA
+binary updates). The firmware job intentionally does **not** upload `83_IMAGE` or
+`rootfs.squashfs`: those contain stock Harman rootfs components and are not ours to
+redistribute. Users run `make firmware` against their own stock image to produce a
+flashable image.
 
 The stock firmware image is cached between CI runs (keyed by SHA256 `b2e12178...`).

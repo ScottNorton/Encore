@@ -650,6 +650,11 @@ No kexec module needed! The USB boot path provides direct, unencrypted kernel lo
 
 ## Key Files
 
+The `vendor/`, `firmware/kernel_test/`, and `tools/kexec-*` paths below are local working
+trees, not part of this repository. Obtain the vendor kernel from Harman's GPL source
+release (linked under External References) and the 6.1 tree from kernel.org; the kexec
+module sources are not yet published.
+
 | File | Purpose |
 |------|---------|
 | `docs/kernel-porting.md` | This document |

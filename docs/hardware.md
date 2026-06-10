@@ -386,7 +386,8 @@ If the process dies without closing the fd, the device reboots. Encore pets the
 watchdog every 10 seconds. Encore also sends MCU I2C command 0x24 every 30 seconds
 (stock sent it every 5 seconds), but this is a confirmed NO-OP — the MCU firmware has
 a dispatcher that ignores command 0x24 entirely, and the MCU's own WDT_A is stopped at
-boot. The SoC hardware watchdog is a reset source, but the MCU can reset the device.
+boot. The SoC hardware watchdog is the only system reset source; the MCU cannot reset
+the device.
 
 ## NAND Partition Layout
 

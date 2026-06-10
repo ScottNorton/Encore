@@ -53,7 +53,7 @@ pub fn init_after_boot(landing: &str) {
     dom::append(&app, &header);
 
     // Unified logo (fixed position, animates between states)
-    let logo = crate::logo::build_logo();
+    let logo = crate::brand::build_logo();
     dom::append(&app, &logo);
 
     // Tab navigation
@@ -96,9 +96,9 @@ pub fn init_after_boot(landing: &str) {
             let lp = landing_page.clone();
             dom::set_timeout(move || {
                 if lp == "connect" {
-                    set_logo_state("hero");
+                    crate::brand::set_state(crate::brand::LogoState::Hero);
                 } else {
-                    set_logo_state("header");
+                    crate::brand::set_state(crate::brand::LogoState::Header);
                 }
             }, 100);
             dom::set_timeout(move || {
@@ -728,9 +728,9 @@ pub fn route() {
     // Move logo to hero state for connect screen, header for everything else
     let is_connect = page == "connect";
     if is_connect {
-        set_logo_state("hero");
+        crate::brand::set_state(crate::brand::LogoState::Hero);
     } else {
-        set_logo_state("header");
+        crate::brand::set_state(crate::brand::LogoState::Header);
     }
 
     // Toggle connect mode: hide system menu items and conn-dot on connect screen
@@ -988,22 +988,6 @@ pub fn set_connect_mode(active: bool) {
             dom::add_class(&menu, "connect-mode");
         } else {
             dom::remove_class(&menu, "connect-mode");
-        }
-    }
-}
-
-pub fn set_logo_state(state: &str) {
-    if let Some(logo) = dom::get_el("app-logo") {
-        dom::remove_class(&logo, "logo-loading");
-        dom::remove_class(&logo, "logo-header");
-        dom::remove_class(&logo, "logo-hero");
-        dom::remove_class(&logo, "logo-connecting");
-        match state {
-            "loading" => dom::add_class(&logo, "logo-loading"),
-            "header" => dom::add_class(&logo, "logo-header"),
-            "hero" => dom::add_class(&logo, "logo-hero"),
-            "connecting" => dom::add_class(&logo, "logo-connecting"),
-            _ => dom::add_class(&logo, "logo-header"),
         }
     }
 }

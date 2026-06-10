@@ -27,8 +27,8 @@ For full hardware details, memory maps, and SPI protocol documentation, see
 
 ## Tools Overview
 
-All tools are in `scripts/` and are standalone Python 3 scripts with no
-external dependencies.
+All tools are standalone Python 3 scripts with no external dependencies, under
+`scripts/sharc/`, `scripts/ldr/`, and `scripts/dsp/`.
 
 | Tool | Purpose |
 |------|---------|
@@ -45,18 +45,30 @@ external dependencies.
 
 ## Quick Start
 
+### Get the stock firmware file
+
+The stock DSP firmware is not distributed in this repository. Get your own copy first,
+either straight off a running device:
+
+```bash
+ssh root@<device-ip> cat /usr/share/dsp/dsp-img.ldr > dsp-img.ldr
+```
+
+or by extracting the stock rootfs from your `83_IMAGE_stock`
+(`scripts/build/extract_rootfs.py` + `unsquashfs`) and copying
+`usr/share/dsp/dsp-img.ldr` out of it.
+
 ### Disassemble the stock firmware
 
 ```bash
 # Parse the .ldr file to see its block structure
-python scripts/ldr/ldr_parse.py vendor/firmware/squashfs-root/usr/share/dsp/dsp-img.ldr
+python scripts/ldr/ldr_parse.py dsp-img.ldr
 
 # Disassemble the boot kernel (first 256 instructions)
-python scripts/sharc/sharc_disasm.py vendor/firmware/squashfs-root/usr/share/dsp/dsp-img.ldr \
-  --swap --base 0x8C000
+python scripts/sharc/sharc_disasm.py dsp-img.ldr --swap --base 0x8C000
 
 # Extract and disassemble ALL program memory
-python scripts/ldr/ldr_disasm_pm.py vendor/firmware/squashfs-root/usr/share/dsp/dsp-img.ldr
+python scripts/ldr/ldr_disasm_pm.py dsp-img.ldr
 ```
 
 ### Understand the firmware structure
@@ -70,7 +82,7 @@ The .ldr file contains:
 
 ```bash
 # See all blocks with types and addresses
-python scripts/ldr/ldr_parse.py vendor/firmware/squashfs-root/usr/share/dsp/dsp-img.ldr --all
+python scripts/ldr/ldr_parse.py dsp-img.ldr --all
 ```
 
 Block types:
@@ -232,9 +244,11 @@ Contributions and findings are welcome.
 | `scripts/dsp/dsp_dump_memory.py` | On-device: dump 320 SRAM pages via SPI |
 | `scripts/dsp/dsp_probe2.py` | On-device: focused DSP probe with GPIO handshake |
 | `docs/dsp-reference.md` | Full technical reference |
-| `vendor/dsp_boot_kernel_disasm.txt` | Complete boot kernel disassembly (256 instructions) |
-| `vendor/dsp_firmware_disasm.txt` | SRAM dump disassembly (59,850 instructions) |
-| `vendor/dsp_firmware_ldr_disasm.txt` | .ldr firmware disassembly (25,363 instructions) |
+
+The full disassembly listings (boot kernel: 256 instructions; SRAM dump: 59,850
+instructions; .ldr firmware: 25,363 instructions) are generated outputs and are not
+checked into the repository, since they derive from the stock firmware. Regenerate them
+from your own firmware copy with the tools above.
 
 ## See Also
 

@@ -54,7 +54,7 @@ The Rust toolchain version and targets are pinned in `encore/rust-toolchain.toml
 
 ## Step 1: Obtain Stock Firmware
 
-The stock 83_IMAGE is required as a base — it contains the OTP-encrypted kernel that cannot be replaced.
+The stock 83_IMAGE is required as a base. It contains the encrypted, signature-verified kernel, which cannot be rebuilt from source.
 
 ```bash
 make download
@@ -137,20 +137,29 @@ See [Flashing Guide](flashing.md) for all deployment methods — USB boot (first
 
 ## Development Workflow
 
-The fastest loop — no firmware rebuild, no reboot:
+The fastest loop is a binary-only update, with no firmware rebuild:
 
 ```bash
-# Build Encore
 make encore
-
-# Deploy to device (builds + uploads + restarts)
-make deploy
-
-# Or manually:
-# 1. Upload binary over SSH
-# 2. Kill running Encore: killall encore
-# 3. Run: RUST_LOG=info /lsync/encore/encore
 ```
+
+Then deploy `build/encore` to the device by either:
+
+1. **Web UI** (recommended): upload the binary in the dashboard's Update tab. It is staged
+   as `/lsync/encore/encore_next` and promoted on the next boot.
+2. **SSH**: stage it manually, then reboot:
+   ```bash
+   cat build/encore | ssh root@<device-ip> 'cat > /run/encore_next'
+   ssh root@<device-ip> 'cp /run/encore_next /lsync/encore/encore_next && sync && reboot'
+   ```
+   (Upload to `/run` first; writing directly into `/lsync` over SSH can silently truncate.)
+
+The supervisor promotes a staged binary only after it runs stably, and falls back to the
+previous binary if it crashes at boot, so a bad build costs you one reboot, not a reflash.
+
+**Do not `kill` the running Encore process to restart it.** A dirty kill leaves WiFi, the
+DSP, and the watchdog in undefined states and can require a USB reflash. Always deploy via
+staging + reboot and let the supervisor manage the process.
 
 ### Run Tests
 

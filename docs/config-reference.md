@@ -216,7 +216,7 @@ Spotify Connect integration via librespot.
 | `normalisation_type`       | string         | `"auto"`  | Normalization mode: `"auto"`, `"album"`, or `"track"`. |
 | `normalisation_pregain_db` | f32            | `0.0`     | Pre-gain offset in dB applied before normalization. |
 
-Some Spotify changes require a reboot. Disabling Spotify remove the Spotify tab from the interface.
+Some Spotify changes require a reboot. Disabling Spotify removes the Spotify tab from the dashboard.
 
 ---
 
@@ -246,7 +246,7 @@ setup instructions.
 | `mqtt_user`     | string or null | *unset*  | MQTT username for authentication. |
 | `mqtt_password` | string or null | *unset*  | MQTT password for authentication. |
 
-Home Assistant changes currently require a reboot. Architecture to be revised.
+Home Assistant changes currently require a reboot.
 
 ---
 
@@ -260,7 +260,7 @@ Wyoming voice satellite protocol for Home Assistant voice pipelines.
 | `server_host` | string or null | *unset* | Wyoming server hostname (your Home Assistant instance). |
 | `server_port` | u16 or null    | *unset* | Wyoming server port (typically `10300`). |
 
-Wyoming changes require currently require a reboot. Architecture to be revised.
+Wyoming changes currently require a reboot.
 
 ---
 
@@ -281,7 +281,7 @@ is derived from the WiFi MAC, password `ridiculous`). When WiFi credentials are 
 `ap_keep_alive` is `true`, the AP remains active alongside WiFi for recovery access
 (note: 5 GHz WiFi will conflict with the 2.4 GHz AP on the single-radio chip).
 
-Some Network changes require currently require a reboot. Architecture to be revised.
+Some network changes currently require a reboot.
 
 ---
 
@@ -300,7 +300,7 @@ WireGuard VPN via userspace boringtun (TUN interface).
 | `peer_allowed_ips`     | string or null | *unset* | Allowed IPs for the tunnel (e.g. `"0.0.0.0/0"` for full tunnel, `"10.0.0.0/24"` for split). |
 | `persistent_keepalive` | u16            | `25`    | Keepalive interval in seconds. `0` = disabled. |
 
-VPN changes should not require a reboot, but does.
+VPN changes currently require a reboot.
 
 ---
 
@@ -319,7 +319,8 @@ synchronized audio playback.
 | `peers`      | string[]       | `[]`        | Bootstrap peer IPs for cross-subnet discovery (where mDNS doesn't reach). |
 | `party_mode` | bool           | `false`     | Accept audio streams from any group name, not just the configured one. |
 
-Group changes are instant.
+Most group changes require a reboot. Channel assignment can be changed at runtime from the
+dashboard.
 
 ---
 

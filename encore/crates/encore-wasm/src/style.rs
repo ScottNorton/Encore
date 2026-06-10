@@ -8,13 +8,16 @@ use crate::dom;
 /// Inject the complete stylesheet into <head>
 pub fn inject() {
     let style = dom::create_el("style");
-    style.set_text_content(Some(CSS));
+    let combined = format!("{}\n{}", crate::brand::css::css(), CSS);
+    style.set_text_content(Some(&combined));
     let doc = dom::document();
     if let Ok(Some(head)) = doc.query_selector("head") {
         head.append_child(&style).unwrap();
     }
 }
 
+// Gold palette vars (--accent, --accent-r/g/b, --accent-hover, --ring-cream, --dome)
+// and logo/wordmark CSS live in brand::css::css() and are prepended by inject().
 const CSS: &str = r#"
 @font-face {
     font-family: 'Inter';
@@ -39,8 +42,6 @@ const CSS: &str = r#"
     --text: #e8e6e3;
     --text-secondary: #8a8580;
     --text-muted: #4a4540;
-    --accent: #C8A55C;
-    --accent-hover: #D4B56E;
     --green: #3fb950;
     --orange: #d29922;
     --red: #f85149;
@@ -64,8 +65,6 @@ const CSS: &str = r#"
         --text: #1a1815;
         --text-secondary: #6B6560;
         --text-muted: #8c8580;
-        --accent: #A0864A;
-        --accent-hover: #8A7340;
         --green: #1a7f37;
         --orange: #bf8700;
         --red: #cf222e;
@@ -126,119 +125,6 @@ html, body {
     display: flex; align-items: center; gap: 10px;
     flex: 1; min-width: 0;
 }
-/* ── Unified Logo ── */
-.app-logo {
-    position: fixed;
-    z-index: 100;
-    display: flex;
-    align-items: center;
-    pointer-events: none;
-    transition: top 0.5s cubic-bezier(.4,0,.2,1),
-                left 0.5s cubic-bezier(.4,0,.2,1),
-                opacity 0.4s ease;
-}
-.logo-ring-wrap {
-    position: relative;
-    flex-shrink: 0;
-    transition: width 0.5s cubic-bezier(.4,0,.2,1),
-                height 0.5s cubic-bezier(.4,0,.2,1);
-}
-.logo-ring-container {
-    position: absolute;
-    inset: 0;
-}
-.logo-ring-container svg {
-    width: 100%; height: 100%;
-    display: block;
-    animation: logo-spin 25s linear infinite;
-}
-.logo-ring-container .logo-track {
-    stroke: var(--border);
-}
-.logo-glow {
-    position: absolute;
-    inset: -5px;
-    border-radius: 50%;
-    background: radial-gradient(circle, rgba(200,165,92,0.12) 0%, transparent 70%);
-    animation: logo-glow 4s ease-in-out infinite;
-    pointer-events: none;
-}
-.logo-speaker-container {
-    position: absolute;
-    inset: 15%;
-}
-.logo-speaker-container svg {
-    width: 100%; height: 100%;
-    display: block;
-}
-.speaker-dome {
-    transition: fill 1s ease;
-}
-.logo-text {
-    font-weight: 300;
-    letter-spacing: 4px;
-    text-transform: uppercase;
-    white-space: nowrap;
-    transition: opacity 0.3s ease, font-size 0.5s cubic-bezier(.4,0,.2,1);
-}
-.logo-status {
-    font-size: 12px;
-    color: var(--text-muted);
-    letter-spacing: 2px;
-    opacity: 0;
-    transition: opacity 0.3s ease;
-}
-.logo-connecting .logo-status { opacity: 1; }
-@keyframes logo-spin { to { transform: rotate(360deg); } }
-@keyframes logo-glow {
-    0%, 100% { opacity: 0.3; transform: scale(0.92); }
-    50% { opacity: 0.9; transform: scale(1.08); }
-}
-@media (prefers-color-scheme: light) {
-    .logo-glow {
-        background: radial-gradient(circle, rgba(160,134,74,0.08) 0%, transparent 70%);
-    }
-}
-
-/* Loading state: centered, 60px */
-.logo-loading {
-    top: 50%; left: 50%;
-    margin-top: -30px; margin-left: -30px;
-    flex-direction: column; gap: 12px;
-}
-.logo-loading .logo-ring-wrap { width: 60px; height: 60px; }
-.logo-loading .logo-text { font-size: 16px; opacity: 0; }
-
-/* Header state: top-left, 32px, inline */
-.logo-header {
-    top: calc(12px + env(safe-area-inset-top, 0px));
-    left: max(16px, calc((100vw - 1200px) / 2 + 16px));
-    margin: 0;
-    flex-direction: row; gap: 10px;
-}
-.logo-header .logo-ring-wrap { width: 32px; height: 32px; }
-.logo-header .logo-text { font-size: 16px; opacity: 1; }
-
-/* Hero state: above connect form, 100px, text below */
-.logo-hero {
-    top: 80px; left: 50%;
-    transform: translateX(-50%);
-    margin: 0;
-    flex-direction: column; align-items: center; gap: 14px;
-}
-.logo-hero .logo-ring-wrap { width: 100px; height: 100px; }
-.logo-hero .logo-text { font-size: 20px; opacity: 1; }
-
-/* Connecting state: same position as hero, ring shrinks slightly, status visible */
-.logo-connecting {
-    top: 80px; left: 50%;
-    transform: translateX(-50%);
-    margin: 0;
-    flex-direction: column; align-items: center; gap: 14px;
-}
-.logo-connecting .logo-ring-wrap { width: 80px; height: 80px; }
-.logo-connecting .logo-text { font-size: 20px; opacity: 1; }
-.logo-connecting .logo-ring-container svg { animation-duration: 3s; }
 
 .header-device-name {
     font-size: 13px; font-weight: 400;
@@ -505,7 +391,7 @@ html, body {
 .badge-stopped .badge-dot { background: var(--text-muted); }
 .badge-crashed .badge-dot { background: var(--red); }
 .badge-degraded .badge-dot { background: var(--orange); }
-.badge-blue { background: rgba(200,165,92,0.15); border-color: rgba(200,165,92,0.3); color: var(--accent); }
+.badge-blue { background: rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.15); border-color: rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.3); color: var(--accent); }
 .badge-green { background: rgba(63,185,80,0.15); border-color: rgba(63,185,80,0.3); color: var(--green); }
 .badge-muted { background: var(--bg); color: var(--text-muted); }
 .badge-sm { padding: 2px 8px; font-size: 10px; border-radius: 10px; }
@@ -1217,7 +1103,7 @@ canvas {
 }
 .designer-frame.selected {
     border-color: var(--accent);
-    box-shadow: 0 0 0 2px rgba(200,165,92,0.3);
+    box-shadow: 0 0 0 2px rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.3);
 }
 .designer-frame:hover { border-color: var(--text-muted); }
 

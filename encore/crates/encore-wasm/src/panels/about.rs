@@ -4,22 +4,9 @@ use crate::components::stat_row;
 use crate::dom;
 
 pub fn render(container: &web_sys::Element) {
-    // Logo wordmark
-    let logo_wrap = dom::create_div();
-    dom::set_class(&logo_wrap, "about-logo");
-    let picture = dom::create_el("picture");
-    let source_dark = dom::create_el("source");
-    dom::set_attr(&source_dark, "srcset", "/branding/logo-wordmark-dark.png");
-    dom::set_attr(&source_dark, "media", "(prefers-color-scheme:dark)");
-    dom::append(&picture, &source_dark);
-    let img = dom::create_el("img");
-    dom::set_attr(&img, "src", "/branding/logo-wordmark-light.png");
-    dom::set_attr(&img, "alt", "Encore Community Firmware");
-    dom::set_attr(&img, "width", "280");
-    dom::set_attr(&img, "height", "70");
-    dom::append(&picture, &img);
-    dom::append(&logo_wrap, &picture);
-    dom::append(container, &logo_wrap);
+    // Wordmark — inline SVG Classical Badge (gold ring + "Encore" + subtitle)
+    let wordmark = crate::brand::build_wordmark();
+    dom::append(container, &wordmark);
 
     let card = dom::create_div();
     dom::set_class(&card, "card");

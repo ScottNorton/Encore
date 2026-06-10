@@ -15,114 +15,116 @@
 
 <p align="center"><b>Community firmware for the Harman Kardon Invoke smart speaker.</b></p>
 
-In 2017, Harman Kardon released the Invoke together with Microsoft. Microsoft brought it to life with Cortana, 
-making it one of the first super-premium retail smart speakers on the market. Unfortunately, In January 2021, Microsoft retired Cortana. The Invoke was included and was made Bluetooth-only via OTA automatic update. Owners were offered a $50 gift card by Microsoft.
+The Invoke was a Cortana speaker sold by Harman Kardon starting in 2017. Microsoft retired
+Cortana in January 2021 and a final OTA update reduced the speaker to basic Bluetooth. The
+hardware underneath is still good: three drivers, a 7-microphone array, a SHARC DSP, and a
+dual-core ARM SoC.
 
-**Encore wakes them up again.**
+Encore replaces the stock software with a single open-source Rust binary. It adds Spotify
+Connect, Bluetooth with aptX HD, multi-room playback, Home Assistant integration, optional
+WireGuard remote access, and a web dashboard served from the speaker itself. Everything runs
+locally. No cloud account, no subscription, no telemetry.
 
-Encore is a drop-in replacement with a single open-source Rust binary that is responsible for restoring full functionality to hardware. Spotify Connect, VPN,
-Bluetooth streaming, Home Assistant integration, including a real-time web dashboard you can
-install as an app on your phone or PC. No cloud dependency. Use your own VPN to access your local assistant remotely from your speaker anywhere it has an internet connection via WiFi.
-No subscription. No telemetry. No one deciding your speaker's fate from a boardroom.
-Your hardware, your rules.
+> By flashing this firmware you accept the risks and terms described in [LEGAL.md](LEGAL.md),
+> which also covers trademarks, reverse engineering disclosures, and your rights as a device owner.
 
->See [legal information](LEGAL.md) for your rights and protections for this project and its contributors.
+## Project Status
 
-**Please consider forking and contributing!**
+**Encore is a working hobby project, not a finished product.** It is developed and tested on
+one developer's hardware. Treat every feature below as "works for the developer" until more
+people have flashed it and reported back. What this project can promise is documentation: the
+hardware, protocols, and boot chain are written up in enough detail that you can learn how
+the device works and pick up where the current work stops.
 
-Thanks to Harman Kardon for openly sharing the kernel source and tools making this possible,
-and to [coggy9](https://github.com/coggy9)'s
-[HKHacking](https://github.com/coggy9/HKHacking) repository and community efforts that helped get this project off the ground!
+| Area | Status |
+|------|--------|
+| Spotify Connect, Bluetooth A2DP, web dashboard, LED ring, OTA updates | Working on real hardware |
+| Multi-speaker groups, WireGuard VPN, desktop/Android app | Implemented, lightly tested |
+| Home Assistant (MQTT), Wyoming voice satellite | Implemented, **not yet tested against a live Home Assistant instance** |
+| Wake word detection | Framework only. The built-in detector is a stub that never triggers; it needs a real engine |
+| Linux 6.1 kernel via kexec | Research in progress, documented in [docs/kernel-porting.md](docs/kernel-porting.md) |
 
-**This is what smart speakers were supposed to be.**
-
----
+Bug reports from other hardware are among the most useful contributions this project can get.
 
 ## Features
 
 ### Spotify Connect
 
-The Invoke appears as a native Spotify Connect speaker on your network. Open
-Spotify on any device, pick the Invoke, and play. Built on
-[librespot](https://github.com/librespot-org/librespot) — no account linking,
-no pairing ceremony, no app to install. It just works.
+The Invoke appears as a Spotify Connect device on your network, built on
+[librespot](https://github.com/librespot-org/librespot). Open Spotify on any device, pick
+the speaker, play. No account linking and nothing to install.
 
 ### Bluetooth A2DP
 
-Stream from any Bluetooth device. The firmware introduces high-quality
-codec support. aptX HD, aptX, and SBC. This is a massive improvement over stock!
-
-### Home Assistant (experimental)
-
-> **Note:** This integration has not yet been tested with a live Home Assistant
-> instance. The MQTT protocol and auto-discovery payloads are implemented but
-> should be considered experimental until validated end-to-end.
-
-Full [MQTT](https://www.home-assistant.io/integrations/mqtt/) integration with
-auto-discovery. The Invoke registers itself as a media player, light (LED ring),
-and sensor (volume, playback state) in Home Assistant. Control your speaker from
-dashboards, automations, or voice commands through your own HA instance.
-
-### Wyoming Voice Satellite (experimental)
-
-> **Note:** This integration has not yet been tested with a live Home Assistant
-> instance. The Wyoming protocol handshake and audio streaming are implemented
-> but should be considered experimental until validated end-to-end.
-
-The Invoke becomes a
-[Wyoming voice satellite](https://www.home-assistant.io/integrations/wyoming/)
-for Home Assistant. The 7-microphone array and onboard SHARC DSP handle
-far-field voice capture with hardware beamforming and noise suppression. Speech
-processing happens on your Home Assistant server.
+Stream from any Bluetooth device. Encore supports aptX HD, aptX, and SBC; the stock firmware
+had no high-definition codec support. The Bluetooth stack talks to the kernel directly over
+raw HCI/L2CAP sockets, with no BlueZ daemon on the device.
 
 ### Web Dashboard
 
-Invokes running Encore get it a full-featured web app built entirely in Rust and compiled to WebAssembly, embedded in firmware binary, and served from the speaker itself. Network configuration, bluetooth setup, and over-the-air firmware updates can be done through this, and offers everything the speaker is capable of under Encore. Link the output of two or more speakers, create LED ring animation preview and editor for silent Home Assistant notifications, Spotify playback controls, check system logs. It's all done here.
+A single-page app compiled to WebAssembly, embedded in the firmware binary, and served from
+the speaker. Setup wizard, network configuration, Bluetooth pairing, EQ, LED animation editor,
+Spotify controls, speaker grouping, logs, and OTA updates all live here. It also installs as
+a PWA on a phone or desktop.
 
 ### Desktop & Mobile App
 
-The same WASM dashboard packaged as a standalone app via
-[Tauri v2](https://v2.tauri.app/). No browser needed. Launch the app, enter your speaker's IP or discover all speakers on your network automatically. It's the full dashboard experience on your desktop or phone, but requires separate updates.
-
-See [docs/app.md](docs/app.md) for usage, platform support, and build
-instructions.
+The same dashboard packaged as a standalone app via [Tauri v2](https://v2.tauri.app/), with
+mDNS speaker discovery. Windows and Android builds are tested; macOS, Linux, and iOS are
+supported by Tauri but untested here. See [docs/app.md](docs/app.md).
 
 ### Multi-Speaker Groups
 
-Link multiple Invokes for synchronized playback across rooms. Speakers
-discover each other via mDNS, elect a leader, and stream audio with clock
-synchronization and jitter buffering. Assign channels for stereo pair, left,
-or right.
+Multiple Invokes can play in sync: mDNS discovery, leader election, clock synchronization,
+and a jitter buffer with drift correction. Speakers can be assigned stereo, left, or right
+channels to form pairs. See [docs/groups.md](docs/groups.md).
 
-See [docs/groups.md](docs/groups.md) for usage.
+### Home Assistant (experimental)
+
+> Implemented but not yet validated against a live Home Assistant instance.
+> Testing feedback is welcome.
+
+MQTT integration with auto-discovery. The speaker registers as a media player, light
+(LED ring), and sensors in Home Assistant. See [docs/home-assistant.md](docs/home-assistant.md).
+
+### Wyoming Voice Satellite (experimental)
+
+> Implemented but not yet validated against a live Home Assistant instance.
+
+The speaker runs a [Wyoming protocol](https://www.home-assistant.io/integrations/wyoming/)
+satellite on port 10700. Microphone audio comes from the DSP's beamformed output through a
+native ALSA capture path. Speech-to-text and text-to-speech run on your Home Assistant server.
 
 ### LED Ring
 
-Control the 13-LED RGB light ring with smooth 30fps animations, all driven by the MCU. 
-Built-in presets — breathe, spin, pulse, volume arc, boot surge — or design your own custom frame sequences. Home Assistant has access to all animations for routines.
+Control of 13 RGB LEDs (12 ring + 1 center) at 30 fps through the MCU, plus the Bluetooth
+indicator LED via a separate MCU command. Built-in animations, a custom frame-sequence editor
+in the dashboard, and Home Assistant access for notification effects.
 
 ### Network
 
-Connect to `Invoke-XXXX`
-(unique per device), a captive portal opens, enter your WiFi credentials, done. Once on your network,
-the speaker announces itself via mDNS at `encore.local`. Optional WireGuard VPN
-for secure remote access through [boringtun](https://github.com/cloudflare/boringtun).
+First boot brings up a setup AP (`Invoke-XXXX`, unique per device). A captive portal opens
+the dashboard, you enter WiFi credentials, and the speaker joins your network and announces
+itself as `encore.local` via mDNS. WireGuard
+([boringtun](https://github.com/cloudflare/boringtun)) is available for remote access.
 
-### Reliability
+### Recovery
 
-A hardware watchdog prevents hangs — if Encore stops responding, the speaker
-reboots automatically. If Encore crashes even once at boot, the system falls
-back to the stable binary. You cannot brick the speaker by running
-experimental firmware. You can't even brick it by replacing the kernel.
+The design goal is that a bad rootfs or a crashing build should never leave the device
+unrecoverable, and so far that has held:
 
-**Just don't try to mess with the bootloader, it might not be safe**
+- A hardware watchdog reboots the device if Encore hangs.
+- A supervisor script quarantines a binary that crashes at boot and falls back to the
+  known-good copy on the rootfs.
+- If both crash, the device enters safe mode: the watchdog stays fed, the AP stays up,
+  and SSH remains available for recovery.
+- No update path writes the bootloader or kernel partitions, so USB boot recovery is
+  always available.
 
-> By using this firmware and flashing it to your device, you acknowledge there
-> are risks and agree to the terms in [LEGAL.md](LEGAL.md).
+The bootloader itself is the one thing with no safety net. Nothing in this project touches
+it; you shouldn't either.
 
----
-
-## Encore's Architecture
+## Architecture
 
 <p align="center">
   <picture>
@@ -132,228 +134,177 @@ experimental firmware. You can't even brick it by replacing the kernel.
   </picture>
 </p>
 
->Encore is a monolithic statically-linked ARM-compiled Rust binary.
-It manages 13 async subsystems and runs efficiently on the Invoke's dual-core processor. Average RAM usage is around ~40mb and ~1-3% CPU usage across both cores at idle. While Spotify is playing at the highest quality available, CPU usage averages across both cores ~20%. There is headroom for more subsystems without audio underbuffer.
+Encore is one statically linked ARM binary (~6.6 MB, musl) that manages 13 async subsystems
+on the Invoke's dual-core Cortex-A7. Idle usage is roughly 40 MB RAM and 1-3% CPU; Spotify
+playback at maximum quality averages about 20% CPU across both cores.
 
 | Subsystem | Purpose | Auto-Restart |
 |-----------|---------|:---:|
-| MCU | I2C hardware control — touch ring, DAC, IO expander, DSP firmware upload | |
-| Audio | Direct ALSA PCM (48 kHz, 32-bit stereo), lock-free mixer, resampler | Yes |
+| MCU | I2C hardware control: touch ring, DAC, IO expander, DSP firmware upload | |
+| Audio | Direct ALSA PCM (48 kHz, 32-bit stereo), lock-free mixer, capture path, resampler | Yes |
 | Network | WiFi (wpa_supplicant), access point, firewall, mDNS | Yes |
 | Web | HTTPS server, REST API, WebSocket, embedded WASM dashboard | Yes |
-| Watchdog | Hardware watchdog (10s pet) + MCU heartbeat (30s) | Yes |
-| Spotify | Spotify Connect via librespot, mDNS discovery | |
-| Bluetooth | A2DP sink — aptX HD, aptX, SBC (raw kernel sockets) | |
-| Wyoming | Voice satellite (TCP port 10700), audio streaming | |
+| Watchdog | SoC hardware watchdog, 10 s pet interval (the MCU has no watchdog of its own) | Yes |
+| Spotify | Spotify Connect via librespot | |
+| Bluetooth | A2DP sink: aptX HD, aptX, SBC over raw kernel sockets | |
+| Wyoming | Voice satellite (TCP port 10700), mic streaming | |
 | Home Assistant | MQTT bridge with auto-discovery | |
 | VPN | WireGuard tunnel via boringtun | |
-| LED | 15 LEDs (13 controlled), ring animations at 30 fps | |
-| Group | Multi-speaker synchronized playback across LAN | |
-| Wake Word | Pluggable wake word detection framework | |
+| LED | Ring animations at 30 fps, MCU button events | |
+| Group | Multi-speaker synchronized playback | |
+| Wake Word | Detection framework (stub detector, needs an engine) | |
 
-Vital subsystems (marked auto-restart) recover automatically from crashes. The
-audio mixer runs lock-free with ring buffers — no mutexes on the real-time path.
-Four concurrent audio sources (Spotify, Bluetooth, Wyoming, system sounds) mix
-with automatic volume ducking.
+Subsystems marked auto-restart recover from crashes automatically. The audio mixer is
+lock-free (ring buffers, no mutexes on the real-time path) and mixes four sources with
+automatic ducking during voice playback.
 
 ```
 encore/                   Rust workspace
   crates/
     encore-firmware/      On-device binary (ARM musl)
-    encore-common/        Shared types — config schema, WebSocket protocol
-    encore-wasm/           WASM dashboard — Served from the device or wrapped to a platform app
-    encore-app/           Desktop/mobile app — Tauri v2 wrapper
-  web/                    PWA shell — HTML, manifest, service worker, icons
-rootfs/                   Filesystem overlay (merged onto stock rootfs at build)
-  sbin/                   Boot scripts, supervisor, network setup
-  usr/bin/                Encore binary + boot helpers
-  etc/                    Init scripts
+    encore-common/        Shared types: config schema, WebSocket protocol
+    encore-wasm/          WASM dashboard, served from the device or wrapped by the app
+    encore-app/           Desktop/mobile app, Tauri v2 wrapper
+  web/                    PWA shell: HTML, manifest, service worker, icons
+rootfs/                   Filesystem overlay merged onto the stock rootfs at build
 tools/                    C source for boot helpers (i2c_mute)
-scripts/                  Build, deployment, and reverse-engineering tools
-docs/                     Hardware specs, build guide, architecture, RE findings
-flash/                    USB boot flashing tools
+scripts/                  Build, deployment, and reverse engineering tools
+docs/                     Guides and hardware research
+uboot/                    USB-boot files go here (user-supplied, see flashing guide)
 ```
-
----
 
 ## Hardware
 
-> Components identified on the developer's device. Other units may vary by
-> hardware revision.
+> Components identified on the developer's device. Other units may vary by revision.
 
 | | |
 |---|---|
-| **SoC** | Marvell BG2CDP (88DE3006) — dual-core Cortex-A7 @ 1.3 GHz, 512 MB RAM, 512 MB NAND |
+| **SoC** | Marvell BG2CDP (88DE3006), dual-core Cortex-A7 @ 1.3 GHz, 512 MB RAM, 512 MB NAND |
 | **Audio Output** | 3 drivers, TI TAS5756M DAC, Class-D amplifier |
-| **Audio Input** | 7 MEMS microphones with DSP beamforming and noise suppression |
-| **DSP** | Analog Devices ADSP-21489 SHARC @ 450 MHz — firmware uploaded via SPI at each boot |
-| **Wireless** | Marvell 88W8887 — dual-band WiFi (2.4/5 GHz, STA+AP), Bluetooth 4.1 + BLE |
-| **Controls** | Volume ring (infinite rotation, no detent), proximity sensor (tap/hold), mic mute button, Bluetooth button (control mechanism unknown) |
-| **LEDs** | 15 RGB total; 13 controlled (12 ring + 1 top center), 2 uncontrolled (including BT indicator) |
-| **MCU** | TI MSP430FR5739 (FRAM) — I2C slave, manages LEDs and touch input |
-| **Kernel** | Linux 3.8.13 (stock, signature-locked on NAND — replaceable at runtime via [kexec module](docs/kexec-method.md) but is proving to be elite-tier) |
+| **Audio Input** | 7 MEMS microphones with DSP beamforming |
+| **DSP** | Analog Devices ADSP-21489 SHARC @ 450 MHz, firmware uploaded over SPI at every boot |
+| **Wireless** | Marvell 88W8887: dual-band WiFi (STA+AP) and Bluetooth 4.1 + BLE |
+| **Controls** | Volume ring (infinite rotation), touch surface (tap/hold), mic mute, Bluetooth and reset buttons |
+| **LEDs** | 15 RGB total: 13 frame-controlled, Bluetooth indicator via MCU command, 1 not yet mapped |
+| **MCU** | TI MSP430FR5739 (FRAM), I2C slave for LEDs, buttons, and touch input |
+| **Kernel** | Linux 3.8.13, RSA-signature-verified on NAND. Replaceable at runtime via the [kexec module](docs/kexec-method.md) (research in progress) |
 
-See [docs/hardware.md](docs/hardware.md) for the full peripheral map, I2C bus
-layout, GPIO assignments, and audio signal path.
-
----
+See [docs/hardware.md](docs/hardware.md) for the full peripheral map, I2C bus layout, GPIO
+assignments, and audio signal path.
 
 ## Getting Started
 
 ### What You Need
 
-- A Harman Kardon Invoke (any hardware revision, any original firmware version)
-- A computer with Linux or [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) (Ubuntu)
-- A USB-A to USB Mini-B cable (for first-time flashing only)
-- [Rust](https://rustup.rs/) with `cargo-zigbuild` and `wasm-pack` installed
+- A Harman Kardon Invoke (any revision)
+- A computer with Linux or [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) (Ubuntu) for firmware packaging
+- A USB-A to USB Mini-B cable (first flash only)
+- [Rust](https://rustup.rs/) with `cargo-zigbuild` and `wasm-pack`
 
 ### Build
 
 ```bash
-# Build Encore — compiles the WASM dashboard and cross-compiles the ARM binary
-make encore
-
-# Build the full firmware image (runs in WSL, packages rootfs into flashable image)
-make firmware
-
-# Build desktop app (Windows installer)
-make app
-
-# Build Android app (APK, requires additional deps)
-make app-android
+make download      # fetch the stock firmware image (required base, ~69 MB)
+make encore        # WASM dashboard + ARM binary
+make firmware      # full flashable image (Linux/WSL)
+make app           # optional: desktop app installer
 ```
 
-See [docs/build-guide.md](docs/build-guide.md) for prerequisites and detailed
-build instructions.
+See [docs/build-guide.md](docs/build-guide.md) for prerequisites and details.
 
 ### Flash
 
-**First time — USB boot:**
+The first flash uses USB boot mode and the USB-boot files from Harman's final OTA package,
+which is not distributed in this repo. The [flashing guide](docs/flashing.md) explains where
+to get it and how to set up the `uboot/` directory. After the first flash, updates are over
+the air:
 
-1. Connect the USB cable to your PC
-2. Enter USB boot mode: plug in power while holding reset, then press mic-mute
-   4 times rapidly
-3. Run `flash\run.bat` from Windows
-4. At the U-Boot prompt, type `tftp2nand -d <size> 0x7000000` (size is printed
-   at the end of the build)
-5. Type `reset` — the speaker reboots into Encore
-
-**After that — OTA via web dashboard:**
-
-1. Open the Encore dashboard (Update tab)
-2. Upload `firmware/rootfs.squashfs` for a full system update, or just the Encore
-   binary for a quick firmware-only update
-3. The speaker flashes and reboots automatically
-
-See [docs/flashing.md](docs/flashing.md) for recovery procedures and
-troubleshooting.
+1. Open the dashboard's Update tab
+2. Upload `rootfs.squashfs` for a full system update, or just the Encore binary for a
+   firmware-only update
+3. The speaker flashes itself and reboots
 
 ### First Boot
 
-1. On your phone or computer, connect to the `Invoke-XXXX` WiFi network
-   (password: `ridiculous`) — XXXX is unique to your device
-2. A captive portal opens automatically — or navigate to `http://192.168.43.1`
-3. Enter your home WiFi credentials in the setup wizard
-4. The speaker reboots, joins your network, and appears at `http://encore.local`
+1. Connect to the `Invoke-XXXX` WiFi network (password: `ridiculous`)
+2. The captive portal opens the setup wizard (or browse to `http://192.168.43.1`)
+3. Enter your WiFi credentials
+4. The speaker joins your network and appears at `http://encore.local`
 
-Root SSH is available at the speaker's IP address (user: `root`, password:
-`ridiculous`).
+Root SSH is available at the speaker's IP (user `root`, password `ridiculous`). The
+credentials are the same on every Encore device, so change the password if your network
+isn't trusted. See [SECURITY.md](.github/SECURITY.md).
 
-### Go Back to Stock
+### Going Back to Stock
 
->Follow the same flashing instructions that come with the official Harmon Kardon final firmware update.
-
----
+Flash the stock `83_IMAGE` from Harman's OTA2 package using the same USB boot procedure in
+the [flashing guide](docs/flashing.md). The kernel and bootloader are never modified, so a
+stock rootfs flash returns the device to its factory state.
 
 ## Documentation
 
+Guides for using and building Encore:
+
 | Guide | |
 |-------|-|
-| [Build Guide](docs/build-guide.md) | Prerequisites, toolchain setup, end-to-end build |
-| [Flashing](docs/flashing.md) | USB boot mode, OTA updates, recovery |
-| [Hardware](docs/hardware.md) | SoC peripherals, audio signal path, partition layout |
+| [Build Guide](docs/build-guide.md) | Toolchain setup, end-to-end build |
+| [Flashing](docs/flashing.md) | USB boot, OTA updates, recovery |
+| [Configuration](docs/config-reference.md) | Complete config.toml reference |
+| [Home Assistant](docs/home-assistant.md) | MQTT setup, entities, example automations |
+| [Groups](docs/groups.md) | Multi-speaker playback setup |
+| [Desktop & Mobile App](docs/app.md) | App usage and builds |
+| [Troubleshooting](docs/troubleshooting.md) | Common issues, crash diagnostics, recovery |
+
+Hardware research and reverse engineering references, for anyone who wants to understand or
+extend the platform:
+
+| Reference | |
+|-----------|-|
 | [Architecture](docs/architecture.md) | Boot sequence, subsystem lifecycle, init system |
-| [Home Assistant](docs/home-assistant.md) | MQTT auto-discovery, entities, example automations |
-| [DSP Reference](docs/dsp-reference.md) | ADSP-21489 SHARC architecture, SPI boot protocol |
-| [DSP Tools](docs/dsp-tools.md) | Disassembler, assembler, firmware analysis workflow |
-| [MCU Reference](docs/mcu-reference.md) | MSP430 I2C protocol, LED animation binary format |
-| [Configuration](docs/config-reference.md) | Complete config.toml reference with all options |
-| [Desktop & Mobile App](docs/app.md) | Standalone app usage, platforms, build instructions |
-| [Groups](docs/groups.md) | Multi-speaker synchronized playback setup and configuration |
-| [Kernel Porting](docs/kernel-porting.md) | Boot security analysis, kexec module, Linux 6.1 porting |
-| [Kexec Method](docs/kexec-method.md) | Runtime kernel replacement via loadable module |
-| [Troubleshooting](docs/troubleshooting.md) | Common issues, crash diagnostics, recovery procedures |
+| [Hardware](docs/hardware.md) | SoC peripherals, buses, audio signal path, partitions |
+| [MCU Reference](docs/mcu-reference.md) | MSP430 I2C protocol, LED frame format, firmware update protocol |
+| [DSP Reference](docs/dsp-reference.md) | SHARC architecture, SPI boot protocol, firmware analysis |
+| [DSP Tools](docs/dsp-tools.md) | Custom SHARC assembler/disassembler, firmware workflow |
+| [Kernel Porting](docs/kernel-porting.md) | Boot security analysis, Linux 6.1 porting status |
+| [Kexec Method](docs/kexec-method.md) | Runtime kernel replacement, research log |
+| [Porting Status](docs/encore-porting-status.md) | Stock component cross-reference audit |
 
----
+## Credits
 
-## Acknowledgments
+Built on [librespot](https://github.com/librespot-org/librespot),
+[Tokio](https://tokio.rs/) and [Axum](https://github.com/tokio-rs/axum),
+[boringtun](https://github.com/cloudflare/boringtun),
+[wasm-pack](https://rustwasm.github.io/wasm-pack/), and [Zig](https://ziglang.org/) for
+cross-compilation.
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="branding/og-card-dark.png">
-    <source media="(prefers-color-scheme: light)" srcset="branding/og-card-light.png">
-    <img alt="Encore — community firmware for the Harman Kardon Invoke" src="branding/og-card-dark.png" width="600">
-  </picture>
-</p>
-
-This project exists because two companies built something worth saving and left enough breadcrumbs behind to make it possible.
-
-**Harman Kardon** & **Microsoft** designed small but extraordinary hardware for the time. The Invoke's
-acoustic engineering deliver the sound quality that made this worth saving. Years after discontinuation,
-the hardware hasn't aged a day. They built something that lasts, shared the kernel source, and left the boot process
-accessible enough that a community could pick up where they left off. Whether
-that door was left open by design or by fortune, it made this entire project
-possible. Not every company leaves breadcrumbs for their product to have a second chance at life like this.
-
-Together, they created a speaker that deserved better than a retirement notice
-and a gift card. Encore is our way of making sure it gets that.
-
----
-
-This project also stands on the shoulders of exceptional open-source work:
-
-- [librespot](https://github.com/librespot-org/librespot) — Spotify Connect protocol
-- [Tokio](https://tokio.rs/) and [Axum](https://github.com/tokio-rs/axum) — async runtime and web framework
-- [boringtun](https://github.com/cloudflare/boringtun) — WireGuard implementation
-- [wasm-pack](https://rustwasm.github.io/wasm-pack/) — WebAssembly toolchain
-- [Zig](https://ziglang.org/) — cross-compilation toolchain
-
----
+Thanks to [coggy9](https://github.com/coggy9)'s
+[HKHacking](https://github.com/coggy9/HKHacking) repo and community for the early
+groundwork, and to Harman for publishing the GPL kernel source, which made serious firmware
+work on this device possible.
 
 ## Contributing
 
-Contributions are welcome — from code to documentation to hardware discoveries.
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
+Contributions are welcome: code, documentation, testing on other hardware revisions, and
+hardware discoveries. See [CONTRIBUTING.md](CONTRIBUTING.md). Areas where help matters most:
 
-Areas where help is especially valuable:
-
-- **Audio sources** — AirPlay, DLNA, Chromecast Audio
-- **DSP** — the ADSP-21489 SHARC is a powerful DSP with room for custom audio
-  processing, but its application firmware is largely undocumented
-- **Wake word** — custom wake word detection (the framework exists, needs an engine)
-- **Documentation** — setup guides, teardown photos, translations
-
----
+- **Audio sources**: AirPlay, DLNA, Chromecast Audio
+- **Wake word**: the detection framework needs a real engine (openWakeWord or similar)
+- **DSP**: custom audio processing on the ADSP-21489 (the toolchain for it is in this repo)
+- **Testing**: Home Assistant and Wyoming end-to-end validation, other hardware revisions
 
 ## Legal
 
-This is an independent community project. It is not affiliated with, endorsed
-by, or associated with Harman International, Samsung, or Microsoft. See
-[LEGAL.md](LEGAL.md) for trademark notices, reverse engineering disclosures,
-and third-party attribution.
-
-No proprietary firmware is distributed in this repository.
-
----
+This is an independent community project. It is not affiliated with, endorsed by, or
+associated with Harman International, Samsung, or Microsoft. No proprietary firmware is
+distributed in this repository; the build process requires the user's own copy of the stock
+firmware image. See [LEGAL.md](LEGAL.md) for trademark notices, reverse engineering
+disclosures, and third-party attribution.
 
 ## License
 
-[GPL-3.0](LICENSE) — code.
-[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/) — documentation.
+[GPL-3.0](LICENSE) for code. [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)
+for documentation in `docs/`.
 
-All community-authored code in this repository is released under the GNU General
-Public License v3.0. Documentation, protocol specifications, and hardware
-research in `docs/` are licensed under Creative Commons Attribution-ShareAlike
-4.0. Stock firmware components (kernel, bootloader, wireless drivers) remain the
-property of their respective copyright holders and are not included in this
-repository.
+Community-authored code in this repository is released under the GNU General Public License
+v3.0. Stock firmware components (kernel, bootloader, wireless drivers) remain the property
+of their respective copyright holders and are not included in this repository.

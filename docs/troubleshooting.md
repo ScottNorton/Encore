@@ -137,18 +137,23 @@ cat /sys/class/net/wlan0/queues/rx-0/rps_cpus    # should be "3" (both cores)
 wpa_cli -i wlan0 scan && sleep 3 && wpa_cli -i wlan0 scan_results
 ```
 
+> **Do not `kill` the Encore process.** A dirty kill leaves WiFi, the DSP, Bluetooth, and
+> the watchdog in undefined states and can require a USB reflash to recover. To restart,
+> reboot the device (dashboard gear menu or `reboot` over SSH), or restart an individual
+> subsystem from the dashboard's Health panel.
+
 ### LED ring not responding
 
 1. Check Encore log for MCU I2C errors: `grep -i mcu /lsync/encore/encore.log`
 2. The MCU communicates over I2C at address 0x36
-3. Restart Encore: `killall encore` (supervisor will relaunch it)
+3. Reboot the device (dashboard gear menu, or `reboot` over SSH)
 
 ### Spotify Connect not appearing
 
 1. Check Encore log: `grep -i spotify /lsync/encore/encore.log`
 2. Verify WiFi is connected (Spotify needs network access for mDNS discovery)
 3. Check config: Spotify must be enabled in the web dashboard settings
-4. Restart Encore: `killall encore`
+4. Restart the Spotify subsystem from the dashboard, or reboot the device
 
 ### Web dashboard not loading
 

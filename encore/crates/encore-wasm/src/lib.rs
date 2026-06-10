@@ -16,7 +16,7 @@ mod panels;
 mod graphics;
 mod components;
 mod haptic;
-pub mod logo;
+pub mod brand;
 
 use wasm_bindgen::prelude::*;
 

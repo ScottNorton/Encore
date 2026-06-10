@@ -245,8 +245,8 @@ fn dispatch(msg: ServerMsg) {
             crate::state::with_mut(|s| s.network = Some(state));
         }
         ServerMsg::LedStateChanged(anim) => {
-            let color = crate::logo::led_dominant_color(&anim);
-            crate::logo::update_dome_color(&color);
+            let color = crate::brand::led_dominant_color(&anim);
+            crate::brand::update_dome_color(&color);
             crate::state::with_mut(|s| s.led = Some(anim));
         }
         ServerMsg::CrashReport(_crash) => {

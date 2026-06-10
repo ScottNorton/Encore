@@ -453,7 +453,8 @@ audio streaming between SPORTs and internal SRAM.
 
 Key IOP register groups relevant to understanding and reproducing the stock firmware
 configuration. All addresses are in the IOP memory space (0x00000000-0x0003FFFF).
-These can be read via the memory dump command on pages 0x0000-0x001F.
+Note that the memory dump command maps its pages to SRAM (DM 0x80000 and up), so these
+IOP registers are **not** reachable through it — see [Remaining Unknowns](#remaining-unknowns).
 
 #### SPORT Registers (Serial Ports — I2S/TDM Audio)
 
@@ -1086,22 +1087,24 @@ appears unused in the Invoke — all audio processing goes to the external SHARC
 
 ### Current Status
 
-Encore's DSP driver uses **bounded SPI transfers only** — no GPIO flow control.
-GPIO pins 4/12/13/15 were removed after testing showed that exporting them caused
-CPU pegging and MCU freezes (see CLAUDE.md "NEVER auto-init GPIO at boot").
+Encore's DSP driver reproduces the stock `dsp-client` initialization sequence. AVIO
+registers are configured with read-modify-write (writing fixed constants destroys the
+kernel's I2S routing), GPIO 5 is set up via AVIO and exported only for the upload
+chip-select, and GPIOs 4 (output) and 12/13/15 (inputs) are exported for runtime flow
+control. Earlier Encore versions configured GPIO 13 as an output, which contradicted the
+stock setup and caused CPU pegging; matching the stock pin directions fixed it.
 
-Without GPIO, Encore can:
-- Upload firmware (works — kernel SPI driver handles CS automatically)
-- Send commands (volume, mic mute, memory dump) — fire-and-forget SPI writes
-- Read responses with a fixed delay (200ms wait + 2048-byte read)
+What works:
 
-Without GPIO, Encore **cannot**:
-- Receive unsolicited events (TRIGGER_FOUND, EXPECT_SPEECH, etc.)
-- Implement proper send/receive handshaking
-- Know when DSP has data ready
+- Firmware upload over SPI, following the stock register and GPIO sequence
+- Commands: volume, mic mute, version query, memory dump
+- Event reception by polling (200 ms interval): the `DSP_BOOTUP` event gates the unmute
+  sequence at boot, and version and memory-dump responses arrive the same way
 
-This means the stock DSP wake word ("Hey Cortana") can fire but Encore won't see it.
-ARM-side wake word detection via the capture pipeline is the intended replacement.
+The stock firmware's wake word events (`TRIGGER_FOUND` and friends) can arrive through the
+same polling path, but Encore does not act on them: the voice pipeline captures the DSP's
+beamformed output through ALSA (`audio/capture.rs`) and leaves wake word detection to the
+ARM side.
 
 ### Files
 
@@ -1143,13 +1146,18 @@ pub enum DspEvent {
 
 ## Appendix: Sources
 
+The `vendor/` paths below refer to a local working tree of extracted stock firmware and
+generated analysis outputs. That tree is **not** part of this repository (the stock
+firmware is not redistributed); everything in it can be regenerated from your own stock
+image using the analysis tools listed further down.
+
 All protocol details were reverse-engineered from:
 - `vendor/ghidra_output/dsp-client.c` — Ghidra decompilation of stock ARM binary
 - `vendor/ghidra_output/mcu-interface.c` — Ghidra decompilation of MCU interface
 - `vendor/firmware/squashfs-root/usr/share/dsp/dsp-img.ldr` — firmware binary (160,484 bytes)
 - `vendor/dsp_dump.bin` — Live SRAM dump from running device (655,360 bytes, 2026-02-19)
 - Python fallback driver removed — Encore handles all DSP I/O natively
-- `docs/reference/adsp-21160_isr_rev2.1.pdf` — ADSP-21160 Instruction Set Reference (basis for disassembler)
+- ADSP-21160 Instruction Set Reference, Rev 2.1 (Analog Devices, available from analog.com) — basis for the disassembler's instruction decoding
 
 ### Disassembly Output
 - `vendor/dsp_boot_kernel_disasm.txt` — Boot kernel: 256 PM words, SPI block loader
@@ -1171,7 +1179,7 @@ All protocol details were reverse-engineered from:
 - [ADSP-21489 Datasheet](https://www.analog.com/media/en/technical-documentation/data-sheets/adsp-21483_21486_21487_21488_21489.pdf)
 - [ADSP-214xx Hardware Reference (Rev 1.1)](https://www.analog.com/media/en/dsp-documentation/processor-manuals/ADSP-214xx_hwr_rev1.1.pdf)
 - [SHARC Programming Reference (Rev 2.4)](https://www.analog.com/media/en/dsp-documentation/processor-manuals/adsp-2136x_2137x_214xx_pgr_rev2.4.pdf)
-- [ADSP-21160 Instruction Set Reference (Rev 2.1)](docs/reference/adsp-21160_isr_rev2.1.pdf) — classic SHARC ISA encoding (local copy, basis for `sharc_disasm.py`)
+- **ADSP-21160 SHARC Instruction Set Reference, Rev 2.1** — Analog Devices; classic SHARC ISA encoding, the basis for `sharc_disasm.py`. Available from analog.com (not redistributed here).
 - [CrossCore Embedded Studio (CCES)](https://www.analog.com/en/resources/evaluation-hardware-and-software/software/adswt-cces.html) — free evaluation, only SHARC compiler (**cannot disassemble classic SHARC, only SHARC+**)
 - **VisualDSP++ 5.1.2** — last ADI toolchain supporting ADSP-214xx (discontinued, not freely available)
 - **remora** (GitHub) — open-source ADSP-21489 audio project (SRU, SPORT, SPI, PLL, DMA)

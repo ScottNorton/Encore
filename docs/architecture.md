@@ -138,8 +138,8 @@ type definitions.
 
 The web dashboard is a single-page WASM application (`encore-wasm` crate) embedded in the Encore binary via `rust-embed`. It provides:
 
-- 8 tab pages: dashboard, audio, spotify, bluetooth, network, lights, speakers, logs — spotify, bluetooth, and speakers tabs are hidden when their subsystems are disabled in config. Setup is a separate full-screen mode (hides tab navigation) shown on first boot.
-- 6 gear-menu panels: config, health, crashes, update, reboot, about
+- 8 tab pages: dashboard, assistant, spotify, audio, lights, bluetooth, speakers, network — the spotify, bluetooth, and speakers tabs are hidden when their subsystems are disabled in config. Setup is a separate full-screen mode (hides tab navigation) shown on first boot.
+- 7 gear-menu panels: config, health, crashes, logs, update, reboot, about
 - Canvas 2D graphics: LED ring visualization, VU meter, EQ curve, sparkline, knob
 - Real-time telemetry via WebSocket (`/api/ws`)
 - PWA with offline support

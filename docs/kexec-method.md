@@ -1,5 +1,11 @@
 # kexec Boot Method for Harman Kardon Invoke
 
+> **Status:** research log. This documents the working kexec path and the debugging that
+> led to it, largely in chronological order; some "open questions" near the end have since
+> been answered by later work (see [kernel-porting.md](kernel-porting.md) for the current
+> state of the Linux 6.1 port). The kexec module and patched kexec-tools sources referenced
+> under `tools/` are not yet included in the public repository.
+
 ## What This Is
 
 A method to boot a custom Linux kernel on the Harman Kardon Invoke without modifying the

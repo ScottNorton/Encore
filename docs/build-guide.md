@@ -76,7 +76,7 @@ This builds both the WASM web dashboard and the ARM binary:
 
 The binary is statically linked against musl libc — no shared library dependencies on the device.
 
-Output: `encore/target/armv7-unknown-linux-musleabihf/release/encore-firmware` (~6.6 MB stripped)
+Output: `build/encore` (stripped, statically linked)
 
 ## Step 2b: Build Desktop/Mobile App (Optional)
 

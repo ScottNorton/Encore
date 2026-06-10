@@ -347,10 +347,10 @@ LED 12:    Center/Status LED (separate from ring)
 - Frames persist without refresh (30+ seconds)
 - ~0.4% sporadic I2C error rate (errno 121), retry with 20ms backoff
 
-### Stock LED Write Protocol
+### LED Write Protocol
 
-The stock firmware **never sends raw 39-byte frames**. Instead, all LED writes
-use the `0x0E` prefix protocol:
+All LED writes use the `0x0E` prefix protocol. Encore uses the same scheme the stock
+firmware did; raw 39-byte frames are never sent (see the collision problem below for why):
 
 ```
 [0x0E, flag, frame1(39B), frame2(39B), ..., frameN(39B)]
@@ -376,28 +376,20 @@ Complete collision set from MCU firmware RE:
 - **Active (dangerous)**: 0x01, 0x03, 0x05, 0x07-0x0D, 0x0F, 0x10, 0x20, 0x22, 0x23, 0x25, 0x26
 - **NO-OPs (safe to collide)**: 0x02, 0x04, 0x06, 0x0E (in jump table), 0x24
 
-Encore uses the stock `[0x0E, flag, frames...]` protocol to avoid this issue.
-
-Stock animation files with known collisions:
-- `L_109_c_announce`: 7 frames with 0x01
-- `L_207_s_incall`: frames with 0x01, 0x03, 0x0E, 0x23 (most dangerous)
-- `L_303_d_wificonnected`: frames with 0x0E, 0x24, 0x26
-- `L_404_o_oobesuccess`: 10 frames with 0x01, 0x03
+This is why the `[0x0E, flag, frames...]` protocol exists. Several of the animation
+files on the device contain frame bytes that would collide if sent raw (`L_109_c_announce`,
+`L_207_s_incall`, `L_303_d_wificonnected`, `L_404_o_oobesuccess`), so always use the
+prefix.
 
 ### Animation File Format
 
-Stock animation files in `/usr/share/lights/`:
+The device carries a set of animation files at `/usr/share/lights/` (inherited from the
+stock rootfs). They are useful as worked examples if you are building custom animations:
+
 - Raw concatenated 39-byte frames, no header
 - `file_size % 39 == 0` always
-- 28 files total (listening, thinking, speaking, alarm, wifi setup, etc.)
-- Playback: batched via `[0x0E, flag]` prefix, 280ms per 10-frame batch
-
-### Special Mic-Off Animation Path
-
-Stock firmware has special handling for the `L_301_d_micoff` animation:
-- Sends full `[0x0E, 0x01, <41-byte pattern>]` reset commands
-- 20-iteration counter before setting completion flag
-- Different from normal animation playback — embeds LED data in reset cmd
+- 28 files (listening, thinking, speaking, alarm, wifi setup, etc.)
+- Playback: batched via the `[0x0E, flag]` prefix, 280ms per 10-frame batch
 
 ## MCU Operating Modes
 
@@ -428,34 +420,16 @@ Update protocol (from ARM-side `mcu-interface.c`):
 Note: Stock firmware sends the data twice (once with CRC via `startmcuupgrade`,
 once without via `sendfirmwaredata`).
 
-## Stock Button-to-Action State Machine
+## Stock Button Behavior
 
-From `audio-ui` Ghidra decompilation. Each system state maps buttons to
-actions and specifies an LED animation:
+For reference only: the stock `audio-ui` binary mapped buttons to actions through a
+per-state table (17 system states covering voice, music, calls, alerts, and setup), each
+state pairing button actions with one of the animation files below. Encore does not use
+this state machine; its mapping is the [Encore Button Mapping](#encore-button-mapping)
+table above. The full stock table can be recovered from an `audio-ui` decompilation if
+anyone wants to recreate the original behavior.
 
-| System State | Animation File | btn-action | btn-action-long | btn-bluetooth | btn-micmute | btn-micmute-long |
-|-------------|---------------|------------|-----------------|---------------|-------------|------------------|
-| `system` | — | — | — | — | micmute | wifisetup-enter |
-| `system:normal` | — | voice-surprise | voice-trigger | bluetooth-pair | — | — |
-| `system:wifi-setup` | L_402a_o_apconnect | voice-surprise | voice-surprise | voice-surprise | — | wifisetup-reinit |
-| `system:booting` | L_311_d_pluggedin | — | — | — | — | — |
-| `music:playing` | — | music-pause | — | — | — | — |
-| `music:buffering` | — | music-pause | — | — | — | — |
-| `voice:listening` | L_101_c_listening | voice-cancel | — | — | — | — |
-| `voice:thinking` | L_104_c_thinking | voice-cancel | — | — | — | — |
-| `voice:speaking` | L_105_c_cortanaspeaking | voice-cancel | — | — | — | — |
-| `voice:error` | L_108_c_error | voice-cancel | — | — | — | — |
-| `voice:notification` | L_109_c_announce | voice-cancel | — | — | — | — |
-| `alert:playing` | L_111_c_alarm | alert-cancel | — | alert-cancel | alert-cancel | — |
-| `bluetooth:pairing` | L_302_d_wifisetup | — | — | bluetooth-cancel | — | — |
-| `bluetooth:connected` | L_402b_o_apconnected | — | — | — | — | — |
-| `microphone:mute` | L_301_d_micoff | — | — | — | — | — |
-| `call:incoming` | L_204_s_ring | call-accept | call-reject | — | — | — |
-| `call:in-call` | L_207_s_incall | call-reject | — | — | — | — |
-
-Note: `alert:playing` cancels on ANY button (action, bluetooth, micmute, volumeup, volumedown).
-
-## Stock Animation Library (28 files)
+## Animation Files on the Device (28 files)
 
 | File | Frames | Duration | Color | Purpose |
 |------|--------|----------|-------|---------|

@@ -77,10 +77,10 @@ All build outputs go to `build/` in the repo root:
 
 ```
 build/
-├── encore                  ARM binary (~6.6 MB)
+├── encore                  ARM binary (statically linked)
 ├── firmware/
-│   ├── 83_IMAGE            Full flashable image (~107 MB)
-│   └── rootfs.squashfs     OTA-flashable rootfs (~45 MB)
+│   ├── 83_IMAGE            Full flashable image
+│   └── rootfs.squashfs     OTA-flashable rootfs
 ├── desktop/
 │   ├── *.msi               Windows installer
 │   ├── *-setup.exe         Windows NSIS installer
@@ -118,7 +118,7 @@ Runs on every push and PR to `main`. Three parallel jobs:
 
 | Job | What it runs | Purpose |
 |-----|-------------|---------|
-| **Test** | `cargo test --workspace --exclude encore-app` | Unit tests (host-only, ~99 tests) |
+| **Test** | `cargo test --workspace --exclude encore-app` | Unit tests (host-only) |
 | **Build** | `wasm-pack build` → `cargo zigbuild --release` → `llvm-strip` | Verify ARM binary compiles, upload as artifact |
 | **Verify** | `make verify` | Credential leak + line ending checks |
 

@@ -257,8 +257,9 @@ All stored at `/lib/firmware/mrvl/` on device.
 
 ### WiFi Driver Parameters
 
-Set at module load time via `insmod sd8xxx.ko param=value`. The stock boot script
-(`wpa_supplicant_setup.sh`) loads with these parameters:
+Set at module load time via `insmod sd8xxx.ko param=value`. The boot script
+(`wpa_supplicant_setup.sh`, shipped in Encore's rootfs overlay and inherited from stock)
+loads with these parameters:
 
 ```
 insmod mlan.ko
@@ -294,9 +295,9 @@ insmod sd8xxx.ko \
 | `fw_serial` | 1 | Serial firmware download (not parallel) |
 | `drv_mode` | 7 (default) | Bit 0: STA, bit 1: uAP, bit 2: WiFi Direct. 7 = all modes |
 
-#### Post-Load Tuning (stock boot script)
+#### Post-Load Tuning (boot script)
 
-After module load, the stock `wpa_supplicant_setup.sh` applies:
+After module load, `wpa_supplicant_setup.sh` applies:
 
 ```bash
 # HT capability (802.11n high-throughput config)

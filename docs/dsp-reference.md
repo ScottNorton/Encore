@@ -52,10 +52,11 @@ Key equivalences: DM 0x92000 = PM 0x8C000 (both at byte offset 0x48000).
 See [Appendix: Sources](#appendix-sources) for all datasheets, reference manuals,
 and external references.
 
-## What the Stock Firmware Does
+## What the DSP Firmware Does
 
-The DSP firmware (`dsp-img.ldr`, 160,484 bytes) performs all of the following
-entirely on the SHARC at 450 MHz, with zero ARM CPU involvement:
+Encore uploads the same `dsp-img.ldr` firmware blob the stock system used (160,484 bytes),
+so this section describes what the DSP is doing on a running Encore device. Everything
+below happens entirely on the SHARC at 450 MHz, with zero ARM CPU involvement:
 
 1. **7-microphone beamforming** — receives TDM audio from all 7 MEMS mics via
    SPORT inputs, computes **binary-quantized delay-and-sum** beamforming to produce
@@ -132,7 +133,8 @@ communication works.
 6. Brief delay (~1μs)
 7. Set GPIO 13 LOW (ARM done)
 
-**Stock poll interval**: 200ms between event checks (`Dsp_msg_process` thread).
+**Poll interval**: 200ms between event checks. Encore uses the same interval the stock
+client did.
 
 **Message retry protocol**: 3 retries per message, 3 DSP response waits,
 6 DSP-ready timeouts. If all retries exhaust, re-uploads firmware.
@@ -868,87 +870,24 @@ The SRAM dump and firmware disassembly confirmed that:
 - Replacing "Hey Cortana" would require regenerating filter coefficients
 - Much easier to just ignore the DSP's wake word and run our own on ARM
 
-## Stock Software Architecture
+## Firmware Search Paths
 
-The stock system used a WAMP (Web Application Messaging Protocol) bus via
-`autobahn-cpp` for inter-process communication. The `dsp-client` binary
-registered these WAMP RPC endpoints:
+Encore (like the stock client before it) checks these locations in order when uploading
+DSP firmware, which is what makes custom-firmware testing safe and reversible:
 
-| RPC Endpoint | Maps To |
-|-------------|---------|
-| `com.harman.dsp.volumeSet` | Volume command (0x04) |
-| `com.harman.dsp.micMute` | Mic mute command (0x09) |
-| `com.harman.dsp.getVer` | Version query (0x08) |
-| `com.harman.dsp.micTestSingle` | Single mic test |
-| `com.harman.dsp.micTestPair` | Pair mic test |
-| `com.harman.dsp.micTestNormal` | Normal mic test |
-| `com.harman.test.dspBypassMode` | DSP bypass mode |
-| `com.harman.dsp.dumpDspMemory` | Full memory dump (320 pages) |
-
-The `mcu-interface` binary registered additional power-related WAMP endpoints:
-
-| RPC Endpoint | Maps To |
-|-------------|---------|
-| `com.harman.vui.powerdspcontrol` | DSP power on/off via IO Expander |
-| `com.harman.vui.setmcupowermode` | MCU power mode (I2C cmd 0x06) |
-
-Encore replaces the entire WAMP bus with direct SPI access in
-`encore/crates/encore-firmware/src/mcu/dsp.rs`.
-
-### Stock `dsp-client` Internals
-
-The `dsp-client` binary (700 KB, dynamically linked) manages all DSP
-communication. Ghidra decompilation reveals its internal architecture:
-
-**SPI Message Queue** (`msgWBuf`): 500-entry circular buffer (16 bytes per
-entry) with `wHead`/`wTail` pointers. Messages are queued by WAMP RPC handlers
-and transmitted by the `msgproc()` thread. Each entry contains:
-
-```c
-struct MsgWBufEntry {
-    uint32_t param;       // +0x00
-    uint16_t category;    // +0x04  (0x0000 or 0x0002)
-    uint16_t len;         // +0x06
-    uint8_t  checksum;    // +0x08
-    uint8_t  _pad[3];
-    void    *data;        // +0x0c
-};
-```
-
-**Key functions** (from Ghidra):
-
-| Function | Address | Purpose |
-|----------|---------|---------|
-| `dspopen()` | 0x0008f174 | Open `/dev/spidev0.0`, configure GPIO/SPI |
-| `dspclose()` | 0x0008f180 | Close SPI device |
-| `msgwrite()` | 0x0008e978 | Queue message to DSP |
-| `msgread()` | 0x0008e940 | Read message from DSP |
-| `msgproc()` | 0x0008eb08 | Process & transmit queued messages via SPI |
-| `Dsp_msg_handle()` | 0x00052314 | Parse/interpret DSP event responses |
-| `Dsp_msg_process()` | 0x00052c60 | Main DSP message polling thread (200ms interval) |
-| `FUN_0008e640()` | 0x0008e640 | Load & upload firmware via SPI |
-| `set_dsp_reset_control_pin()` | 0x0008e5a0 | Assert DSP reset (IO Expander bit 0 = 1) |
-| `reset_dsp_reset_control_pin()` | 0x0008e5ec | Deassert DSP reset (IO Expander bit 0 = 0) |
-| `request_dump_dsp_memory()` | 0x00048e24 | Request DSP memory dump (cmd 0x0C) |
-| `save_dsp_memory_dump()` | 0x00048c70 | Save DSP memory to `/tmp/dsp_memory.dump` |
-
-**WAMP interface functions** (map RPC calls to SPI commands):
-
-| Function | Address | Command | Purpose |
-|----------|---------|---------|---------|
-| `wamp_dsp_vol()` | 0x0004fe0c | 0x04 | Control DSP volume |
-| `wamp_dsp_get_ver()` | 0x000501f4 | 0x08 | Query DSP version |
-| `wamp_mic_test_single()` | 0x0004fc70 | 0x00 (cat 2) | Test single microphone |
-| `wamp_mic_test_pair()` | 0x0004fdb0 | 0x01 (cat 2) | Test pair of mics |
-| `wamp_mic_test_normal()` | 0x0004fe90 | 0x02 (cat 2) | Resume normal mic mode |
-| `wamp_hw_perform_test()` | 0x0004ff54 | 0x03 (cat 2) | Hardware self-test |
-| `wamp_mic_mute()` | 0x00050034 | 0x09 | Mute microphone |
-| `wamp_dump_dsp_memory()` | 0x00051620 | 0x0c | Trigger DSP memory dump |
-
-**Firmware search paths** (checked in order):
 1. `/media/usb/dsp-img.ldr` (USB override)
-2. `/data/test/dsp-img.ldr` (test override)
-3. `/usr/share/dsp/dsp-img.ldr` (production)
+2. `/data/test/dsp-img.ldr` (test override, writable)
+3. `/usr/share/dsp/dsp-img.ldr` (production, read-only rootfs)
+
+## Stock Software Notes
+
+For the record: the stock system split DSP work across two binaries talking over a WAMP
+RPC bus (`autobahn-cpp`). `dsp-client` owned the SPI link (commands, events, firmware
+upload, a 500-entry outgoing message queue) and `mcu-interface` owned DSP power via the
+IO Expander. Encore replaces all of that with direct SPI and I2C access in
+`encore/crates/encore-firmware/src/mcu/dsp.rs` and `io_expander.rs`. The full
+decompilation notes, including per-function addresses, can be regenerated with Ghidra
+from a stock rootfs if you ever need them.
 
 ## DSP Power Control
 
@@ -985,12 +924,15 @@ reg02 |= 0x10;  // Set bit 4 of register 0x02
 **Note**: Bits 3 and 4 span two IO Expander registers (0x01 and 0x02). The
 stock `mcu-interface` binary does read-modify-write on both registers.
 
-### Stock Boot Sequence
+### Power-On Sequence
 
-From `mcu-interface.c` decompilation, the stock power-on sequence is:
+The ordering below matters: muting before power-up prevents speaker pops, and the DSP
+must be powered and reset-released before firmware upload can start. The sequence was
+recovered from the stock `mcu-interface` decompilation, and Encore's boot follows the
+same order:
 
 ```
-1. IO Expander init (FUN_0009c690 @ 0x0009c690)
+1. IO Expander init
    - Mute AMP (set bit 1)
    - Mute DAC (clear bit 2)
    - Set bit 0 (release DSP reset)
@@ -999,17 +941,15 @@ From `mcu-interface.c` decompilation, the stock power-on sequence is:
    - Register 0x01: set bit 4 (0x10)
    - Register 0x02: set bit 3 (0x08)
    (Note: boot-time init SETS these bits, contrary to the active-low
-    power-on seen in the runtime WAMP handler. The init sequence likely
-    enables power rails differently from the runtime toggle.)
+    power-on seen in the runtime power-toggle handler. The init sequence
+    likely enables power rails differently from the runtime toggle.)
 
-3. DAC init (FUN_0009bb34 @ 0x0009bb34)
+3. DAC init
    - 10-register TAS5756M configuration via I2C 0x4C
 
-4. Sleep 2.5 seconds (stabilization)
+4. Stabilization delay
 
-5. WAMP/RPC initialization
-   - dsp-client uploads firmware via SPI
-   - mcu-interface starts I2C services
+5. DSP firmware upload over SPI, then normal service startup
 ```
 
 ## Kernel SPI Driver Stack

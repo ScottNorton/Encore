@@ -1,9 +1,10 @@
 # Home Assistant Integration
 
-> **Experimental:** This integration has not yet been tested with a live Home
-> Assistant instance. The MQTT auto-discovery payloads and Wyoming protocol
-> implementation are based on the published specifications but have not been
-> validated end-to-end. Bug reports and testing feedback are welcome.
+> **Experimental:** this integration is an early proof of concept, like much of Encore.
+> The MQTT auto-discovery and entities have been tested against a live Home Assistant
+> instance with a single speaker. The group-related entities (group switch, role and
+> peer sensors, group volume) have not been tested, and the Wyoming voice satellite has
+> not been validated end-to-end. Bug reports and testing feedback are welcome.
 
 The Encore integrates with Home Assistant via MQTT auto-discovery and the Wyoming voice protocol.
 

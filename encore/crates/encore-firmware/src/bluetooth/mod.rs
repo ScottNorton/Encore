@@ -549,7 +549,9 @@ async fn hci_dev_up() {
     }
     let _owned = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
 
-    let ret = unsafe { libc::ioctl(fd, HCIDEVUP, 0 as libc::c_int) };
+    // `ioctl`'s request arg is c_ulong on glibc (host/CI) and c_int on musl (device);
+    // `as _` lets it infer per target, matching the pattern in vpn/mod.rs.
+    let ret = unsafe { libc::ioctl(fd, HCIDEVUP as _, 0 as libc::c_int) };
     if ret < 0 {
         let err = std::io::Error::last_os_error();
         if err.raw_os_error() == Some(libc::EALREADY) {

@@ -87,8 +87,18 @@ Linux: chrome://settings/certificates \u{2192} Authorities \u{2192} Import");
 
     let desc = dom::el("div", "", Some("Harman Kardon Invoke Community Firmware"));
     dom::append(&proj_card, &desc);
-    let desc2 = dom::el("div", "text-sm text-muted mt-8", Some("Open-source firmware replacement for the Harman Kardon Invoke smart speaker."));
+    let desc2 = dom::el("div", "text-sm text-muted mt-8", Some("Open-source firmware for the Harman Kardon Invoke. Started as a personal project on spare hardware, and built to be shared and learned from."));
     dom::append(&proj_card, &desc2);
+
+    let repo_link = dom::create_el("a");
+    dom::set_class(&repo_link, "text-sm");
+    dom::set_style(&repo_link, "display", "inline-block");
+    dom::set_style(&repo_link, "margin-top", "8px");
+    dom::set_attr(&repo_link, "href", "https://github.com/ScottNorton/Encore");
+    dom::set_attr(&repo_link, "target", "_blank");
+    dom::set_attr(&repo_link, "rel", "noopener");
+    dom::set_text(&repo_link, "github.com/ScottNorton/Encore");
+    dom::append(&proj_card, &repo_link);
 
     dom::append(container, &proj_card);
 

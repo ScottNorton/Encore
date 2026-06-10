@@ -48,6 +48,21 @@ the device works and pick up where the current work stops.
 
 Bug reports from other hardware are among the most useful contributions this project can get.
 
+## How this started
+
+I had an Invoke sitting around and wanted to make something of it. The way in came from
+[coggy9](https://github.com/coggy9)'s [HKHacking](https://github.com/coggy9/HKHacking)
+research, which showed the device could be opened up in the first place.
+
+The first version was only ever meant for me: a personal voice assistant, my own little
+Jarvis, running on hardware I already had. The further I got, the more it looked like
+something other people could use too, so I changed course and built it to be shared. That
+is why the whole thing is in here, the dashboard and the docs and the reverse engineering
+notes, not just the pieces I needed for myself.
+
+It is still mostly first-pass work (see [Project Status](#project-status)), but the point
+now is to be a foundation other people can learn from and build on.
+
 ## Features
 
 ### Spotify Connect

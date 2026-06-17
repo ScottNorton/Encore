@@ -1,13 +1,13 @@
 //! Groups page — multi-speaker group status, controls, and peer details.
 
-use wasm_bindgen::prelude::*;
-use wasm_bindgen::JsCast;
 use std::cell::RefCell;
 use std::collections::HashSet;
+use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
 
 use crate::components::segmented::{SegmentedControl, SegmentedMode};
-use crate::components::toggle::Toggle;
 use crate::components::text_field::TextField;
+use crate::components::toggle::Toggle;
 use crate::dom;
 use encore_common::protocol::ClientMsg;
 
@@ -40,9 +40,7 @@ pub fn render(container: &web_sys::Element) {
     dom::append(&ctrl_card, &ctrl_title);
 
     // Enable toggle
-    let enable_on = crate::state::with(|s| {
-        s.group_status.as_ref().map_or(false, |g| g.enabled)
-    });
+    let enable_on = crate::state::with(|s| s.group_status.as_ref().is_some_and(|g| g.enabled));
     let enable_toggle = Toggle::create("group-enable", "Group Mode", enable_on, |on| {
         crate::ws::send_msg(&ClientMsg::SetGroupEnabled(on));
     });
@@ -50,9 +48,7 @@ pub fn render(container: &web_sys::Element) {
     dom::append(&ctrl_card, &enable_toggle);
 
     // Party mode toggle
-    let party_on = crate::state::with(|s| {
-        s.group_status.as_ref().map_or(false, |g| g.party_mode)
-    });
+    let party_on = crate::state::with(|s| s.group_status.as_ref().is_some_and(|g| g.party_mode));
     let party_toggle = Toggle::create("group-party", "Party Mode", party_on, |on| {
         crate::ws::send_msg(&ClientMsg::SetPartyMode(on));
     });
@@ -66,7 +62,9 @@ pub fn render(container: &web_sys::Element) {
     dom::append(&ch_row, &ch_label);
 
     let current_ch = crate::state::with(|s| {
-        s.group_status.as_ref().map_or("stereo".to_string(), |g| g.channel.clone())
+        s.group_status
+            .as_ref()
+            .map_or("stereo".to_string(), |g| g.channel.clone())
     });
     let ch_seg = SegmentedControl::create(
         "group-ch",
@@ -81,7 +79,9 @@ pub fn render(container: &web_sys::Element) {
 
     // Group name field
     let current_name = crate::state::with(|s| {
-        s.group_status.as_ref().map_or(String::new(), |g| g.group_name.clone())
+        s.group_status
+            .as_ref()
+            .map_or(String::new(), |g| g.group_name.clone())
     });
     let name_field = TextField::create("group-name", "Group Name", &current_name, "living-room");
     dom::append(&ctrl_card, &name_field);
@@ -102,9 +102,7 @@ pub fn render(container: &web_sys::Element) {
     dom::append(&ctrl_card, &save_btn);
 
     // Buffer depth slider
-    let buf_ms = crate::state::with(|s| {
-        s.group_status.as_ref().map_or(80, |g| g.buffer_ms)
-    });
+    let buf_ms = crate::state::with(|s| s.group_status.as_ref().map_or(80, |g| g.buffer_ms));
     let buf_row = dom::create_div();
     dom::set_class(&buf_row, "flex justify-between items-center mt-12");
     let buf_label = dom::el("span", "", Some("Buffer"));
@@ -128,7 +126,10 @@ pub fn render(container: &web_sys::Element) {
 
     let buf_cb = Closure::wrap(Box::new(|e: web_sys::Event| {
         use wasm_bindgen::JsCast;
-        if let Some(target) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok()) {
+        if let Some(target) = e
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+        {
             if let Ok(ms) = target.value().parse::<u16>() {
                 if let Some(el) = dom::get_el("group-buffer-value") {
                     el.set_text_content(Some(&format!("{} ms", ms)));
@@ -137,7 +138,9 @@ pub fn render(container: &web_sys::Element) {
             }
         }
     }) as Box<dyn FnMut(_)>);
-    buf_slider.add_event_listener_with_callback("input", buf_cb.as_ref().unchecked_ref()).ok();
+    buf_slider
+        .add_event_listener_with_callback("input", buf_cb.as_ref().unchecked_ref())
+        .ok();
     buf_cb.forget();
 
     dom::append(&buf_right, &buf_slider);
@@ -153,9 +156,7 @@ pub fn render(container: &web_sys::Element) {
     let vol_right = dom::create_div();
     dom::set_class(&vol_right, "flex items-center gap-8");
 
-    let current_vol = crate::state::with(|s| {
-        s.group_status.as_ref().map_or(70u8, |g| g.volume)
-    });
+    let current_vol = crate::state::with(|s| s.group_status.as_ref().map_or(70u8, |g| g.volume));
     let vol_value = dom::el("span", "text-muted", Some(&format!("{}%", current_vol)));
     vol_value.set_id("group-vol-value");
     dom::append(&vol_right, &vol_value);
@@ -170,7 +171,10 @@ pub fn render(container: &web_sys::Element) {
 
     let vol_cb = Closure::wrap(Box::new(|e: web_sys::Event| {
         use wasm_bindgen::JsCast;
-        if let Some(target) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok()) {
+        if let Some(target) = e
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+        {
             if let Ok(vol) = target.value().parse::<u8>() {
                 if let Some(el) = dom::get_el("group-vol-value") {
                     el.set_text_content(Some(&format!("{}%", vol)));
@@ -179,7 +183,9 @@ pub fn render(container: &web_sys::Element) {
             }
         }
     }) as Box<dyn FnMut(_)>);
-    vol_slider.add_event_listener_with_callback("input", vol_cb.as_ref().unchecked_ref()).ok();
+    vol_slider
+        .add_event_listener_with_callback("input", vol_cb.as_ref().unchecked_ref())
+        .ok();
     vol_cb.forget();
 
     dom::append(&vol_right, &vol_slider);
@@ -193,9 +199,11 @@ pub fn render(container: &web_sys::Element) {
     dom::set_class(&boot_card, "card");
     let boot_title = dom::el("div", "card-title", Some("Bootstrap Peers"));
     dom::append(&boot_card, &boot_title);
-    let boot_desc = dom::el("div", "text-muted text-sm", Some(
-        "Add speaker IPs for cross-subnet discovery."
-    ));
+    let boot_desc = dom::el(
+        "div",
+        "text-muted text-sm",
+        Some("Add speaker IPs for cross-subnet discovery."),
+    );
     dom::set_style(&boot_desc, "margin-bottom", "8px");
     dom::append(&boot_card, &boot_desc);
 
@@ -215,7 +223,7 @@ pub fn render(container: &web_sys::Element) {
     dom::append(&add_row, &peer_input);
 
     let add_btn = dom::el("button", "btn btn-sm", Some("Add"));
-    dom::on_click(&add_btn, || add_bootstrap_peer());
+    dom::on_click(&add_btn, add_bootstrap_peer);
     dom::append(&add_row, &add_btn);
     dom::append(&boot_card, &add_row);
 
@@ -239,250 +247,279 @@ pub fn render(container: &web_sys::Element) {
 
 pub fn update() {
     crate::state::with(|state| {
-
-    if let Some(status) = &state.group_status {
-        // ── Update enable toggle ──
-        if let Some(el) = dom::get_el("group-enable") {
-            dom::toggle_set(&el, status.enabled);
-        }
-
-        // Update party mode toggle
-        if let Some(el) = dom::get_el("group-party") {
-            dom::toggle_set(&el, status.party_mode);
-        }
-
-        // Update volume slider + label
-        if let Some(el) = dom::get_el("group-vol-slider") {
-            if let Some(input) = el.dyn_ref::<web_sys::HtmlInputElement>() {
-                input.set_value(&status.volume.to_string());
+        if let Some(status) = &state.group_status {
+            // ── Update enable toggle ──
+            if let Some(el) = dom::get_el("group-enable") {
+                dom::toggle_set(&el, status.enabled);
             }
-        }
-        if let Some(el) = dom::get_el("group-vol-value") {
-            el.set_text_content(Some(&format!("{}%", status.volume)));
-        }
 
-        // ── Update buffer slider + label ──
-        if let Some(el) = dom::get_el("group-buffer-slider") {
-            if let Some(input) = el.dyn_ref::<web_sys::HtmlInputElement>() {
-                input.set_value(&status.buffer_ms.to_string());
+            // Update party mode toggle
+            if let Some(el) = dom::get_el("group-party") {
+                dom::toggle_set(&el, status.party_mode);
             }
-        }
-        if let Some(el) = dom::get_el("group-buffer-value") {
-            el.set_text_content(Some(&format!("{} ms", status.buffer_ms)));
-        }
 
-        // ── Update channel segmented control ──
-        if let Some(parent) = dom::get_el("group-ch") {
-            let children = parent.children();
-            for i in 0..children.length() {
-                if let Some(child) = children.item(i) {
-                    let btn_id = child.id();
-                    let expected = format!("group-ch-{}", status.channel);
-                    if btn_id == expected {
-                        dom::set_class(&child, "seg-btn active");
-                    } else {
-                        dom::set_class(&child, "seg-btn");
-                    }
+            // Update volume slider + label
+            if let Some(el) = dom::get_el("group-vol-slider") {
+                if let Some(input) = el.dyn_ref::<web_sys::HtmlInputElement>() {
+                    input.set_value(&status.volume.to_string());
                 }
             }
-        }
-
-        // ── Update status display ──
-        if let Some(container) = dom::get_el("group-status") {
-            container.set_inner_html("");
-
-            // Role badge row
-            let role_row = dom::create_div();
-            dom::set_class(&role_row, "flex items-center gap-8 mb-8");
-
-            let (role_text, badge_cls) = match status.role.as_str() {
-                "leader" => ("Leader", "badge badge-blue"),
-                "follower" => ("Follower", "badge badge-green"),
-                _ => ("Standalone", "badge badge-muted"),
-            };
-            let badge = dom::el("span", badge_cls, Some(role_text));
-            dom::append(&role_row, &badge);
-
-            if !status.group_name.is_empty() {
-                let group_lbl = dom::el("span", "text-muted", Some(&format!("Group: {}", status.group_name)));
-                dom::append(&role_row, &group_lbl);
+            if let Some(el) = dom::get_el("group-vol-value") {
+                el.set_text_content(Some(&format!("{}%", status.volume)));
             }
-            dom::append(&container, &role_row);
 
-            // Stats row
-            let stats = dom::el("div", "text-muted text-sm", Some(&format!(
-                "Channel: {} | Buffer: {} ms | {} peer(s)",
-                status.channel, status.buffer_ms, status.peers.len()
-            )));
-            dom::append(&container, &stats);
-        }
+            // ── Update buffer slider + label ──
+            if let Some(el) = dom::get_el("group-buffer-slider") {
+                if let Some(input) = el.dyn_ref::<web_sys::HtmlInputElement>() {
+                    input.set_value(&status.buffer_ms.to_string());
+                }
+            }
+            if let Some(el) = dom::get_el("group-buffer-value") {
+                el.set_text_content(Some(&format!("{} ms", status.buffer_ms)));
+            }
 
-        // ── Update peer list ──
-        if let Some(list) = dom::get_el("group-peers") {
-            list.set_inner_html("");
-
-            if status.peers.is_empty() {
-                let empty = dom::el("div", "text-muted text-center", Some("No peers discovered"));
-                dom::append(&list, &empty);
-            } else {
-                for peer in status.peers.iter() {
-                    let card = dom::create_div();
-                    dom::set_class(&card, "peer-card mb-8");
-                    dom::set_style(&card, "border", "1px solid var(--border)");
-                    dom::set_style(&card, "border-radius", "8px");
-                    dom::set_style(&card, "overflow", "hidden");
-
-                    // ── Summary row (always visible, clickable) ──
-                    let summary = dom::create_div();
-                    dom::set_class(&summary, "flex justify-between items-center p-8");
-                    dom::set_style(&summary, "cursor", "pointer");
-
-                    let left = dom::create_div();
-                    dom::set_class(&left, "flex items-center gap-8");
-
-                    // Health indicator dot
-                    let dot_cls = if peer.instability_score < 10 {
-                        "health-dot health-good"
-                    } else if peer.instability_score < 50 {
-                        "health-dot health-warn"
-                    } else {
-                        "health-dot health-bad"
-                    };
-                    let dot = dom::el("span", dot_cls, None);
-                    dom::append(&left, &dot);
-
-                    // Peer name (fall back to peer_id if name is empty)
-                    let display_name = if peer.name.is_empty() {
-                        &peer.peer_id[..8.min(peer.peer_id.len())]
-                    } else {
-                        &peer.name
-                    };
-                    let name = dom::el("span", "text-bold", Some(display_name));
-                    dom::append(&left, &name);
-
-                    // Role badge
-                    let (peer_role, peer_badge) = match peer.role.as_str() {
-                        "leader" => ("Leader", "badge badge-blue badge-sm"),
-                        "follower" => ("Follower", "badge badge-green badge-sm"),
-                        _ => ("Standalone", "badge badge-muted badge-sm"),
-                    };
-                    let rbadge = dom::el("span", peer_badge, Some(peer_role));
-                    dom::append(&left, &rbadge);
-
-                    dom::append(&summary, &left);
-
-                    // RTT on the right side
-                    let rtt_text = if peer.latency_us == 0 {
-                        "\u{2014}".to_string() // em-dash for no data
-                    } else if peer.latency_us.abs() < 1000 {
-                        format!("{} \u{00B5}s", peer.latency_us)
-                    } else {
-                        format!("{:.1} ms", peer.latency_us as f64 / 1000.0)
-                    };
-                    let rtt = dom::el("span", "text-muted text-sm", Some(&rtt_text));
-                    dom::append(&summary, &rtt);
-
-                    // Click handler to toggle detail — keyed by peer_id for stability
-                    let peer_id_key = peer.peer_id.clone();
-                    let detail_id = format!("peer-detail-{}", peer.peer_id);
-                    let detail_id_c = detail_id.clone();
-                    dom::on_click(&summary, move || {
-                        let peer_id_c = peer_id_key.clone();
-                        if let Some(el) = dom::get_el(&detail_id_c) {
-                            let cur = el.dyn_ref::<web_sys::HtmlElement>()
-                                .and_then(|h| Some(h.style().get_property_value("display").unwrap_or_default()))
-                                .unwrap_or_default();
-                            if cur == "none" {
-                                dom::set_style(&el, "display", "block");
-                                EXPANDED_PEERS.with(|ep| ep.borrow_mut().insert(peer_id_c));
-                            } else {
-                                dom::set_style(&el, "display", "none");
-                                EXPANDED_PEERS.with(|ep| ep.borrow_mut().remove(&peer_id_c));
-                            }
+            // ── Update channel segmented control ──
+            if let Some(parent) = dom::get_el("group-ch") {
+                let children = parent.children();
+                for i in 0..children.length() {
+                    if let Some(child) = children.item(i) {
+                        let btn_id = child.id();
+                        let expected = format!("group-ch-{}", status.channel);
+                        if btn_id == expected {
+                            dom::set_class(&child, "seg-btn active");
+                        } else {
+                            dom::set_class(&child, "seg-btn");
                         }
-                    });
-
-                    dom::append(&card, &summary);
-
-                    // ── Expandable detail section ──
-                    let is_expanded = EXPANDED_PEERS.with(|ep| ep.borrow().contains(&peer.peer_id));
-                    let detail = dom::create_div();
-                    detail.set_id(&detail_id);
-                    dom::set_class(&detail, "p-8");
-                    dom::set_style(&detail, "display", if is_expanded { "block" } else { "none" });
-                    dom::set_style(&detail, "border-top", "1px solid var(--border)");
-                    dom::set_style(&detail, "background", "var(--bg-card-alt, rgba(255,255,255,0.02))");
-
-                    // Detail grid
-                    let grid = dom::create_div();
-                    dom::set_class(&grid, "text-sm");
-                    dom::set_style(&grid, "display", "grid");
-                    dom::set_style(&grid, "grid-template-columns", "1fr 1fr");
-                    dom::set_style(&grid, "gap", "4px 12px");
-
-                    // Helper: add a label+value pair to the grid
-                    fn add_detail(grid: &web_sys::Element, label: &str, value: &str) {
-                        let l = dom::el("span", "text-muted", Some(label));
-                        let v = dom::el("span", "", Some(value));
-                        dom::append(grid, &l);
-                        dom::append(grid, &v);
                     }
+                }
+            }
 
-                    add_detail(&grid, "Address", &peer.address);
-                    add_detail(&grid, "Channel", &peer.channel);
-                    let rtt_detail = if peer.latency_us == 0 {
-                        "No data".to_string()
-                    } else {
-                        format!("{} \u{00B5}s", peer.latency_us)
-                    };
-                    add_detail(&grid, "RTT", &rtt_detail);
-                    add_detail(&grid, "Packet Loss", &format!("{:.1}%", peer.packet_loss_pct));
-                    let offset_detail = if peer.clock_offset_us == 0 && peer.latency_us == 0 {
-                        "Syncing...".to_string()
-                    } else {
-                        format!("{} \u{00B5}s", peer.clock_offset_us)
-                    };
-                    add_detail(&grid, "Clock Offset", &offset_detail);
-                    add_detail(&grid, "Buffer Health", &format!("{}%", peer.buffer_health));
-                    add_detail(&grid, "Hop Count", &format!("{}", peer.hop_count));
-                    if peer.is_relay {
-                        add_detail(&grid, "Relay", "Yes");
+            // ── Update status display ──
+            if let Some(container) = dom::get_el("group-status") {
+                container.set_inner_html("");
+
+                // Role badge row
+                let role_row = dom::create_div();
+                dom::set_class(&role_row, "flex items-center gap-8 mb-8");
+
+                let (role_text, badge_cls) = match status.role.as_str() {
+                    "leader" => ("Leader", "badge badge-blue"),
+                    "follower" => ("Follower", "badge badge-green"),
+                    _ => ("Standalone", "badge badge-muted"),
+                };
+                let badge = dom::el("span", badge_cls, Some(role_text));
+                dom::append(&role_row, &badge);
+
+                if !status.group_name.is_empty() {
+                    let group_lbl = dom::el(
+                        "span",
+                        "text-muted",
+                        Some(&format!("Group: {}", status.group_name)),
+                    );
+                    dom::append(&role_row, &group_lbl);
+                }
+                dom::append(&container, &role_row);
+
+                // Stats row
+                let stats = dom::el(
+                    "div",
+                    "text-muted text-sm",
+                    Some(&format!(
+                        "Channel: {} | Buffer: {} ms | {} peer(s)",
+                        status.channel,
+                        status.buffer_ms,
+                        status.peers.len()
+                    )),
+                );
+                dom::append(&container, &stats);
+            }
+
+            // ── Update peer list ──
+            if let Some(list) = dom::get_el("group-peers") {
+                list.set_inner_html("");
+
+                if status.peers.is_empty() {
+                    let empty =
+                        dom::el("div", "text-muted text-center", Some("No peers discovered"));
+                    dom::append(&list, &empty);
+                } else {
+                    for peer in status.peers.iter() {
+                        let card = dom::create_div();
+                        dom::set_class(&card, "peer-card mb-8");
+                        dom::set_style(&card, "border", "1px solid var(--border)");
+                        dom::set_style(&card, "border-radius", "8px");
+                        dom::set_style(&card, "overflow", "hidden");
+
+                        // ── Summary row (always visible, clickable) ──
+                        let summary = dom::create_div();
+                        dom::set_class(&summary, "flex justify-between items-center p-8");
+                        dom::set_style(&summary, "cursor", "pointer");
+
+                        let left = dom::create_div();
+                        dom::set_class(&left, "flex items-center gap-8");
+
+                        // Health indicator dot
+                        let dot_cls = if peer.instability_score < 10 {
+                            "health-dot health-good"
+                        } else if peer.instability_score < 50 {
+                            "health-dot health-warn"
+                        } else {
+                            "health-dot health-bad"
+                        };
+                        let dot = dom::el("span", dot_cls, None);
+                        dom::append(&left, &dot);
+
+                        // Peer name (fall back to peer_id if name is empty)
+                        let display_name = if peer.name.is_empty() {
+                            &peer.peer_id[..8.min(peer.peer_id.len())]
+                        } else {
+                            &peer.name
+                        };
+                        let name = dom::el("span", "text-bold", Some(display_name));
+                        dom::append(&left, &name);
+
+                        // Role badge
+                        let (peer_role, peer_badge) = match peer.role.as_str() {
+                            "leader" => ("Leader", "badge badge-blue badge-sm"),
+                            "follower" => ("Follower", "badge badge-green badge-sm"),
+                            _ => ("Standalone", "badge badge-muted badge-sm"),
+                        };
+                        let rbadge = dom::el("span", peer_badge, Some(peer_role));
+                        dom::append(&left, &rbadge);
+
+                        dom::append(&summary, &left);
+
+                        // RTT on the right side
+                        let rtt_text = if peer.latency_us == 0 {
+                            "\u{2014}".to_string() // em-dash for no data
+                        } else if peer.latency_us.abs() < 1000 {
+                            format!("{} \u{00B5}s", peer.latency_us)
+                        } else {
+                            format!("{:.1} ms", peer.latency_us as f64 / 1000.0)
+                        };
+                        let rtt = dom::el("span", "text-muted text-sm", Some(&rtt_text));
+                        dom::append(&summary, &rtt);
+
+                        // Click handler to toggle detail — keyed by peer_id for stability
+                        let peer_id_key = peer.peer_id.clone();
+                        let detail_id = format!("peer-detail-{}", peer.peer_id);
+                        let detail_id_c = detail_id.clone();
+                        dom::on_click(&summary, move || {
+                            let peer_id_c = peer_id_key.clone();
+                            if let Some(el) = dom::get_el(&detail_id_c) {
+                                let cur = el
+                                    .dyn_ref::<web_sys::HtmlElement>()
+                                    .map(|h| {
+                                        h.style().get_property_value("display").unwrap_or_default()
+                                    })
+                                    .unwrap_or_default();
+                                if cur == "none" {
+                                    dom::set_style(&el, "display", "block");
+                                    EXPANDED_PEERS.with(|ep| ep.borrow_mut().insert(peer_id_c));
+                                } else {
+                                    dom::set_style(&el, "display", "none");
+                                    EXPANDED_PEERS.with(|ep| ep.borrow_mut().remove(&peer_id_c));
+                                }
+                            }
+                        });
+
+                        dom::append(&card, &summary);
+
+                        // ── Expandable detail section ──
+                        let is_expanded =
+                            EXPANDED_PEERS.with(|ep| ep.borrow().contains(&peer.peer_id));
+                        let detail = dom::create_div();
+                        detail.set_id(&detail_id);
+                        dom::set_class(&detail, "p-8");
+                        dom::set_style(
+                            &detail,
+                            "display",
+                            if is_expanded { "block" } else { "none" },
+                        );
+                        dom::set_style(&detail, "border-top", "1px solid var(--border)");
+                        dom::set_style(
+                            &detail,
+                            "background",
+                            "var(--bg-card-alt, rgba(255,255,255,0.02))",
+                        );
+
+                        // Detail grid
+                        let grid = dom::create_div();
+                        dom::set_class(&grid, "text-sm");
+                        dom::set_style(&grid, "display", "grid");
+                        dom::set_style(&grid, "grid-template-columns", "1fr 1fr");
+                        dom::set_style(&grid, "gap", "4px 12px");
+
+                        // Helper: add a label+value pair to the grid
+                        fn add_detail(grid: &web_sys::Element, label: &str, value: &str) {
+                            let l = dom::el("span", "text-muted", Some(label));
+                            let v = dom::el("span", "", Some(value));
+                            dom::append(grid, &l);
+                            dom::append(grid, &v);
+                        }
+
+                        add_detail(&grid, "Address", &peer.address);
+                        add_detail(&grid, "Channel", &peer.channel);
+                        let rtt_detail = if peer.latency_us == 0 {
+                            "No data".to_string()
+                        } else {
+                            format!("{} \u{00B5}s", peer.latency_us)
+                        };
+                        add_detail(&grid, "RTT", &rtt_detail);
+                        add_detail(
+                            &grid,
+                            "Packet Loss",
+                            &format!("{:.1}%", peer.packet_loss_pct),
+                        );
+                        let offset_detail = if peer.clock_offset_us == 0 && peer.latency_us == 0 {
+                            "Syncing...".to_string()
+                        } else {
+                            format!("{} \u{00B5}s", peer.clock_offset_us)
+                        };
+                        add_detail(&grid, "Clock Offset", &offset_detail);
+                        add_detail(&grid, "Buffer Health", &format!("{}%", peer.buffer_health));
+                        add_detail(&grid, "Hop Count", &format!("{}", peer.hop_count));
+                        if peer.is_relay {
+                            add_detail(&grid, "Relay", "Yes");
+                        }
+                        add_detail(&grid, "Instability", &format!("{}", peer.instability_score));
+
+                        dom::append(&detail, &grid);
+                        dom::append(&card, &detail);
+                        dom::append(&list, &card);
                     }
-                    add_detail(&grid, "Instability", &format!("{}", peer.instability_score));
-
-                    dom::append(&detail, &grid);
-                    dom::append(&card, &detail);
-                    dom::append(&list, &card);
                 }
             }
         }
-    }
 
-    // ── Update bootstrap peers list ──
-    if let Some(list_el) = dom::get_el("bootstrap-peers") {
-        list_el.set_inner_html("");
-        if let Some(ref cfg) = state.config {
-            if cfg.group_peers.is_empty() {
-                let empty = dom::el("div", "text-muted text-center text-sm", Some("None configured"));
-                dom::append(&list_el, &empty);
-            } else {
-                for peer_ip in &cfg.group_peers {
-                    let row = dom::create_div();
-                    dom::set_class(&row, "flex justify-between items-center mb-4");
-                    let ip_text = dom::el("span", "text-sm", Some(peer_ip));
-                    dom::append(&row, &ip_text);
-                    let ip_clone = peer_ip.clone();
-                    let rm_btn = dom::el("button", "btn btn-sm", Some("\u{2715}"));
-                    dom::set_style(&rm_btn, "padding", "2px 8px");
-                    dom::set_style(&rm_btn, "font-size", "10px");
-                    dom::on_click(&rm_btn, move || remove_bootstrap_peer(&ip_clone));
-                    dom::append(&row, &rm_btn);
-                    dom::append(&list_el, &row);
+        // ── Update bootstrap peers list ──
+        if let Some(list_el) = dom::get_el("bootstrap-peers") {
+            list_el.set_inner_html("");
+            if let Some(ref cfg) = state.config {
+                if cfg.group_peers.is_empty() {
+                    let empty = dom::el(
+                        "div",
+                        "text-muted text-center text-sm",
+                        Some("None configured"),
+                    );
+                    dom::append(&list_el, &empty);
+                } else {
+                    for peer_ip in &cfg.group_peers {
+                        let row = dom::create_div();
+                        dom::set_class(&row, "flex justify-between items-center mb-4");
+                        let ip_text = dom::el("span", "text-sm", Some(peer_ip));
+                        dom::append(&row, &ip_text);
+                        let ip_clone = peer_ip.clone();
+                        let rm_btn = dom::el("button", "btn btn-sm", Some("\u{2715}"));
+                        dom::set_style(&rm_btn, "padding", "2px 8px");
+                        dom::set_style(&rm_btn, "font-size", "10px");
+                        dom::on_click(&rm_btn, move || remove_bootstrap_peer(&ip_clone));
+                        dom::append(&row, &rm_btn);
+                        dom::append(&list_el, &row);
+                    }
                 }
             }
         }
-    }
-
     });
 }
 
@@ -493,7 +530,9 @@ fn add_bootstrap_peer() {
         .unwrap_or_default()
         .trim()
         .to_string();
-    if ip.is_empty() { return; }
+    if ip.is_empty() {
+        return;
+    }
 
     crate::state::with_mut(|s| {
         if let Some(ref mut cfg) = s.config {

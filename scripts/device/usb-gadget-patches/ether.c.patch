@@ -1,0 +1,14 @@
+--- /home/scott/HKHacking/workspace/source/kernel/Invoke-kernel/drivers/usb/gadget/ether.c	2021-03-09 03:17:26.000000000 -0500
++++ /mnt/g/HKInvoke/vendor/kernel/drivers/usb/gadget/ether.c	2026-06-16 16:51:31.010345000 -0400
+@@ -142,7 +142,10 @@
+  * the non-RNDIS configuration.
+  */
+ #define RNDIS_VENDOR_NUM	0x0525	/* NetChip */
+-#define RNDIS_PRODUCT_NUM	0xa4a2	/* Ethernet/RNDIS Gadget */
++/* 0xa4a4: fresh PID again so Windows re-evaluates the device now that the
++ * RNDIS interface advertises the E0/01/03 class (a4a3 was already cached/bound
++ * to usbser; a4a2 had no MS-OS support). */
++#define RNDIS_PRODUCT_NUM	0xa4a4	/* Ethernet/RNDIS Gadget */
+ 
+ /* For EEM gadgets */
+ #define EEM_VENDOR_NUM		0x1d6b	/* Linux Foundation */

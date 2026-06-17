@@ -59,8 +59,7 @@ async fn discover_speakers() -> Result<Vec<Speaker>, String> {
 }
 
 fn build_app() -> tauri::Builder<tauri::Wry> {
-    tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![discover_speakers])
+    tauri::Builder::default().invoke_handler(tauri::generate_handler![discover_speakers])
 }
 
 pub fn run() {

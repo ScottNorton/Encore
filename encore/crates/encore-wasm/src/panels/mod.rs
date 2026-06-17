@@ -1,9 +1,9 @@
 //! Slide-over panels — gear menu items.
 
+mod about;
 mod config;
 mod health;
 mod update;
-mod about;
 
 /// Render panel content into the panel body.
 pub fn render(id: &str, container: &web_sys::Element) {
@@ -24,12 +24,16 @@ pub fn render(id: &str, container: &web_sys::Element) {
 
 fn render_crashes(container: &web_sys::Element) {
     use crate::dom;
-    use wasm_bindgen_futures::JsFuture;
     use wasm_bindgen::JsCast;
+    use wasm_bindgen_futures::JsFuture;
 
     let list = dom::create_div();
     list.set_id("crash-list");
-    dom::set_style(&list, "font-family", "'SF Mono', 'Cascadia Code', 'Consolas', monospace");
+    dom::set_style(
+        &list,
+        "font-family",
+        "'SF Mono', 'Cascadia Code', 'Consolas', monospace",
+    );
     dom::set_style(&list, "font-size", "12px");
     dom::set_style(&list, "line-height", "1.6");
     dom::set_style(&list, "max-height", "60vh");
@@ -48,18 +52,22 @@ fn render_crashes(container: &web_sys::Element) {
         let url = format!("{}/api/crashes", origin);
 
         let result: Result<String, String> = async {
-            let resp_val = JsFuture::from(window.fetch_with_str(&url)).await
+            let resp_val = JsFuture::from(window.fetch_with_str(&url))
+                .await
                 .map_err(|e| format!("fetch failed: {:?}", e))?;
             let resp: web_sys::Response = resp_val.unchecked_into();
             if !resp.ok() {
                 return Err(format!("HTTP {}", resp.status()));
             }
-            let text_promise = resp.text()
-                .map_err(|e| format!("text() failed: {:?}", e))?;
-            let text_val = JsFuture::from(text_promise).await
+            let text_promise = resp.text().map_err(|e| format!("text() failed: {:?}", e))?;
+            let text_val = JsFuture::from(text_promise)
+                .await
                 .map_err(|e| format!("await text failed: {:?}", e))?;
-            text_val.as_string().ok_or_else(|| "response not a string".into())
-        }.await;
+            text_val
+                .as_string()
+                .ok_or_else(|| "response not a string".into())
+        }
+        .await;
 
         if let Some(el) = dom::get_el("crash-list") {
             dom::clear(&el);
@@ -70,26 +78,41 @@ fn render_crashes(container: &web_sys::Element) {
                     dom::append(&el, &msg);
                 }
                 Ok(text) => {
-                    match serde_json::from_str::<Vec<encore_common::protocol::CrashSummary>>(&text) {
+                    match serde_json::from_str::<Vec<encore_common::protocol::CrashSummary>>(&text)
+                    {
                         Ok(crashes) if crashes.is_empty() => {
-                            let msg = dom::el("div", "text-muted", Some("$ No crash reports recorded."));
+                            let msg =
+                                dom::el("div", "text-muted", Some("$ No crash reports recorded."));
                             dom::append(&el, &msg);
-                            let msg2 = dom::el("div", "text-muted", Some("$ All subsystems running normally."));
+                            let msg2 = dom::el(
+                                "div",
+                                "text-muted",
+                                Some("$ All subsystems running normally."),
+                            );
                             dom::append(&el, &msg2);
                         }
                         Ok(crashes) => {
-                            let header = dom::el("div", "text-muted", Some(&format!("$ {} crash report(s):", crashes.len())));
+                            let header = dom::el(
+                                "div",
+                                "text-muted",
+                                Some(&format!("$ {} crash report(s):", crashes.len())),
+                            );
                             dom::append(&el, &header);
                             let sep = dom::el("div", "text-muted", Some("---"));
                             dom::append(&el, &sep);
                             for crash in &crashes {
                                 let line = dom::create_div();
                                 dom::set_style(&line, "margin-top", "8px");
-                                let name = dom::el("span", "", Some(&format!("[{}] ", crash.subsystem)));
+                                let name =
+                                    dom::el("span", "", Some(&format!("[{}] ", crash.subsystem)));
                                 dom::set_style(&name, "color", "var(--red)");
                                 dom::set_style(&name, "font-weight", "600");
                                 dom::append(&line, &name);
-                                let restarts = dom::el("span", "text-muted", Some(&format!("(restart #{})", crash.restart_count)));
+                                let restarts = dom::el(
+                                    "span",
+                                    "text-muted",
+                                    Some(&format!("(restart #{})", crash.restart_count)),
+                                );
                                 dom::append(&line, &restarts);
                                 dom::append(&el, &line);
 
@@ -125,7 +148,11 @@ fn render_reboot(container: &web_sys::Element) {
     use crate::dom;
     use wasm_bindgen_futures::JsFuture;
 
-    let msg = dom::el("div", "text-center mt-16", Some("Reboot the device? This will interrupt all audio."));
+    let msg = dom::el(
+        "div",
+        "text-center mt-16",
+        Some("Reboot the device? This will interrupt all audio."),
+    );
     dom::set_style(&msg, "font-size", "16px");
     dom::append(container, &msg);
 
@@ -153,7 +180,11 @@ fn render_reboot(container: &web_sys::Element) {
 
             if let Some(el) = dom::get_el("panel-body") {
                 dom::clear(&el);
-                let msg = dom::el("div", "text-center mt-16", Some("Rebooting... The device will be back shortly."));
+                let msg = dom::el(
+                    "div",
+                    "text-center mt-16",
+                    Some("Rebooting... The device will be back shortly."),
+                );
                 dom::append(&el, &msg);
             }
         });

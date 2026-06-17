@@ -22,7 +22,7 @@ else
   RUN_LINUX = bash -lc "cd '$(CURDIR)' && $(1)"
 endif
 
-.PHONY: help test firmware wasm encore app-dist app-icons app app-dev app-android app-android-dev kernel kernel-vendor kexec download clean clean-kernel clean-kernel-vendor clean-kexec clean-all distclean verify check-wsl
+.PHONY: help test lint firmware wasm encore app-dist app-icons app app-dev app-android app-android-dev kernel kernel-vendor kexec download clean clean-kernel clean-kernel-vendor clean-kexec clean-all distclean verify check-wsl
 
 # Default target — show usage
 .DEFAULT_GOAL := help
@@ -46,6 +46,8 @@ help:
 	@echo "  make firmware         Build full firmware image"
 	@echo "  make wasm             Build WASM web dashboard only"
 	@echo "  make test             Run Rust tests"
+	@echo "  make lint             rustfmt --check + clippy gate"
+	@echo "  make lint             Run clippy (deny warnings)"
 	@echo "  make app              Build desktop app"
 	@echo "  make app-dev          Run desktop app in dev mode"
 	@echo "  make app-android      Build Android app"
@@ -62,7 +64,22 @@ help:
 	@echo "Output:    build/encore, build/firmware/, build/desktop/, build/android/"
 
 test:
-	cd encore && cargo test --workspace --exclude encore-app --exclude encore-wasm
+	cd encore && cargo test --workspace --exclude encore-app
+
+# Format + lint gate: rustfmt --check first, then clippy. The -A lints are deferred
+# refactors, not bugs. encore-app is excluded (Tauri needs system GTK/webkit). encore-wasm
+# is linted on its wasm32 target and kept warning-clean on purpose: nightly-2025-12-07's
+# diagnostic renderer ICEs while drawing wasm warning spans, so any new wasm warning
+# surfaces as a clippy ICE — keeping it at zero means there is nothing to render and no ICE.
+lint:
+	cd encore && cargo fmt --all --check
+	cd encore && cargo clippy --workspace --exclude encore-app --exclude encore-wasm --all-targets -- \
+		-D warnings \
+		-A clippy::too_many_arguments -A clippy::type_complexity -A clippy::large_enum_variant \
+		-A clippy::needless_range_loop -A clippy::manual_async_fn -A clippy::wrong_self_convention
+	cd encore && cargo clippy -p encore-wasm --target wasm32-unknown-unknown --all-targets -- \
+		-D warnings \
+		-A clippy::too_many_arguments -A clippy::type_complexity -A clippy::needless_range_loop
 
 firmware: encore check-wsl
 	$(call RUN_LINUX,bash scripts/build/build_firmware.sh)

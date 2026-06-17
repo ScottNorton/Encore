@@ -15,10 +15,10 @@ use std::time::{Duration, Instant};
 use tracing::info;
 
 // DSP flow control GPIO pins (from vendor dsp-client.c)
-const PIN_CS: u32 = 4;          // Output: CS toggle before reading DSP data
+const PIN_CS: u32 = 4; // Output: CS toggle before reading DSP data
 const PIN_DATA_READY: u32 = 12; // Input: DSP has data to send (HIGH = ready)
-const PIN_ARM_READY: u32 = 13;  // Output: ARM ready to communicate
-const PIN_DSP_READY: u32 = 15;  // Input: DSP ready to receive (active LOW!)
+const PIN_ARM_READY: u32 = 13; // Output: ARM ready to communicate
+const PIN_DSP_READY: u32 = 15; // Input: DSP ready to receive (active LOW!)
 
 const ALL_PINS: [u32; 4] = [PIN_CS, PIN_DATA_READY, PIN_ARM_READY, PIN_DSP_READY];
 
@@ -53,13 +53,13 @@ impl DspGpio {
         std::thread::sleep(Duration::from_millis(50));
 
         // Set directions
-        gpio::set_direction(PIN_CS, true).context("GPIO 4 direction")?;          // output
+        gpio::set_direction(PIN_CS, true).context("GPIO 4 direction")?; // output
         gpio::set_direction(PIN_DATA_READY, false).context("GPIO 12 direction")?; // input
-        gpio::set_direction(PIN_ARM_READY, true).context("GPIO 13 direction")?;   // output
-        gpio::set_direction(PIN_DSP_READY, false).context("GPIO 15 direction")?;  // input
+        gpio::set_direction(PIN_ARM_READY, true).context("GPIO 13 direction")?; // output
+        gpio::set_direction(PIN_DSP_READY, false).context("GPIO 15 direction")?; // input
 
         // Set idle states
-        gpio::write_value(PIN_CS, true)?;        // CS idle HIGH
+        gpio::write_value(PIN_CS, true)?; // CS idle HIGH
         gpio::write_value(PIN_ARM_READY, false)?; // ARM not ready
 
         info!("DSP GPIO: initialized (pins 4,12,13,15 exported)");

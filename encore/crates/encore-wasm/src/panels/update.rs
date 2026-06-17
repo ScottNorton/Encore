@@ -74,7 +74,11 @@ pub fn render(container: &web_sys::Element) {
 
     dom::append(
         &upload,
-        &dom::el("div", "", Some("Drop firmware file here, or click to browse")),
+        &dom::el(
+            "div",
+            "",
+            Some("Drop firmware file here, or click to browse"),
+        ),
     );
     dom::append(
         &upload,
@@ -438,10 +442,7 @@ fn do_github_install(url: String, version: String) {
                 }
             }) as Box<dyn FnMut(_)>);
             upload_target
-                .add_event_listener_with_callback(
-                    "progress",
-                    onprogress.as_ref().unchecked_ref(),
-                )
+                .add_event_listener_with_callback("progress", onprogress.as_ref().unchecked_ref())
                 .ok();
             onprogress.forget();
         }
@@ -475,10 +476,7 @@ fn do_github_install(url: String, version: String) {
 
         // Send the ArrayBuffer
         let buf_obj: &js_sys::Object = buffer.unchecked_ref();
-        if xhr
-            .send_with_opt_buffer_source(Some(buf_obj))
-            .is_err()
-        {
+        if xhr.send_with_opt_buffer_source(Some(buf_obj)).is_err() {
             show_upload_error("Failed to start upload");
         }
     });

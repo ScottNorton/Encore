@@ -6,8 +6,8 @@
 //! stops — those are intentionally duplicated (must render before WASM loads)
 //! and marked `KEEP IN SYNC` with this module.
 
-pub mod palette;
 pub mod css;
+pub mod palette;
 
 use crate::dom;
 use encore_common::protocol::LedAnimation;
@@ -25,11 +25,11 @@ pub enum LogoState {
 impl LogoState {
     fn class(self) -> &'static str {
         match self {
-            Self::Loading    => "logo-loading",
-            Self::Header     => "logo-header",
-            Self::Hero       => "logo-hero",
+            Self::Loading => "logo-loading",
+            Self::Header => "logo-header",
+            Self::Hero => "logo-hero",
             Self::Connecting => "logo-connecting",
-            Self::Wordmark   => "logo-wordmark",
+            Self::Wordmark => "logo-wordmark",
         }
     }
 
@@ -37,7 +37,11 @@ impl LogoState {
     /// clear prior state before applying the new one — keep in sync with the
     /// arms of `class()` above.
     const ALL: &'static [&'static str] = &[
-        "logo-loading", "logo-header", "logo-hero", "logo-connecting", "logo-wordmark",
+        "logo-loading",
+        "logo-header",
+        "logo-hero",
+        "logo-connecting",
+        "logo-wordmark",
     ];
 }
 
@@ -86,8 +90,8 @@ pub fn led_dominant_color(anim: &LedAnimation) -> String {
         | LedAnimation::Spin { r, g, b, .. }
         | LedAnimation::Pulse { r, g, b } => format!("#{:02x}{:02x}{:02x}", r, g, b),
         LedAnimation::VolumeArc { .. } => palette::LED_VOLUME.to_string(),
-        LedAnimation::BootSurge        => palette::LED_BOOT.to_string(),
-        LedAnimation::SafeMode         => palette::LED_SAFE.to_string(),
+        LedAnimation::BootSurge => palette::LED_BOOT.to_string(),
+        LedAnimation::SafeMode => palette::LED_SAFE.to_string(),
         LedAnimation::Custom { frames } => {
             if let Some(frame) = frames.first() {
                 let (r, g, b) = frame.colors[0];
@@ -224,30 +228,55 @@ mod tests {
     #[test]
     fn speaker_svg_contains_dome_color() {
         let out = speaker_svg();
-        assert!(out.contains(&format!("fill=\"{}\"", palette::DOME)), "dome fill missing: {out}");
+        assert!(
+            out.contains(&format!("fill=\"{}\"", palette::DOME)),
+            "dome fill missing: {out}"
+        );
         assert!(out.contains("id=\"logo-dome\""), "dome id missing");
     }
 
     #[test]
     fn arc_ring_svg_uses_palette_gradient() {
         let out = arc_ring_svg();
-        assert!(out.contains(&format!("stop-color=\"{}\"", palette::ACCENT)), "ACCENT stop missing");
-        assert!(out.contains(&format!("stop-color=\"{}\"", palette::RING_CREAM)), "RING_CREAM stop missing");
-        assert!(out.contains("url(#logo-grad)"), "gradient reference missing");
+        assert!(
+            out.contains(&format!("stop-color=\"{}\"", palette::ACCENT)),
+            "ACCENT stop missing"
+        );
+        assert!(
+            out.contains(&format!("stop-color=\"{}\"", palette::RING_CREAM)),
+            "RING_CREAM stop missing"
+        );
+        assert!(
+            out.contains("url(#logo-grad)"),
+            "gradient reference missing"
+        );
     }
 
     #[test]
     fn led_fallbacks_are_on_brand() {
         // VolumeArc uses `level: u8` (not `value`/`max` — verified against protocol.rs)
-        assert_eq!(led_dominant_color(&LedAnimation::VolumeArc { level: 80 }), palette::LED_VOLUME);
-        assert_eq!(led_dominant_color(&LedAnimation::BootSurge), palette::LED_BOOT);
-        assert_eq!(led_dominant_color(&LedAnimation::SafeMode), palette::LED_SAFE);
+        assert_eq!(
+            led_dominant_color(&LedAnimation::VolumeArc { level: 80 }),
+            palette::LED_VOLUME
+        );
+        assert_eq!(
+            led_dominant_color(&LedAnimation::BootSurge),
+            palette::LED_BOOT
+        );
+        assert_eq!(
+            led_dominant_color(&LedAnimation::SafeMode),
+            palette::LED_SAFE
+        );
         assert_eq!(led_dominant_color(&LedAnimation::Off), palette::DOME);
     }
 
     #[test]
     fn led_explicit_rgb_pass_through() {
-        let c = led_dominant_color(&LedAnimation::Solid { r: 0x12, g: 0x34, b: 0x56 });
+        let c = led_dominant_color(&LedAnimation::Solid {
+            r: 0x12,
+            g: 0x34,
+            b: 0x56,
+        });
         assert_eq!(c, "#123456");
     }
 }

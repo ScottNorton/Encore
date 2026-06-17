@@ -62,7 +62,9 @@ elif command -v arm-linux-gnueabihf-strip &>/dev/null; then
 elif command -v wsl.exe &>/dev/null; then
     WSL_PATH=$(wsl.exe -d Ubuntu -- bash -c "wslpath '$BINARY'" 2>/dev/null)
     if [ -n "$WSL_PATH" ]; then
-        wsl.exe -d Ubuntu -- bash -c "llvm-strip '$WSL_PATH' 2>/dev/null || arm-linux-gnueabihf-strip '$WSL_PATH' 2>/dev/null || strip '$WSL_PATH' 2>/dev/null" || true
+        if ! wsl.exe -d Ubuntu -- bash -c "llvm-strip '$WSL_PATH' 2>/dev/null || arm-linux-gnueabihf-strip '$WSL_PATH' 2>/dev/null || strip '$WSL_PATH' 2>/dev/null"; then
+            echo "NOTE: strip unavailable, shipping unstripped binary"
+        fi
     fi
 else
     echo "=== No strip tool found, binary unstripped ==="

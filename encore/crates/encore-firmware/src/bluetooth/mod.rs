@@ -128,7 +128,10 @@ impl Subsystem for BluetoothSubsystem {
         #[cfg(target_os = "linux")]
         {
             if let Err(e) = ensure_bt_module_loaded().await {
-                warn!("Bluetooth: module load failed (may already be loaded): {}", e);
+                warn!(
+                    "Bluetooth: module load failed (may already be loaded): {}",
+                    e
+                );
             }
             if let Err(e) = wait_for_hci().await {
                 warn!("Bluetooth: hci0 not found ({}), continuing anyway", e);
@@ -146,8 +149,7 @@ impl Subsystem for BluetoothSubsystem {
         // ── Phase 2: Management socket — configure adapter ──
         #[cfg(target_os = "linux")]
         let mut mgmt = {
-            let m = mgmt::MgmtSocket::open()
-                .context("failed to open management socket")?;
+            let m = mgmt::MgmtSocket::open().context("failed to open management socket")?;
             info!("Bluetooth: management socket opened");
             m
         };
@@ -321,11 +323,7 @@ impl BluetoothSubsystem {
     /// Process a management event.
     async fn handle_mgmt_event(&mut self, mgmt: &mut mgmt::MgmtSocket, event: mgmt::MgmtEvent) {
         match event {
-            mgmt::MgmtEvent::DeviceConnected {
-                addr,
-                name,
-                ..
-            } => {
+            mgmt::MgmtEvent::DeviceConnected { addr, name, .. } => {
                 let addr_str = l2cap::bdaddr_to_string(&addr);
                 let name_str = name.unwrap_or_else(|| "Unknown".to_string());
                 info!("Bluetooth: CONNECTED: {} ({})", name_str, addr_str);
@@ -343,11 +341,9 @@ impl BluetoothSubsystem {
                 let addr_str = l2cap::bdaddr_to_string(&addr);
                 if let BtState::Connected { .. } = &self.state {
                     info!("Bluetooth: DISCONNECTED: {}", addr_str);
-                    self.broadcast_bt_event(
-                        encore_common::protocol::BtEvent::DeviceDisconnected {
-                            addr: addr_str,
-                        },
-                    );
+                    self.broadcast_bt_event(encore_common::protocol::BtEvent::DeviceDisconnected {
+                        addr: addr_str,
+                    });
                     self.state = BtState::Discoverable;
                 }
             }
@@ -369,10 +365,7 @@ impl BluetoothSubsystem {
                 }
             }
             mgmt::MgmtEvent::DeviceFound {
-                addr,
-                rssi,
-                name,
-                ..
+                addr, rssi, name, ..
             } => {
                 let addr_str = l2cap::bdaddr_to_string(&addr);
                 let name_str = name.unwrap_or_else(|| "Unknown".to_string());
@@ -408,7 +401,8 @@ impl BluetoothSubsystem {
 /// rfkill sysfs: state=0 means blocked, state=1 means unblocked.
 /// soft=0 means not soft-blocked, soft=1 means soft-blocked.
 #[cfg(target_os = "linux")]
-async fn unblock_bt_rfkill() { // still unsure if this is affective anymore
+async fn unblock_bt_rfkill() {
+    // still unsure if this is affective anymore
     let Ok(entries) = std::fs::read_dir("/sys/class/rfkill") else {
         return;
     };
@@ -475,8 +469,6 @@ async fn unblock_bt_rfkill() { // still unsure if this is affective anymore
 /// CoD 0x240428 = Audio/Video major class, Loudspeaker minor, Rendering+Audio service.
 #[cfg(target_os = "linux")]
 fn set_device_class_hci() {
-    use std::os::fd::FromRawFd;
-
     // Open raw HCI socket bound to hci0 (channel 0 = HCI_CHANNEL_RAW)
     let fd = unsafe { libc::socket(l2cap::AF_BLUETOOTH, libc::SOCK_RAW, l2cap::BTPROTO_HCI) };
     if fd < 0 {
@@ -486,7 +478,7 @@ fn set_device_class_hci() {
 
     let addr = l2cap::SockaddrHci {
         hci_family: l2cap::AF_BLUETOOTH as u16,
-        hci_dev: 0, // hci0
+        hci_dev: 0,     // hci0
         hci_channel: 0, // HCI_CHANNEL_RAW
     };
 
@@ -507,17 +499,15 @@ fn set_device_class_hci() {
     // HCI command: Write_Class_of_Device (OGF=0x03, OCF=0x0024, opcode=0x0C24)
     // CoD: 0x240428 → bytes [0x28, 0x04, 0x24] (little-endian)
     let cmd: [u8; 7] = [
-        0x01,       // HCI command packet type
+        0x01, // HCI command packet type
         0x24, 0x0C, // Opcode 0x0C24 (little-endian)
-        0x03,       // Parameter length
-        0x28,       // CoD byte 0: minor=Loudspeaker(0x0A<<2=0x28)
-        0x04,       // CoD byte 1: major=Audio/Video(0x04)
-        0x24,       // CoD byte 2: service=Rendering(0x04)|Audio(0x20)=0x24
+        0x03, // Parameter length
+        0x28, // CoD byte 0: minor=Loudspeaker(0x0A<<2=0x28)
+        0x04, // CoD byte 1: major=Audio/Video(0x04)
+        0x24, // CoD byte 2: service=Rendering(0x04)|Audio(0x20)=0x24
     ];
 
-    let n = unsafe {
-        libc::write(fd, cmd.as_ptr() as *const libc::c_void, cmd.len())
-    };
+    let n = unsafe { libc::write(fd, cmd.as_ptr() as *const libc::c_void, cmd.len()) };
 
     if n == cmd.len() as isize {
         info!("Bluetooth: Class of Device set to 0x240428 (Audio/Loudspeaker)");
@@ -525,7 +515,11 @@ fn set_device_class_hci() {
         let e = std::io::Error::last_os_error();
         warn!("Bluetooth: Write_Class_of_Device failed: {}", e);
     } else {
-        warn!("Bluetooth: Write_Class_of_Device short write: {}/{}", n, cmd.len());
+        warn!(
+            "Bluetooth: Write_Class_of_Device short write: {}/{}",
+            n,
+            cmd.len()
+        );
     }
 
     unsafe { libc::close(fd) };
@@ -557,7 +551,10 @@ async fn hci_dev_up() {
         if err.raw_os_error() == Some(libc::EALREADY) {
             info!("Bluetooth: hci0 already UP");
         } else {
-            warn!("Bluetooth: HCIDEVUP failed: {} — adapter may need management API power-on", err);
+            warn!(
+                "Bluetooth: HCIDEVUP failed: {} — adapter may need management API power-on",
+                err
+            );
         }
     } else {
         info!("Bluetooth: hci0 brought UP via ioctl");
@@ -643,4 +640,3 @@ async fn wait_for_hci() -> Result<()> {
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 }
-

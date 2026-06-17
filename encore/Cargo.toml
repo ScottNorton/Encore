@@ -10,8 +10,8 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-license = "MIT"
-repository = "https://github.com/ScottNorton/hk-invoke"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/ScottNorton/Encore"
 authors = ["Harman Kardon Invoke Community"]
 
 [workspace.dependencies]
@@ -40,7 +40,6 @@ rust-embed = "8"
 libc = "0.2"
 tokio-rustls = { version = "0.25", default-features = false }
 rustls-pemfile = "2"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots"] }
 boringtun = { version = "0.7.0", default-features = false }
 base64 = "0.22"
 microfft = "0.6"

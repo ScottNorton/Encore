@@ -1,0 +1,31 @@
+--- /home/scott/HKHacking/workspace/source/kernel/Invoke-kernel/drivers/usb/gadget/f_rndis.c	2021-03-09 03:17:26.000000000 -0500
++++ /mnt/g/HKInvoke/vendor/kernel/drivers/usb/gadget/f_rndis.c	2026-06-16 16:51:21.237622100 -0400
+@@ -114,9 +114,11 @@
+ 	/* .bInterfaceNumber = DYNAMIC */
+ 	/* status endpoint is optional; this could be patched later */
+ 	.bNumEndpoints =	1,
+-	.bInterfaceClass =	USB_CLASS_COMM,
+-	.bInterfaceSubClass =   USB_CDC_SUBCLASS_ACM,
+-	.bInterfaceProtocol =   USB_CDC_ACM_PROTO_VENDOR,
++	/* Microsoft "RNDIS" signature so Windows binds its RNDIS NIC driver
++	 * instead of usbser (was COMM/ACM/VENDOR = 02/02/ff -> a COM port). */
++	.bInterfaceClass =	USB_CLASS_WIRELESS_CONTROLLER, /* 0xe0 */
++	.bInterfaceSubClass =   0x01,
++	.bInterfaceProtocol =   0x03,
+ 	/* .iInterface = DYNAMIC */
+ };
+ 
+@@ -175,9 +177,10 @@
+ 
+ 	.bFirstInterface =	0, /* XXX, hardcoded */
+ 	.bInterfaceCount = 	2,	// control + data
+-	.bFunctionClass =	USB_CLASS_COMM,
+-	.bFunctionSubClass =	USB_CDC_SUBCLASS_ETHERNET,
+-	.bFunctionProtocol =	USB_CDC_PROTO_NONE,
++	/* match the RNDIS control interface class signature above */
++	.bFunctionClass =	USB_CLASS_WIRELESS_CONTROLLER, /* 0xe0 */
++	.bFunctionSubClass =	0x01,
++	.bFunctionProtocol =	0x03,
+ 	/* .iFunction = DYNAMIC */
+ };
+ 

@@ -111,8 +111,14 @@ communication works.
 | 4 | Output | HIGH idle | CS/flow control — toggle LOW→HIGH before reading |
 | 5 | Output | (upload only) | Temporarily exported during firmware upload CS |
 | 12 | Input | HIGH = data | DSP has data to send |
-| 13 | Output | HIGH = ready | ARM ready to communicate |
+| 13 | Input | (vendor: HIGH = ready) | Stock pin direction is input; the vendor "ARM ready" output use below is not used by Encore (it pegged the CPU) |
 | 15 | Input | **LOW = ready** | DSP ready to receive (**active-low**) |
+
+The send/receive steps below describe the vendor `dsp-client` GPIO handshake,
+which drives GPIO 13 as an "ARM ready" output. Encore's active DSP path does not
+use this handshake: it keeps the stock pin directions (GPIO 13 as an input) and
+uses timing-based flow control, because configuring GPIO 13 as an output pegs the
+CPU. The steps are kept as a reference to the vendor protocol.
 
 **Send protocol** (ARM → DSP):
 1. Set GPIO 13 direction to OUTPUT, value LOW

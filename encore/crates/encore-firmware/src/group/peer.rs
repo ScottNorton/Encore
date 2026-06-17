@@ -49,7 +49,10 @@ pub enum PeerEvent {
     /// A peer disconnected.
     Disconnected { peer_id: String },
     /// Received a packet from a peer.
-    Packet { peer_id: String, packet: GroupPacket },
+    Packet {
+        peer_id: String,
+        packet: GroupPacket,
+    },
 }
 
 /// Handle to a connected peer's write half.
@@ -112,7 +115,10 @@ impl PeerManager {
             let listener = match TcpListener::bind(("0.0.0.0", GROUP_PORT)).await {
                 Ok(l) => l,
                 Err(e) => {
-                    warn!("Group: failed to bind TCP listener on port {}: {}", GROUP_PORT, e);
+                    warn!(
+                        "Group: failed to bind TCP listener on port {}: {}",
+                        GROUP_PORT, e
+                    );
                     return;
                 }
             };
@@ -153,7 +159,7 @@ impl PeerManager {
         address: std::net::IpAddr,
     ) -> Option<tokio::task::JoinHandle<()>> {
         // Only the speaker with the smaller peer_id initiates
-        if self.local_id >= peer_id.to_string() {
+        if self.local_id.as_str() >= peer_id {
             return None;
         }
 
@@ -172,11 +178,8 @@ impl PeerManager {
             let addr = std::net::SocketAddr::new(address, GROUP_PORT);
             info!("Group: connecting to peer {} at {}", peer_id_owned, addr);
 
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                TcpStream::connect(addr),
-            )
-            .await
+            match tokio::time::timeout(std::time::Duration::from_secs(5), TcpStream::connect(addr))
+                .await
             {
                 Ok(Ok(stream)) => {
                     handle_connection(
@@ -298,7 +301,10 @@ async fn handle_connection(
 
     // Parse peer_id and display name from "peer_id\0display_name"
     let (peer_id, peer_name) = if let Some(idx) = peer_info.0.find('\0') {
-        (peer_info.0[..idx].to_string(), peer_info.0[idx + 1..].to_string())
+        (
+            peer_info.0[..idx].to_string(),
+            peer_info.0[idx + 1..].to_string(),
+        )
     } else {
         (peer_info.0.clone(), peer_info.0)
     };
@@ -306,8 +312,11 @@ async fn handle_connection(
 
     // Reject self-connections (mDNS can discover our own service)
     if peer_id == local_id {
-        info!("Group: dropping self-connection at {} [{}]",
-              address, if is_initiator { "outbound" } else { "inbound" });
+        info!(
+            "Group: dropping self-connection at {} [{}]",
+            address,
+            if is_initiator { "outbound" } else { "inbound" }
+        );
         return;
     }
 
@@ -325,13 +334,19 @@ async fn handle_connection(
     if !is_initiator && local_id < peer_id {
         // We have the smaller ID, so we should be the initiator.
         // Drop this inbound — our outbound will be the canonical connection.
-        info!("Group: dropping duplicate inbound from {} (we should be initiator)", peer_id);
+        info!(
+            "Group: dropping duplicate inbound from {} (we should be initiator)",
+            peer_id
+        );
         return;
     }
     if is_initiator && local_id >= peer_id {
         // We have the larger ID, so we should NOT be the initiator.
         // This shouldn't happen with the connect_to_peer guard, but defend against it.
-        info!("Group: dropping outbound to {} (they should be initiator)", peer_id);
+        info!(
+            "Group: dropping outbound to {} (they should be initiator)",
+            peer_id
+        );
         return;
     }
 

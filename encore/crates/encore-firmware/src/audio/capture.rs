@@ -9,13 +9,13 @@
 //! deterministic timing — it must not run on tokio's thread pool.
 
 use super::pcm::{
-    pcm_hw_params, pcm_prepare, pcm_readi_frames, pcm_sw_params,
-    SndPcmHwParams, SndPcmSwParams, SndXferi,
-    ACCESS_RW_INTERLEAVED, FORMAT_S32_LE,
-    INTERVAL_BUFFER_SIZE, INTERVAL_CHANNELS, INTERVAL_PERIOD_SIZE, INTERVAL_RATE,
+    pcm_hw_params, pcm_prepare, pcm_sw_params, SndPcmHwParams, SndPcmSwParams,
+    ACCESS_RW_INTERLEAVED, FORMAT_S32_LE, INTERVAL_BUFFER_SIZE, INTERVAL_CHANNELS,
+    INTERVAL_PERIOD_SIZE, INTERVAL_RATE,
 };
 use anyhow::{bail, Context, Result};
 use std::fs::OpenOptions;
+use std::io::Read;
 use std::os::unix::io::AsRawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -69,7 +69,11 @@ impl CaptureManager {
 
     /// Spawn the capture thread. Returns the thread join handle.
     /// The thread reads from ALSA, processes, and distributes to consumers.
-    pub fn start(self, card: u32, device: u32) -> Result<(Arc<AtomicBool>, std::thread::JoinHandle<()>)> {
+    pub fn start(
+        self,
+        card: u32,
+        device: u32,
+    ) -> Result<(Arc<AtomicBool>, std::thread::JoinHandle<()>)> {
         let running = self.running.clone();
         running.store(true, Ordering::Release);
 
@@ -101,7 +105,7 @@ fn capture_thread(
     let path = format!("/dev/snd/pcmC{}D{}c", card, device);
     info!("Capture: opening {}", path);
 
-    let file = OpenOptions::new()
+    let mut file = OpenOptions::new()
         .read(true)
         .write(true)
         .open(&path)
@@ -120,8 +124,7 @@ fn capture_thread(
     hw.intervals[INTERVAL_BUFFER_SIZE].set_exact(buffer_size);
 
     unsafe {
-        pcm_hw_params(fd, &mut hw)
-            .context("Capture: HW_PARAMS failed")?;
+        pcm_hw_params(fd, &mut hw).context("Capture: HW_PARAMS failed")?;
     }
 
     let actual_period = hw.intervals[INTERVAL_PERIOD_SIZE].min;
@@ -166,6 +169,7 @@ fn capture_thread(
     let frames_per_period = actual_period as usize;
     let samples_per_period = frames_per_period * 2; // stereo
     let mut read_buf: Vec<i32> = vec![0i32; samples_per_period];
+    let period_bytes = samples_per_period * 4; // S32_LE = 4 bytes/sample
 
     // Downsampled output buffers (48kHz → 16kHz = 3:1)
     let out_frames = frames_per_period / 3;
@@ -185,65 +189,80 @@ fn capture_thread(
         .collect();
 
     while running.load(Ordering::Acquire) {
-        // Read one period of interleaved stereo S32 frames
-        let mut xferi = SndXferi {
-            result: 0,
-            buf: read_buf.as_mut_ptr() as *mut u8,
-            frames: frames_per_period as u32,
+        // Read one full period of interleaved stereo S32 frames via the read()
+        // syscall. The BG2CDP 3.8 kernel returns ENOTTY for the READI_FRAMES
+        // ioctl, so capture uses read() the same way playback uses write()
+        // (see AlsaPcm::write_frames). read() may return short, so accumulate
+        // until a full period is buffered.
+        let got_period = {
+            let byte_buf = unsafe {
+                std::slice::from_raw_parts_mut(read_buf.as_mut_ptr() as *mut u8, period_bytes)
+            };
+            let mut offset = 0usize;
+            loop {
+                if !running.load(Ordering::Acquire) {
+                    break false;
+                }
+                match file.read(&mut byte_buf[offset..]) {
+                    Ok(0) => std::thread::sleep(std::time::Duration::from_millis(1)),
+                    Ok(n) => {
+                        offset += n;
+                        if offset >= period_bytes {
+                            break true;
+                        }
+                    }
+                    Err(e) if e.raw_os_error() == Some(32) => {
+                        // EPIPE = overrun — re-prepare and refill from the next period
+                        warn!("Capture: overrun, recovering");
+                        unsafe {
+                            pcm_prepare(fd).ok();
+                        }
+                        break false;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(e) => bail!("Capture: read failed: {}", e),
+                }
+            }
         };
+        if !got_period {
+            continue;
+        }
+        let frames_read = frames_per_period;
 
-        match unsafe { pcm_readi_frames(fd, &mut xferi) } {
-            Ok(_) => {
-                let frames_read = xferi.result as usize;
-                if frames_read == 0 {
-                    continue;
-                }
+        // Deinterleave stereo S32 → two mono channels + downsample 3:1 + scale S32→S16
+        let out_count = frames_read / 3;
+        for i in 0..out_count {
+            let src = i * 3; // 3:1 decimation — average 3 input frames
 
-                // Deinterleave stereo S32 → two mono channels + downsample 3:1 + scale S32→S16
-                let out_count = frames_read / 3;
-                for i in 0..out_count {
-                    let src = i * 3; // 3:1 decimation — average 3 input frames
+            // Left channel: average 3 consecutive S32 samples, scale to S16
+            let l0 = read_buf[src * 2] as i64;
+            let l1 = read_buf[(src + 1) * 2] as i64;
+            let l2 = read_buf[(src + 2) * 2] as i64;
+            let l_avg = ((l0 + l1 + l2) / 3) >> 16; // S32 → S16
+            left_16k[i] = l_avg.clamp(i16::MIN as i64, i16::MAX as i64) as i16;
 
-                    // Left channel: average 3 consecutive S32 samples, scale to S16
-                    let l0 = read_buf[src * 2] as i64;
-                    let l1 = read_buf[(src + 1) * 2] as i64;
-                    let l2 = read_buf[(src + 2) * 2] as i64;
-                    let l_avg = ((l0 + l1 + l2) / 3) >> 16; // S32 → S16
-                    left_16k[i] = l_avg.clamp(i16::MIN as i64, i16::MAX as i64) as i16;
+            // Right channel: same process
+            let r0 = read_buf[src * 2 + 1] as i64;
+            let r1 = read_buf[(src + 1) * 2 + 1] as i64;
+            let r2 = read_buf[(src + 2) * 2 + 1] as i64;
+            let r_avg = ((r0 + r1 + r2) / 3) >> 16;
+            right_16k[i] = r_avg.clamp(i16::MIN as i64, i16::MAX as i64) as i16;
+        }
 
-                    // Right channel: same process
-                    let r0 = read_buf[src * 2 + 1] as i64;
-                    let r1 = read_buf[(src + 1) * 2 + 1] as i64;
-                    let r2 = read_buf[(src + 2) * 2 + 1] as i64;
-                    let r_avg = ((r0 + r1 + r2) / 3) >> 16;
-                    right_16k[i] = r_avg.clamp(i16::MIN as i64, i16::MAX as i64) as i16;
-                }
-
-                // Distribute to consumers (try_send to avoid blocking capture thread)
-                if !left_consumers.is_empty() {
-                    let chunk = left_16k[..out_count].to_vec();
-                    for tx in &left_consumers {
-                        let _ = tx.try_send(chunk.clone());
-                    }
-                }
-                if !right_consumers.is_empty() {
-                    let chunk = right_16k[..out_count].to_vec();
-                    for tx in &right_consumers {
-                        let _ = tx.try_send(chunk.clone());
-                    }
-                }
+        // Distribute to consumers (try_send to avoid blocking capture thread)
+        if !left_consumers.is_empty() {
+            let chunk = left_16k[..out_count].to_vec();
+            for tx in &left_consumers {
+                let _ = tx.try_send(chunk.clone());
             }
-            Err(nix::errno::Errno::EPIPE) => {
-                warn!("Capture: overrun, recovering");
-                unsafe {
-                    pcm_prepare(fd).ok();
-                }
-            }
-            Err(nix::errno::Errno::EAGAIN) => {
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
-            Err(e) => {
-                bail!("Capture: read failed: {}", e);
+        }
+        if !right_consumers.is_empty() {
+            let chunk = right_16k[..out_count].to_vec();
+            for tx in &right_consumers {
+                let _ = tx.try_send(chunk.clone());
             }
         }
     }
@@ -261,17 +280,23 @@ mod tests {
         // Simulate 6 stereo S32 frames (12 samples), expect 2 output frames per channel
         let frames: Vec<i32> = vec![
             // Frame 0: L=0x10000, R=0x20000
-            0x0001_0000, 0x0002_0000,
+            0x0001_0000,
+            0x0002_0000,
             // Frame 1: L=0x20000, R=0x40000
-            0x0002_0000, 0x0004_0000,
+            0x0002_0000,
+            0x0004_0000,
             // Frame 2: L=0x30000, R=0x60000
-            0x0003_0000, 0x0006_0000,
+            0x0003_0000,
+            0x0006_0000,
             // Frame 3: L=0x40000, R=0x80000
-            0x0004_0000, 0x0008_0000,
+            0x0004_0000,
+            0x0008_0000,
             // Frame 4: L=0x50000, R=0xA0000
-            0x0005_0000, 0x000A_0000,
+            0x0005_0000,
+            0x000A_0000,
             // Frame 5: L=0x60000, R=0xC0000
-            0x0006_0000, 0x000C_0000,
+            0x0006_0000,
+            0x000C_0000,
         ];
 
         let out_count = 6 / 3; // 2 output frames

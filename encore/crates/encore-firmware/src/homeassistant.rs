@@ -64,17 +64,38 @@ impl HomeAssistantSubsystem {
                 if state == "OFF" {
                     let _ = tx.try_send(ClientMsg::SetLed(LedAnimation::Off));
                 } else {
-                    let r = json.get("color").and_then(|c| c.get("r")).and_then(|v| v.as_u64()).unwrap_or(255) as u8;
-                    let g = json.get("color").and_then(|c| c.get("g")).and_then(|v| v.as_u64()).unwrap_or(255) as u8;
-                    let b = json.get("color").and_then(|c| c.get("b")).and_then(|v| v.as_u64()).unwrap_or(255) as u8;
-                    let brightness = json.get("brightness").and_then(|v| v.as_u64()).unwrap_or(255) as f32 / 255.0;
+                    let r = json
+                        .get("color")
+                        .and_then(|c| c.get("r"))
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(255) as u8;
+                    let g = json
+                        .get("color")
+                        .and_then(|c| c.get("g"))
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(255) as u8;
+                    let b = json
+                        .get("color")
+                        .and_then(|c| c.get("b"))
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(255) as u8;
+                    let brightness = json
+                        .get("brightness")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(255) as f32
+                        / 255.0;
                     let r = (r as f32 * brightness) as u8;
                     let g = (g as f32 * brightness) as u8;
                     let b = (b as f32 * brightness) as u8;
 
                     if let Some(effect) = json.get("effect").and_then(|v| v.as_str()) {
                         let anim = match effect {
-                            "Breathing" => LedAnimation::Breathe { r, g, b, period_ms: 2000 },
+                            "Breathing" => LedAnimation::Breathe {
+                                r,
+                                g,
+                                b,
+                                period_ms: 2000,
+                            },
                             "Spinning" => LedAnimation::Spin { r, g, b, speed: 3 },
                             "Pulse" => LedAnimation::Pulse { r, g, b },
                             _ => LedAnimation::Solid { r, g, b },
@@ -94,9 +115,23 @@ impl HomeAssistantSubsystem {
             debug!("HA: effect command: {}", payload_str);
             let anim = match payload_str.trim() {
                 "None" => LedAnimation::Off,
-                "Breathing" => LedAnimation::Breathe { r: 0, g: 120, b: 255, period_ms: 2000 },
-                "Spinning" => LedAnimation::Spin { r: 0, g: 120, b: 255, speed: 3 },
-                "Pulse" => LedAnimation::Pulse { r: 0, g: 120, b: 255 },
+                "Breathing" => LedAnimation::Breathe {
+                    r: 0,
+                    g: 120,
+                    b: 255,
+                    period_ms: 2000,
+                },
+                "Spinning" => LedAnimation::Spin {
+                    r: 0,
+                    g: 120,
+                    b: 255,
+                    speed: 3,
+                },
+                "Pulse" => LedAnimation::Pulse {
+                    r: 0,
+                    g: 120,
+                    b: 255,
+                },
                 "Volume Arc" => LedAnimation::VolumeArc { level: 50 },
                 _ => return,
             };
@@ -114,10 +149,18 @@ impl HomeAssistantSubsystem {
             debug!("HA: media command: {}", payload_str);
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&payload_str) {
                 match json.get("command").and_then(|v| v.as_str()).unwrap_or("") {
-                    "play" => { let _ = tx.try_send(ClientMsg::SpotifyControl(SpotifyAction::Play)); }
-                    "pause" => { let _ = tx.try_send(ClientMsg::SpotifyControl(SpotifyAction::Pause)); }
-                    "next" => { let _ = tx.try_send(ClientMsg::SpotifyControl(SpotifyAction::Next)); }
-                    "previous" => { let _ = tx.try_send(ClientMsg::SpotifyControl(SpotifyAction::Previous)); }
+                    "play" => {
+                        let _ = tx.try_send(ClientMsg::SpotifyControl(SpotifyAction::Play));
+                    }
+                    "pause" => {
+                        let _ = tx.try_send(ClientMsg::SpotifyControl(SpotifyAction::Pause));
+                    }
+                    "next" => {
+                        let _ = tx.try_send(ClientMsg::SpotifyControl(SpotifyAction::Next));
+                    }
+                    "previous" => {
+                        let _ = tx.try_send(ClientMsg::SpotifyControl(SpotifyAction::Previous));
+                    }
                     _ => {}
                 }
             }
@@ -144,7 +187,7 @@ impl Subsystem for HomeAssistantSubsystem {
 
         // Last will: mark device offline
         opts.set_last_will(rumqttc::LastWill::new(
-            &format!("{}/status", PREFIX),
+            format!("{}/status", PREFIX),
             "offline",
             QoS::AtLeastOnce,
             true,
@@ -209,12 +252,12 @@ impl Subsystem for HomeAssistantSubsystem {
                 } => {
                     if let Some(msg) = ws_msg {
                         if msg.contains("\"GroupStatus\"") {
-                            if let Ok(server_msg) = serde_json::from_str::<encore_common::protocol::ServerMsg>(&msg) {
-                                if let encore_common::protocol::ServerMsg::GroupStatus(status) = server_msg {
-                                    group_enabled = status.enabled;
-                                    group_role = status.role;
-                                    group_peer_count = status.peers.len();
-                                }
+                            if let Ok(encore_common::protocol::ServerMsg::GroupStatus(status)) =
+                                serde_json::from_str::<encore_common::protocol::ServerMsg>(&msg)
+                            {
+                                group_enabled = status.enabled;
+                                group_role = status.role;
+                                group_peer_count = status.peers.len();
                             }
                         }
                     }
@@ -446,7 +489,12 @@ async fn subscribe_commands(client: &AsyncClient) {
 }
 
 /// Publish current device state to state topics.
-async fn publish_state(client: &AsyncClient, group_enabled: bool, group_role: &str, group_peers: usize) {
+async fn publish_state(
+    client: &AsyncClient,
+    group_enabled: bool,
+    group_role: &str,
+    group_peers: usize,
+) {
     // CPU usage from /proc/stat
     if let Ok(cpu) = read_cpu_percent() {
         client
@@ -474,26 +522,35 @@ async fn publish_state(client: &AsyncClient, group_enabled: bool, group_role: &s
     }
 
     // Group state
-    client.publish(
-        &format!("{}/switch/group/state", PREFIX),
-        QoS::AtMostOnce,
-        false,
-        if group_enabled { "ON" } else { "OFF" },
-    ).await.ok();
+    client
+        .publish(
+            &format!("{}/switch/group/state", PREFIX),
+            QoS::AtMostOnce,
+            false,
+            if group_enabled { "ON" } else { "OFF" },
+        )
+        .await
+        .ok();
 
-    client.publish(
-        &format!("{}/sensor/group_role/state", PREFIX),
-        QoS::AtMostOnce,
-        false,
-        group_role,
-    ).await.ok();
+    client
+        .publish(
+            &format!("{}/sensor/group_role/state", PREFIX),
+            QoS::AtMostOnce,
+            false,
+            group_role,
+        )
+        .await
+        .ok();
 
-    client.publish(
-        &format!("{}/sensor/group_peers/state", PREFIX),
-        QoS::AtMostOnce,
-        false,
-        group_peers.to_string(),
-    ).await.ok();
+    client
+        .publish(
+            &format!("{}/sensor/group_peers/state", PREFIX),
+            QoS::AtMostOnce,
+            false,
+            group_peers.to_string(),
+        )
+        .await
+        .ok();
 }
 
 /// Read CPU usage percentage from /proc/stat.
@@ -546,7 +603,8 @@ fn read_mem_percent() -> Result<u8> {
 }
 
 fn parse_kb(s: &str) -> u64 {
-    s.trim().split_whitespace().next()
+    s.split_whitespace()
+        .next()
         .and_then(|v| v.parse().ok())
         .unwrap_or(0)
 }

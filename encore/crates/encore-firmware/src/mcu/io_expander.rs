@@ -19,11 +19,11 @@ const REG_POLARITY: u8 = 0x02;
 const REG_DIRECTION: u8 = 0x03;
 
 // Bit masks for REG_OUTPUT (0x01)
-const BIT_DSP_RESET: u8 = 0x01;     // Bit 0: DSP reset (HIGH = released)
-const BIT_AMP_MUTE: u8 = 0x02;      // Bit 1: AMP mute (HIGH = muted)
-const BIT_DAC_MUTE: u8 = 0x04;      // Bit 2: DAC mute (HIGH = unmuted, active LOW)
-const BIT_DSP_POWER2: u8 = 0x08;    // Bit 3: DSP power 2 (HIGH = on, per stock mcu-interface)
-const BIT_DSP_POWER1: u8 = 0x10;    // Bit 4: DSP power 1 (HIGH = on, per stock mcu-interface)
+const BIT_DSP_RESET: u8 = 0x01; // Bit 0: DSP reset (HIGH = released)
+const BIT_AMP_MUTE: u8 = 0x02; // Bit 1: AMP mute (HIGH = muted)
+const BIT_DAC_MUTE: u8 = 0x04; // Bit 2: DAC mute (HIGH = unmuted, active LOW)
+const BIT_DSP_POWER2: u8 = 0x08; // Bit 3: DSP power 2 (HIGH = on, per stock mcu-interface)
+const BIT_DSP_POWER1: u8 = 0x10; // Bit 4: DSP power 1 (HIGH = on, per stock mcu-interface)
 
 /// Driver for the IO Expander (PCA9538) at 0x20.
 /// Controls amplifier mute, DAC mute, and DSP reset lines.
@@ -61,7 +61,8 @@ impl IoExpander {
         // DSP power on: set bits 3 and 4 in REG_OUTPUT (HIGH = on)
         // Stock mcu-interface power_on_dsp() sets both bits in reg 0x01.
         let state = self.bus.read_reg(REG_OUTPUT)?;
-        self.bus.write_reg(REG_OUTPUT, state | BIT_DSP_POWER1 | BIT_DSP_POWER2)?;
+        self.bus
+            .write_reg(REG_OUTPUT, state | BIT_DSP_POWER1 | BIT_DSP_POWER2)?;
 
         info!("IO Expander init complete (all muted, DSP power on)");
         Ok(())
@@ -130,7 +131,8 @@ impl IoExpander {
     /// Power off DSP: clear bits 3-4 in REG_OUTPUT (LOW = off).
     pub fn dsp_power_off(&mut self) -> Result<()> {
         let output = self.bus.read_reg(REG_OUTPUT)?;
-        self.bus.write_reg(REG_OUTPUT, output & !BIT_DSP_POWER1 & !BIT_DSP_POWER2)?;
+        self.bus
+            .write_reg(REG_OUTPUT, output & !BIT_DSP_POWER1 & !BIT_DSP_POWER2)?;
         info!("IO Expander: DSP powered off");
         Ok(())
     }
@@ -139,7 +141,8 @@ impl IoExpander {
     /// Stock mcu-interface power_on_dsp() sets both bits in reg 0x01.
     pub fn dsp_power_on(&mut self) -> Result<()> {
         let output = self.bus.read_reg(REG_OUTPUT)?;
-        self.bus.write_reg(REG_OUTPUT, output | BIT_DSP_POWER1 | BIT_DSP_POWER2)?;
+        self.bus
+            .write_reg(REG_OUTPUT, output | BIT_DSP_POWER1 | BIT_DSP_POWER2)?;
         thread::sleep(Duration::from_millis(50));
         info!("IO Expander: DSP powered on");
         Ok(())

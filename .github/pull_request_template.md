@@ -2,7 +2,7 @@
 
 
 ## Checklist
-- [ ] `cargo test --all` passes
+- [ ] `make test` passes
 - [ ] `make verify` passes
 - [ ] Tested on device (if applicable)
 - [ ] No new warnings from `cargo clippy`

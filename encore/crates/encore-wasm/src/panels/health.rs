@@ -16,7 +16,11 @@ fn refresh_health() {
             dom::clear(&el);
 
             if s.subsystems.is_empty() {
-                let msg = dom::el("div", "text-muted text-center", Some("No subsystem data yet"));
+                let msg = dom::el(
+                    "div",
+                    "text-muted text-center",
+                    Some("No subsystem data yet"),
+                );
                 dom::append(&el, &msg);
                 return;
             }
@@ -49,9 +53,14 @@ fn refresh_health() {
                     dom::append(&badge, &state_text);
                     dom::append(&info, &badge);
 
-                    let detail = dom::el("div", "text-muted text-sm",
-                        Some(&format!("Restarts: {} | Msgs: {} | Up: {}s",
-                            snap.restart_count, snap.msg_count, snap.uptime_secs)));
+                    let detail = dom::el(
+                        "div",
+                        "text-muted text-sm",
+                        Some(&format!(
+                            "Restarts: {} | Msgs: {} | Up: {}s",
+                            snap.restart_count, snap.msg_count, snap.uptime_secs
+                        )),
+                    );
                     dom::append(&info, &detail);
                     dom::append(&row, &info);
 

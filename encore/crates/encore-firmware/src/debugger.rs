@@ -71,7 +71,10 @@ impl CrashLog {
     /// Get all recorded crashes (most recent last).
     pub fn crashes(&self) -> Vec<CrashSummary> {
         let guard = self.ensure_init();
-        guard.as_ref().map(|r| r.iter().cloned().collect()).unwrap_or_default()
+        guard
+            .as_ref()
+            .map(|r| r.iter().cloned().collect())
+            .unwrap_or_default()
     }
 
     /// Get the most recent crash for a given subsystem.

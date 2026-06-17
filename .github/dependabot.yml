@@ -1,0 +1,11 @@
+version: 2
+updates:
+  # Keep the third-party GitHub Actions used in CI up to date. Cargo deps are
+  # intentionally not auto-bumped here: this project pins a specific nightly and
+  # a large native dependency tree, so dependency bumps are reviewed by hand.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ""

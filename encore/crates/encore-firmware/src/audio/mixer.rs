@@ -66,8 +66,7 @@ impl MixerSlot {
             buf[(w + i) % RING_SIZE] = samples[i];
         }
 
-        self.write_pos
-            .store(w + to_write, Ordering::Release);
+        self.write_pos.store(w + to_write, Ordering::Release);
         to_write
     }
 
@@ -86,8 +85,7 @@ impl MixerSlot {
             out[i] = out[i].saturating_add(buf[(r + i) % RING_SIZE]);
         }
 
-        self.read_pos
-            .store(r + to_read, Ordering::Release);
+        self.read_pos.store(r + to_read, Ordering::Release);
         to_read
     }
 
@@ -105,8 +103,7 @@ impl MixerSlot {
             out[i] = buf[(r + i) % RING_SIZE];
         }
 
-        self.read_pos
-            .store(r + to_read, Ordering::Release);
+        self.read_pos.store(r + to_read, Ordering::Release);
         to_read
     }
 
@@ -247,7 +244,7 @@ mod tests {
 
         // Push and drain many times to force positional wrap-around
         for round in 0..100 {
-            let val = (round * 7) as i32;
+            let val = round * 7;
             let chunk = vec![val; 1000];
             let written = slot.push(&chunk);
             assert_eq!(written, 1000, "round {} push", round);
@@ -290,7 +287,7 @@ mod tests {
         let producer = std::thread::spawn(move || {
             let mut total = 0usize;
             for i in 0..1000 {
-                let samples = vec![(i % 100) as i32; 48];
+                let samples = vec![i % 100; 48];
                 total += slot2.push(&samples);
                 // Small yield to interleave
                 if i % 10 == 0 {

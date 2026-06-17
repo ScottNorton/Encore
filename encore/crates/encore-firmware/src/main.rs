@@ -10,6 +10,7 @@
 mod audio;
 #[cfg(target_os = "linux")]
 mod bluetooth;
+mod crashlog;
 #[cfg(target_os = "linux")]
 mod debug;
 mod debugger;
@@ -70,6 +71,10 @@ impl tracing_subscriber::fmt::time::FormatTime for LocalTime {
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> anyhow::Result<()> {
+    // Record uncaught panics (with file:line) durably before anything else runs.
+    #[cfg(target_os = "linux")]
+    crashlog::install_panic_hook(std::path::PathBuf::from("/lsync/encore"));
+
     // On Linux, create the WebSocket broadcast channel BEFORE tracing init
     // so the log layer can capture all events from the start.
     #[cfg(target_os = "linux")]
@@ -88,6 +93,11 @@ async fn main() -> anyhow::Result<()> {
         // Truncate on each start to avoid filling yaffs2 — the previous run's
         // logs are the ones we lose, but a crash at the END of a run is what
         // we need to capture, and this log captures it.
+        // Preserve the previous run's log (the one that may have crashed) as
+        // encore.log.prev before starting a fresh log for this run.
+        if let Err(e) = crashlog::rotate_log(std::path::Path::new("/lsync/encore/encore.log")) {
+            eprintln!("Warning: could not rotate encore.log: {}", e);
+        }
         let file_layer = match std::fs::OpenOptions::new()
             .create(true)
             .write(true)
@@ -96,11 +106,13 @@ async fn main() -> anyhow::Result<()> {
         {
             Ok(file) => {
                 let writer = std::sync::Mutex::new(file);
-                Some(tracing_subscriber::fmt::layer()
-                    .with_timer(LocalTime)
-                    .with_ansi(false)
-                    .with_writer(writer)
-                    .with_filter(LevelFilter::INFO))
+                Some(
+                    tracing_subscriber::fmt::layer()
+                        .with_timer(LocalTime)
+                        .with_ansi(false)
+                        .with_writer(writer)
+                        .with_filter(LevelFilter::INFO),
+                )
             }
             Err(e) => {
                 eprintln!("Warning: could not open /lsync/encore/encore.log: {}", e);
@@ -113,7 +125,11 @@ async fn main() -> anyhow::Result<()> {
         // critical on the dual-core Cortex-A7: without this filter, tokio/
         // hyper/rustls TRACE events caused 100% CPU and a watchdog reboot.
         tracing_subscriber::registry()
-            .with(tracing_subscriber::fmt::layer().with_timer(LocalTime).with_filter(LevelFilter::INFO))
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_timer(LocalTime)
+                    .with_filter(LevelFilter::INFO),
+            )
             .with(log_layer.with_filter(LevelFilter::INFO))
             .with(file_layer)
             .init();
@@ -138,12 +154,17 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(target_os = "linux")]
     let boot_source = std::fs::read_link("/proc/self/exe")
         .ok()
-        .and_then(|p| p.to_str().map(|s| match s {
-            "/lsync/encore/encore_next" => "next",
-            "/lsync/encore/encore" => "lsync",
-            "/usr/bin/encore" => "rootfs",
-            _ => "unknown",
-        }.to_string()))
+        .and_then(|p| {
+            p.to_str().map(|s| {
+                match s {
+                    "/lsync/encore/encore_next" => "next",
+                    "/lsync/encore/encore" => "lsync",
+                    "/usr/bin/encore" => "rootfs",
+                    _ => "unknown",
+                }
+                .to_string()
+            })
+        })
         .unwrap_or_else(|| "unknown".to_string());
     #[cfg(not(target_os = "linux"))]
     let boot_source = "dev".to_string();
@@ -208,9 +229,10 @@ async fn main() -> anyhow::Result<()> {
         let mut audio = audio::subsystem::AudioSubsystem::new(audio_cmd_rx);
         audio.set_ws_tx(ws_tx.clone());
         {
-            let cfg = encore_common::config::EncoreConfigFile::load(
-                std::path::Path::new("/lsync/encore/config.toml"),
-            ).unwrap_or_default();
+            let cfg = encore_common::config::EncoreConfigFile::load(std::path::Path::new(
+                "/lsync/encore/config.toml",
+            ))
+            .unwrap_or_default();
             audio.apply_power_config(&cfg.audio);
         }
 
@@ -272,12 +294,19 @@ async fn main() -> anyhow::Result<()> {
 
         // ── Resolve group peer_id early (before mDNS starts advertising) ──
         let group_peer_id = {
-            let cfg = encore_common::config::EncoreConfigFile::load(
-                std::path::Path::new("/lsync/encore/config.toml"),
-            ).unwrap_or_default();
+            let cfg = encore_common::config::EncoreConfigFile::load(std::path::Path::new(
+                "/lsync/encore/config.toml",
+            ))
+            .unwrap_or_default();
             cfg.group.peer_id.clone().unwrap_or_else(|| {
-                let id = format!("{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
-                    rand_u32(), rand_u16(), rand_u16(), rand_u16(), rand_u48());
+                let id = format!(
+                    "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
+                    rand_u32(),
+                    rand_u16(),
+                    rand_u16(),
+                    rand_u16(),
+                    rand_u48()
+                );
                 let mut save_cfg = cfg;
                 save_cfg.group.peer_id = Some(id.clone());
                 let _ = save_cfg.save(std::path::Path::new("/lsync/encore/config.toml"));
@@ -288,9 +317,10 @@ async fn main() -> anyhow::Result<()> {
         // ── Network ──
         let (network_cmd_tx, network_cmd_rx) = mpsc::channel::<network::NetworkCmd>(32);
         let mdns_services = {
-            let cfg = encore_common::config::EncoreConfigFile::load(
-                std::path::Path::new("/lsync/encore/config.toml"),
-            ).unwrap_or_default();
+            let cfg = encore_common::config::EncoreConfigFile::load(std::path::Path::new(
+                "/lsync/encore/config.toml",
+            ))
+            .unwrap_or_default();
             let group_txt = group::discovery::format_txt_records(
                 &group_peer_id,
                 &cfg.group.group_name,
@@ -322,8 +352,10 @@ async fn main() -> anyhow::Result<()> {
             ]
         };
         // Discovery channels: mDNS → forwarding task → group subsystem
-        let (mdns_discovery_tx, mut mdns_discovery_rx) = mpsc::channel::<network::mdns::MdnsDiscovery>(32);
-        let (group_discovery_tx, group_discovery_rx) = mpsc::channel::<group::discovery::DiscoveryEvent>(32);
+        let (mdns_discovery_tx, mut mdns_discovery_rx) =
+            mpsc::channel::<network::mdns::MdnsDiscovery>(32);
+        let (group_discovery_tx, group_discovery_rx) =
+            mpsc::channel::<group::discovery::DiscoveryEvent>(32);
 
         // Forward mDNS discoveries to group-compatible type
         tokio::spawn(async move {
@@ -339,7 +371,12 @@ async fn main() -> anyhow::Result<()> {
             }
         });
 
-        let mut net_sub = network::NetworkSubsystem::new(Some(ws_tx.clone()), Some(network_cmd_rx), ap_active.clone(), mdns_services);
+        let mut net_sub = network::NetworkSubsystem::new(
+            Some(ws_tx.clone()),
+            Some(network_cmd_rx),
+            ap_active.clone(),
+            mdns_services,
+        );
         web.set_wifi_result_cache(net_sub.wifi_result_cache());
         web.set_network_state_cache(net_sub.network_state_cache());
         net_sub.set_discovery(mdns_discovery_tx, group_peer_id.clone());
@@ -347,9 +384,9 @@ async fn main() -> anyhow::Result<()> {
 
         // ── VPN (WireGuard tunnel) ──
         {
-            let cfg = encore_common::config::EncoreConfigFile::load(
-                std::path::Path::new("/lsync/encore/config.toml"),
-            )
+            let cfg = encore_common::config::EncoreConfigFile::load(std::path::Path::new(
+                "/lsync/encore/config.toml",
+            ))
             .unwrap_or_default();
             if cfg.vpn.enabled && cfg.vpn.private_key.is_some() {
                 mgr.start(Box::new(vpn::VpnSubsystem::new(cfg.vpn)));
@@ -373,11 +410,11 @@ async fn main() -> anyhow::Result<()> {
         let (bt_suspend_tx, bt_suspend_rx) = mpsc::channel::<bool>(1);
         let (wyoming_suspend_tx, wyoming_suspend_rx) = mpsc::channel::<bool>(1);
 
-        let mut group_vol_sync_rx: Option<mpsc::Receiver<u8>> = None;
+        let group_vol_sync_rx: Option<mpsc::Receiver<u8>>;
         {
-            let cfg = encore_common::config::EncoreConfigFile::load(
-                std::path::Path::new("/lsync/encore/config.toml"),
-            )
+            let cfg = encore_common::config::EncoreConfigFile::load(std::path::Path::new(
+                "/lsync/encore/config.toml",
+            ))
             .unwrap_or_default();
 
             let channel = match cfg.group.channel.as_str() {
@@ -415,11 +452,17 @@ async fn main() -> anyhow::Result<()> {
 
         // ── Spotify Connect ──
         {
-            let cfg = encore_common::config::EncoreConfigFile::load(
-                std::path::Path::new("/lsync/encore/config.toml"),
-            ).unwrap_or_default();
+            let cfg = encore_common::config::EncoreConfigFile::load(std::path::Path::new(
+                "/lsync/encore/config.toml",
+            ))
+            .unwrap_or_default();
             if cfg.spotify.enabled {
-                let mut spotify_sub = spotify::SpotifySubsystem::new(spotify_slot, Some(cfg.device.name.clone()), Some(spotify_cmd_rx), Some(ws_tx.clone()));
+                let mut spotify_sub = spotify::SpotifySubsystem::new(
+                    spotify_slot,
+                    Some(cfg.device.name.clone()),
+                    Some(spotify_cmd_rx),
+                    Some(ws_tx.clone()),
+                );
                 spotify_sub.set_suspend_rx(spotify_suspend_rx);
                 spotify_sub.set_group_tx(group_cmd_tx.clone());
                 mgr.start(Box::new(spotify_sub));
@@ -430,12 +473,16 @@ async fn main() -> anyhow::Result<()> {
 
         // ── Bluetooth A2DP sink ──
         {
-            let cfg = encore_common::config::EncoreConfigFile::load(
-                std::path::Path::new("/lsync/encore/config.toml"),
-            ).unwrap_or_default();
+            let cfg = encore_common::config::EncoreConfigFile::load(std::path::Path::new(
+                "/lsync/encore/config.toml",
+            ))
+            .unwrap_or_default();
             if cfg.bluetooth.enabled {
                 let mut bt_sub = bluetooth::BluetoothSubsystem::new(
-                    bt_slot, Some(cfg.device.name.clone()), Some(bt_cmd_rx), Some(ws_tx.clone()),
+                    bt_slot,
+                    Some(cfg.device.name.clone()),
+                    Some(bt_cmd_rx),
+                    Some(ws_tx.clone()),
                 );
                 bt_sub.set_suspend_rx(bt_suspend_rx);
                 bt_sub.set_group_tx(group_cmd_tx.clone());
@@ -447,15 +494,17 @@ async fn main() -> anyhow::Result<()> {
 
         // ── LED ring ──
         let vol_step = {
-            let cfg = encore_common::config::EncoreConfigFile::load(
-                std::path::Path::new("/lsync/encore/config.toml"),
-            ).unwrap_or_default();
+            let cfg = encore_common::config::EncoreConfigFile::load(std::path::Path::new(
+                "/lsync/encore/config.toml",
+            ))
+            .unwrap_or_default();
             cfg.audio.volume_ring_step
         };
         let (led_tx, button_rx) = if let Some(mcu) = mcu {
             let (led_tx, led_rx) = mpsc::channel(32);
             let (button_tx, button_rx) = mpsc::channel::<led::ButtonAction>(32);
-            let mut led_sub = led::LedSubsystem::new(led_rx, audio_cmd_tx.clone(), button_tx, mcu, vol_step);
+            let mut led_sub =
+                led::LedSubsystem::new(led_rx, audio_cmd_tx.clone(), button_tx, mcu, vol_step);
             led_sub.set_ws_tx(ws_tx.clone());
             led_sub.set_group_tx(group_cmd_tx.clone());
             mgr.start(Box::new(led_sub));
@@ -489,8 +538,13 @@ async fn main() -> anyhow::Result<()> {
 
         {
             let mut wyoming_sub = wyoming::WyomingSubsystem::new(
-                wyoming_slot, wyoming_mic, Some(voice_cmd_tx),
-                None, None, wyoming_led_tx, Some(wyoming_trigger_rx),
+                wyoming_slot,
+                wyoming_mic,
+                Some(voice_cmd_tx),
+                None,
+                None,
+                wyoming_led_tx,
+                Some(wyoming_trigger_rx),
             );
             wyoming_sub.set_suspend_rx(wyoming_suspend_rx);
             mgr.start(Box::new(wyoming_sub));
@@ -502,9 +556,13 @@ async fn main() -> anyhow::Result<()> {
             let detector = Box::new(wakeword::detector::StubDetector);
             tokio::spawn(async move {
                 wakeword::voice_session_task(
-                    wakeword_mic, voice_cmd_rx, voice_event_tx,
-                    led_tx_voice, detector,
-                ).await;
+                    wakeword_mic,
+                    voice_cmd_rx,
+                    voice_event_tx,
+                    led_tx_voice,
+                    detector,
+                )
+                .await;
             });
         }
 
@@ -512,9 +570,8 @@ async fn main() -> anyhow::Result<()> {
         match load_ha_config() {
             Some((host, port, user, pass)) => {
                 let (ha_tx, mut ha_rx) = mpsc::channel::<encore_common::protocol::ClientMsg>(32);
-                let mut ha_sub = homeassistant::HomeAssistantSubsystem::new(
-                    host, port, user, pass, Some(ha_tx),
-                );
+                let mut ha_sub =
+                    homeassistant::HomeAssistantSubsystem::new(host, port, user, pass, Some(ha_tx));
                 ha_sub.set_ws_rx(ws_tx.subscribe());
                 mgr.start(Box::new(ha_sub));
                 // Forward HA commands into the main routing pipeline
@@ -529,7 +586,8 @@ async fn main() -> anyhow::Result<()> {
                                 if let Some(ref tx) = led_tx_ha {
                                     let _ = tx.try_send(led::LedCmd::SetVolume(level));
                                 } else {
-                                    let _ = audio_tx_ha.try_send(audio::subsystem::AudioCmd::SetVolume(level));
+                                    let _ = audio_tx_ha
+                                        .try_send(audio::subsystem::AudioCmd::SetVolume(level));
                                 }
                             }
                             ClientMsg::SetLed(anim) => {
@@ -582,7 +640,9 @@ async fn main() -> anyhow::Result<()> {
                         led::ButtonAction::PlayPause => {
                             info!("Button: play/pause");
                             let _ = spotify_tx_btn.try_send(SpotifyAction::Play);
-                            let _ = group_tx_btn.try_send(group::GroupCmd::PlayPause { action: "play".into() });
+                            let _ = group_tx_btn.try_send(group::GroupCmd::PlayPause {
+                                action: "play".into(),
+                            });
                         }
                         led::ButtonAction::VoiceTrigger => {
                             info!("Button: voice trigger (push-to-talk)");
@@ -599,7 +659,8 @@ async fn main() -> anyhow::Result<()> {
                             let toggled = !current;
                             mic_muted.store(toggled, std::sync::atomic::Ordering::Relaxed);
                             info!("Button: mic mute = {}", toggled);
-                            let _ = audio_tx_btn.try_send(audio::subsystem::AudioCmd::SetMicMute(toggled));
+                            let _ = audio_tx_btn
+                                .try_send(audio::subsystem::AudioCmd::SetMicMute(toggled));
                         }
                         led::ButtonAction::WifiSetup => {
                             info!("Button: WiFi setup requested");
@@ -643,7 +704,8 @@ async fn main() -> anyhow::Result<()> {
                                 let _ = tx.try_send(led::LedCmd::SetVolume(level));
                             } else {
                                 // No LED subsystem — send directly to audio
-                                let _ = audio_tx.try_send(audio::subsystem::AudioCmd::SetVolume(level));
+                                let _ =
+                                    audio_tx.try_send(audio::subsystem::AudioCmd::SetVolume(level));
                             }
                             // Notify group for volume sync
                             let _ = group_tx.try_send(group::GroupCmd::SetVolume(level));
@@ -654,12 +716,15 @@ async fn main() -> anyhow::Result<()> {
                             match source {
                                 encore_common::protocol::SourceId::Spotify => {
                                     let _ = spotify_cmd_tx.try_send(
-                                        encore_common::protocol::SpotifyAction::SetVolume { level }
+                                        encore_common::protocol::SpotifyAction::SetVolume { level },
                                     );
                                 }
                                 _ => {
                                     // BT/Wyoming/System: no per-source volume yet
-                                    info!("ClientMsg: SetVolume({:?}, {}) — not implemented", source, level);
+                                    info!(
+                                        "ClientMsg: SetVolume({:?}, {}) — not implemented",
+                                        source, level
+                                    );
                                 }
                             }
                         }
@@ -672,8 +737,9 @@ async fn main() -> anyhow::Result<()> {
                             let vol_step = config.volume_ring_step;
                             let device_name = config.device_name.clone();
                             let spotify_enabled = config.spotify_enabled;
-                            let existing = encore_common::config::EncoreConfigFile::load(config_path)
-                                .unwrap_or_default();
+                            let existing =
+                                encore_common::config::EncoreConfigFile::load(config_path)
+                                    .unwrap_or_default();
                             let old_spotify_enabled = existing.spotify.enabled;
                             let cfg = config.to_file_merge(&existing);
                             if let Err(e) = cfg.save(config_path) {
@@ -685,13 +751,14 @@ async fn main() -> anyhow::Result<()> {
                                     let _ = tx.try_send(led::LedCmd::SetVolStep(vol_step));
                                 }
                                 // Notify network subsystem if device name changed
-                                let _ = network_cmd_tx.try_send(
-                                    network::NetworkCmd::SetDeviceName(device_name),
-                                );
+                                let _ = network_cmd_tx
+                                    .try_send(network::NetworkCmd::SetDeviceName(device_name));
                                 // Notify Spotify subsystem if enabled state changed
                                 if spotify_enabled != old_spotify_enabled {
                                     let _ = spotify_cmd_tx.try_send(
-                                        encore_common::protocol::SpotifyAction::SetEnabled { enabled: spotify_enabled },
+                                        encore_common::protocol::SpotifyAction::SetEnabled {
+                                            enabled: spotify_enabled,
+                                        },
                                     );
                                 }
                             }
@@ -708,15 +775,23 @@ async fn main() -> anyhow::Result<()> {
                             let _ = bt_cmd_tx.try_send(action);
                         }
                         ClientMsg::RestartSubsystem(name) => {
-                            warn!("ClientMsg: RestartSubsystem({}) — requires subsystem restart API", name);
+                            warn!(
+                                "ClientMsg: RestartSubsystem({}) — requires subsystem restart API",
+                                name
+                            );
                         }
                         ClientMsg::SetWifi(creds) => {
                             info!("ClientMsg: SetWifi(ssid={})", creds.ssid);
-                            if let Err(e) = network_cmd_tx.try_send(network::NetworkCmd::ConnectWifi {
-                                ssid: creds.ssid,
-                                password: creds.password,
-                            }) {
-                                warn!("ClientMsg: SetWifi failed to send to network subsystem: {}", e);
+                            if let Err(e) =
+                                network_cmd_tx.try_send(network::NetworkCmd::ConnectWifi {
+                                    ssid: creds.ssid,
+                                    password: creds.password,
+                                })
+                            {
+                                warn!(
+                                    "ClientMsg: SetWifi failed to send to network subsystem: {}",
+                                    e
+                                );
                             }
                         }
                         ClientMsg::RequestNetworkState => {
@@ -728,38 +803,57 @@ async fn main() -> anyhow::Result<()> {
                         }
                         // EQ controls → audio subsystem
                         ClientMsg::SetEqBand { band, config } => {
-                            let _ = audio_tx.try_send(audio::subsystem::AudioCmd::SetEqBand { band, config });
+                            let _ = audio_tx
+                                .try_send(audio::subsystem::AudioCmd::SetEqBand { band, config });
                         }
                         ClientMsg::SetEqPreset(preset) => {
-                            let _ = audio_tx.try_send(audio::subsystem::AudioCmd::SetEqPreset(preset));
+                            let _ =
+                                audio_tx.try_send(audio::subsystem::AudioCmd::SetEqPreset(preset));
                         }
                         ClientMsg::SetEqEnabled(enabled) => {
-                            let _ = audio_tx.try_send(audio::subsystem::AudioCmd::SetEqEnabled(enabled));
+                            let _ = audio_tx
+                                .try_send(audio::subsystem::AudioCmd::SetEqEnabled(enabled));
                         }
                         // DRC controls → audio subsystem
                         ClientMsg::SetDrc { band, config } => {
-                            let _ = audio_tx.try_send(audio::subsystem::AudioCmd::SetDrc { band, config });
+                            let _ = audio_tx
+                                .try_send(audio::subsystem::AudioCmd::SetDrc { band, config });
                         }
-                        ClientMsg::SetDrcCrossover { low_mid_hz, mid_high_hz } => {
-                            let _ = audio_tx.try_send(audio::subsystem::AudioCmd::SetDrcCrossover { low_mid_hz, mid_high_hz });
+                        ClientMsg::SetDrcCrossover {
+                            low_mid_hz,
+                            mid_high_hz,
+                        } => {
+                            let _ =
+                                audio_tx.try_send(audio::subsystem::AudioCmd::SetDrcCrossover {
+                                    low_mid_hz,
+                                    mid_high_hz,
+                                });
                         }
                         ClientMsg::SetDrcEnabled(enabled) => {
-                            let _ = audio_tx.try_send(audio::subsystem::AudioCmd::SetDrcEnabled(enabled));
+                            let _ = audio_tx
+                                .try_send(audio::subsystem::AudioCmd::SetDrcEnabled(enabled));
                         }
                         ClientMsg::SetDrcPreset(preset) => {
-                            let _ = audio_tx.try_send(audio::subsystem::AudioCmd::SetDrcPreset(preset));
+                            let _ =
+                                audio_tx.try_send(audio::subsystem::AudioCmd::SetDrcPreset(preset));
                         }
                         // DSP controls → audio subsystem
                         ClientMsg::SetDspVolume(level) => {
-                            let _ = audio_tx.try_send(audio::subsystem::AudioCmd::SetDspVolume(level));
+                            let _ =
+                                audio_tx.try_send(audio::subsystem::AudioCmd::SetDspVolume(level));
                         }
                         ClientMsg::SetMicMute(muted) => {
-                            let _ = audio_tx.try_send(audio::subsystem::AudioCmd::SetMicMute(muted));
+                            let _ =
+                                audio_tx.try_send(audio::subsystem::AudioCmd::SetMicMute(muted));
                         }
                         // Hardware explorer: DAC register read (async with oneshot reply)
                         ClientMsg::DacRegRead { page, reg } => {
                             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-                            let _ = audio_tx.try_send(audio::subsystem::AudioCmd::DacRegRead { page, reg, reply: reply_tx });
+                            let _ = audio_tx.try_send(audio::subsystem::AudioCmd::DacRegRead {
+                                page,
+                                reg,
+                                reply: reply_tx,
+                            });
                             let ws = ws_tx_route.clone();
                             tokio::spawn(async move {
                                 if let Ok(Ok(value)) = reply_rx.await {
@@ -771,11 +865,19 @@ async fn main() -> anyhow::Result<()> {
                             });
                         }
                         ClientMsg::DacRegWrite { page, reg, value } => {
-                            let _ = audio_tx.try_send(audio::subsystem::AudioCmd::DacRegWrite { page, reg, value });
+                            let _ = audio_tx.try_send(audio::subsystem::AudioCmd::DacRegWrite {
+                                page,
+                                reg,
+                                value,
+                            });
                         }
                         ClientMsg::DspSpiSend { msg_type, data } => {
                             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-                            let _ = audio_tx.try_send(audio::subsystem::AudioCmd::DspSpiSend { msg_type, data, reply: reply_tx });
+                            let _ = audio_tx.try_send(audio::subsystem::AudioCmd::DspSpiSend {
+                                msg_type,
+                                data,
+                                reply: reply_tx,
+                            });
                             let ws = ws_tx_route.clone();
                             tokio::spawn(async move {
                                 if let Ok(Ok(data)) = reply_rx.await {
@@ -786,9 +888,16 @@ async fn main() -> anyhow::Result<()> {
                                 }
                             });
                         }
-                        ClientMsg::DspMemoryDump { start_page, num_pages } => {
+                        ClientMsg::DspMemoryDump {
+                            start_page,
+                            num_pages,
+                        } => {
                             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-                            let _ = audio_tx.try_send(audio::subsystem::AudioCmd::DspMemoryDump { start_page, num_pages, reply: reply_tx });
+                            let _ = audio_tx.try_send(audio::subsystem::AudioCmd::DspMemoryDump {
+                                start_page,
+                                num_pages,
+                                reply: reply_tx,
+                            });
                             let ws = ws_tx_route.clone();
                             tokio::spawn(async move {
                                 match reply_rx.await {
@@ -799,7 +908,9 @@ async fn main() -> anyhow::Result<()> {
                                         }
                                     }
                                     Ok(Err(e)) => {
-                                        let msg = ServerMsg::DspEvent { description: format!("Memory dump failed: {}", e) };
+                                        let msg = ServerMsg::DspEvent {
+                                            description: format!("Memory dump failed: {}", e),
+                                        };
                                         if let Ok(json) = serde_json::to_string(&msg) {
                                             let _ = ws.send(json);
                                         }
@@ -810,18 +921,28 @@ async fn main() -> anyhow::Result<()> {
                         }
                         ClientMsg::DspDumpToFile { path } => {
                             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-                            let _ = audio_tx.try_send(audio::subsystem::AudioCmd::DspDumpToFile { path: path.clone(), reply: reply_tx });
+                            let _ = audio_tx.try_send(audio::subsystem::AudioCmd::DspDumpToFile {
+                                path: path.clone(),
+                                reply: reply_tx,
+                            });
                             let ws = ws_tx_route.clone();
                             tokio::spawn(async move {
                                 match reply_rx.await {
                                     Ok(Ok(bytes)) => {
-                                        let msg = ServerMsg::DspEvent { description: format!("Memory dump complete: {} bytes written to {}", bytes, path) };
+                                        let msg = ServerMsg::DspEvent {
+                                            description: format!(
+                                                "Memory dump complete: {} bytes written to {}",
+                                                bytes, path
+                                            ),
+                                        };
                                         if let Ok(json) = serde_json::to_string(&msg) {
                                             let _ = ws.send(json);
                                         }
                                     }
                                     Ok(Err(e)) => {
-                                        let msg = ServerMsg::DspEvent { description: format!("Memory dump failed: {}", e) };
+                                        let msg = ServerMsg::DspEvent {
+                                            description: format!("Memory dump failed: {}", e),
+                                        };
                                         if let Ok(json) = serde_json::to_string(&msg) {
                                             let _ = ws.send(json);
                                         }
@@ -839,7 +960,9 @@ async fn main() -> anyhow::Result<()> {
                         }
                         ClientMsg::DspPollEvents => {
                             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-                            let _ = audio_tx.try_send(audio::subsystem::AudioCmd::DspPollEvents { reply: reply_tx });
+                            let _ = audio_tx.try_send(audio::subsystem::AudioCmd::DspPollEvents {
+                                reply: reply_tx,
+                            });
                             let ws = ws_tx_route.clone();
                             tokio::spawn(async move {
                                 if let Ok(Ok(events)) = reply_rx.await {
@@ -899,15 +1022,18 @@ async fn main() -> anyhow::Result<()> {
         mgr.shutdown().await;
 
         info!("Encore stopped");
-        return Ok(());
+        Ok(())
     }
 
-    // Non-Linux: no subsystems to start
-    info!("Encore running (no subsystems on this platform)");
-    shutdown_rx.recv().await.ok();
-    mgr.shutdown().await;
-    info!("Encore stopped");
-    Ok(())
+    // Non-Linux: no subsystems to start (cfg-gated so it is not dead code on Linux)
+    #[cfg(not(target_os = "linux"))]
+    {
+        info!("Encore running (no subsystems on this platform)");
+        shutdown_rx.recv().await.ok();
+        mgr.shutdown().await;
+        info!("Encore stopped");
+        Ok(())
+    }
 }
 
 /// Pseudo-random u32 using system time (no crate dependency).
@@ -955,8 +1081,17 @@ fn load_ha_config() -> Option<(String, Option<u16>, Option<String>, Option<Strin
     let table: toml::Table = content.parse().ok()?;
     let mqtt = table.get("mqtt")?.as_table()?;
     let host = mqtt.get("host")?.as_str()?.to_string();
-    let port = mqtt.get("port").and_then(|v| v.as_integer()).map(|v| v as u16);
-    let user = mqtt.get("user").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let password = mqtt.get("password").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let port = mqtt
+        .get("port")
+        .and_then(|v| v.as_integer())
+        .map(|v| v as u16);
+    let user = mqtt
+        .get("user")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let password = mqtt
+        .get("password")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     Some((host, port, user, password))
 }

@@ -28,11 +28,8 @@ pub fn unexport(pin: u32) {
 /// Set GPIO pin direction. `output=true` for output, `false` for input.
 pub fn set_direction(pin: u32, output: bool) -> Result<()> {
     let dir = if output { "out" } else { "in" };
-    fs::write(
-        format!("/sys/class/gpio/gpio{}/direction", pin),
-        dir,
-    )
-    .with_context(|| format!("GPIO: failed to set pin {} direction to {}", pin, dir))
+    fs::write(format!("/sys/class/gpio/gpio{}/direction", pin), dir)
+        .with_context(|| format!("GPIO: failed to set pin {} direction to {}", pin, dir))
 }
 
 /// Read GPIO pin value. Returns `true` for HIGH, `false` for LOW.
@@ -45,9 +42,6 @@ pub fn read_value(pin: u32) -> Result<bool> {
 /// Write GPIO pin value. `high=true` for HIGH, `false` for LOW.
 pub fn write_value(pin: u32, high: bool) -> Result<()> {
     let val = if high { "1" } else { "0" };
-    fs::write(
-        format!("/sys/class/gpio/gpio{}/value", pin),
-        val,
-    )
-    .with_context(|| format!("GPIO: failed to write pin {}", pin))
+    fs::write(format!("/sys/class/gpio/gpio{}/value", pin), val)
+        .with_context(|| format!("GPIO: failed to write pin {}", pin))
 }

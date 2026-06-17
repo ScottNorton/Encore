@@ -28,11 +28,14 @@ fn fling_ring() {
     let doc = dom::document();
     if let Ok(Some(ring)) = doc.query_selector(".ring") {
         dom::add_class(&ring, "fling");
-        dom::set_timeout(move || {
-            if let Ok(Some(ring)) = dom::document().query_selector(".ring") {
-                dom::remove_class(&ring, "fling");
-            }
-        }, 800);
+        dom::set_timeout(
+            move || {
+                if let Ok(Some(ring)) = dom::document().query_selector(".ring") {
+                    dom::remove_class(&ring, "fling");
+                }
+            },
+            800,
+        );
     }
 }
 
@@ -51,9 +54,8 @@ async fn wait_for_data_gate(timeout_ms: i32) -> bool {
     let step_ms = 100;
     let mut elapsed = 0;
     loop {
-        let (config, system) = crate::state::with(|s| {
-            (s.boot_config_received, s.boot_system_received)
-        });
+        let (config, system) =
+            crate::state::with(|s| (s.boot_config_received, s.boot_system_received));
         if config && system {
             return true;
         }

@@ -18,8 +18,8 @@ use anyhow::Result;
 use clock::ClockSync;
 use discovery::PeerTable;
 use election::{ElectionAction, ElectionState};
-use follower::JitterBuffer;
 use encore_common::protocol::SubsystemState;
+use follower::JitterBuffer;
 use peer::{PeerEvent, PeerManager};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -219,11 +219,7 @@ impl GroupSubsystem {
     }
 
     /// Broadcast group status to WebSocket clients.
-    fn broadcast_status(
-        &self,
-        role: GroupRole,
-        peers: &HashMap<String, ConnectedPeer>,
-    ) {
+    fn broadcast_status(&self, role: GroupRole, peers: &HashMap<String, ConnectedPeer>) {
         let Some(ref ws) = self.ws_tx else { return };
 
         let peer_infos: Vec<encore_common::protocol::PeerInfo> = peers
@@ -295,8 +291,14 @@ impl GroupSubsystem {
         our_score: u64,
     ) {
         match action {
-            ElectionAction::StartElection { election_id, trigger } => {
-                info!("Group: starting election {} (trigger: {})", election_id, trigger);
+            ElectionAction::StartElection {
+                election_id,
+                trigger,
+            } => {
+                info!(
+                    "Group: starting election {} (trigger: {})",
+                    election_id, trigger
+                );
                 peer_mgr.broadcast(&GroupPacket::ElectionStart {
                     election_id: *election_id,
                     trigger: trigger.clone(),
@@ -338,7 +340,10 @@ impl GroupSubsystem {
         network_slot: &Arc<MixerSlot>,
         jitter_buffer: &mut JitterBuffer,
     ) {
-        info!("Group: election {} result: winner={} source={}", election_id, winner_id, source);
+        info!(
+            "Group: election {} result: winner={} source={}",
+            election_id, winner_id, source
+        );
 
         if winner_id == our_id {
             // We won — become leader (election scoring already ensures audio source wins)
@@ -351,7 +356,8 @@ impl GroupSubsystem {
                 let tap = network_tap.clone();
                 let active = tap_active.clone();
                 let sock = udp_socket.clone();
-                let addrs: Vec<std::net::SocketAddr> = peers.values()
+                let addrs: Vec<std::net::SocketAddr> = peers
+                    .values()
                     .map(|p| std::net::SocketAddr::new(p.address, peer::GROUP_AUDIO_PORT))
                     .collect();
                 *leader_task_handle = Some(tokio::spawn(async move {
@@ -384,7 +390,10 @@ impl GroupSubsystem {
             *leader_id = Some(winner_id.to_string());
             jitter_buffer.clear();
             network_slot.set_active(true);
-            info!("Group: election lost, entering follower mode (leader={})", winner_id);
+            info!(
+                "Group: election lost, entering follower mode (leader={})",
+                winner_id
+            );
         }
     }
 }
@@ -431,11 +440,8 @@ impl Subsystem for GroupSubsystem {
         );
 
         // Peer manager handles TCP connections
-        let mut peer_mgr = PeerManager::new(
-            self.peer_id.clone(),
-            self.device_name.clone(),
-            self.channel,
-        );
+        let mut peer_mgr =
+            PeerManager::new(self.peer_id.clone(), self.device_name.clone(), self.channel);
         let mut peer_events = peer_mgr.take_event_rx();
 
         // Start TCP listener
@@ -445,11 +451,18 @@ impl Subsystem for GroupSubsystem {
         let udp_socket = match UdpSocket::bind(("0.0.0.0", peer::GROUP_AUDIO_PORT)).await {
             Ok(s) => Arc::new(s),
             Err(e) => {
-                warn!("Group: failed to bind UDP audio port {}: {}, using random port", peer::GROUP_AUDIO_PORT, e);
+                warn!(
+                    "Group: failed to bind UDP audio port {}: {}, using random port",
+                    peer::GROUP_AUDIO_PORT,
+                    e
+                );
                 Arc::new(UdpSocket::bind("0.0.0.0:0").await?)
             }
         };
-        info!("Group: UDP audio socket bound to {:?}", udp_socket.local_addr());
+        info!(
+            "Group: UDP audio socket bound to {:?}",
+            udp_socket.local_addr()
+        );
 
         // Spawn UDP audio receiver task
         let (udp_audio_tx, mut udp_audio_rx) = mpsc::channel::<(u64, Vec<i32>)>(256);
@@ -481,8 +494,9 @@ impl Subsystem for GroupSubsystem {
                     if payload_end > n {
                         continue;
                     }
-                    if let Ok(GroupPacket::AudioChunk { play_at_us, pcm, .. }) =
-                        wire::decode_payload(ptype, &buf[wire::HEADER_SIZE..payload_end])
+                    if let Ok(GroupPacket::AudioChunk {
+                        play_at_us, pcm, ..
+                    }) = wire::decode_payload(ptype, &buf[wire::HEADER_SIZE..payload_end])
                     {
                         let _ = udp_audio_tx.try_send((play_at_us, pcm));
                     }
@@ -502,28 +516,23 @@ impl Subsystem for GroupSubsystem {
         // Track peers with pending duplicate disconnect events to ignore
         let mut pending_dup_disconnects: HashMap<String, u32> = HashMap::new();
         // Reconnect queue: (peer_id, address, next_attempt_time, attempt_count)
-        let mut reconnect_queue: VecDeque<(String, std::net::IpAddr, Instant, u32)> = VecDeque::new();
+        let mut reconnect_queue: VecDeque<(String, std::net::IpAddr, Instant, u32)> =
+            VecDeque::new();
 
         let mut leader_task_handle: Option<tokio::task::JoinHandle<()>> = None;
 
         // Timers
         let mut heartbeat_interval = tokio::time::interval(std::time::Duration::from_secs(5));
-        let mut clock_sync_interval =
-            tokio::time::interval(std::time::Duration::from_millis(500));
-        let mut discovery_interval =
-            tokio::time::interval(std::time::Duration::from_secs(30));
+        let mut clock_sync_interval = tokio::time::interval(std::time::Duration::from_millis(500));
+        let mut discovery_interval = tokio::time::interval(std::time::Duration::from_secs(30));
         let mut follower_drain_interval =
             tokio::time::interval(std::time::Duration::from_millis(2));
-        let mut status_interval =
-            tokio::time::interval(std::time::Duration::from_secs(2));
-        let mut health_check_interval =
-            tokio::time::interval(std::time::Duration::from_secs(5));
+        let mut status_interval = tokio::time::interval(std::time::Duration::from_secs(2));
+        let mut health_check_interval = tokio::time::interval(std::time::Duration::from_secs(5));
         let mut election_check_interval =
             tokio::time::interval(std::time::Duration::from_millis(500));
-        let mut bootstrap_interval =
-            tokio::time::interval(std::time::Duration::from_secs(60));
-        let mut reconnect_interval =
-            tokio::time::interval(std::time::Duration::from_secs(5));
+        let mut bootstrap_interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        let mut reconnect_interval = tokio::time::interval(std::time::Duration::from_secs(5));
 
         // mDNS discovery receiver
         let mut discovery_rx = self.discovery_rx.take();
@@ -792,34 +801,28 @@ impl Subsystem for GroupSubsystem {
                                 }
                                 GroupPacket::ElectionVote { election_id, score, peer_id: voter_id } => {
                                     let action = election_state.handle_vote(election_id, &voter_id, score, &self.peer_id);
-                                    match action {
-                                        ElectionAction::Winner { election_id: eid, ref winner_id, ref source } => {
-                                            Self::apply_election_result(
-                                                &self.peer_id, winner_id, eid, source,
-                                                &mut role, &mut leader_id, &mut peer_mgr, &peers,
-                                                &mut leader_task_handle, &self.network_tap, &self.tap_active,
-                                                &udp_socket, self.buffer_ms as u64,
-                                                &self.network_slot, &mut jitter_buffer,
-                                            );
-                                            self.broadcast_status(role, &peers);
-                                        }
-                                        _ => {}
+                                    if let ElectionAction::Winner { election_id: eid, ref winner_id, ref source } = action {
+                                        Self::apply_election_result(
+                                            &self.peer_id, winner_id, eid, source,
+                                            &mut role, &mut leader_id, &mut peer_mgr, &peers,
+                                            &mut leader_task_handle, &self.network_tap, &self.tap_active,
+                                            &udp_socket, self.buffer_ms as u64,
+                                            &self.network_slot, &mut jitter_buffer,
+                                        );
+                                        self.broadcast_status(role, &peers);
                                     }
                                 }
                                 GroupPacket::ElectionResult { election_id, winner_id, source } => {
                                     let action = election_state.handle_result(election_id, &winner_id, &source);
-                                    match action {
-                                        ElectionAction::Winner { election_id: eid, ref winner_id, ref source } => {
-                                            Self::apply_election_result(
-                                                &self.peer_id, winner_id, eid, source,
-                                                &mut role, &mut leader_id, &mut peer_mgr, &peers,
-                                                &mut leader_task_handle, &self.network_tap, &self.tap_active,
-                                                &udp_socket, self.buffer_ms as u64,
-                                                &self.network_slot, &mut jitter_buffer,
-                                            );
-                                            self.broadcast_status(role, &peers);
-                                        }
-                                        _ => {}
+                                    if let ElectionAction::Winner { election_id: eid, ref winner_id, ref source } = action {
+                                        Self::apply_election_result(
+                                            &self.peer_id, winner_id, eid, source,
+                                            &mut role, &mut leader_id, &mut peer_mgr, &peers,
+                                            &mut leader_task_handle, &self.network_tap, &self.tap_active,
+                                            &udp_socket, self.buffer_ms as u64,
+                                            &self.network_slot, &mut jitter_buffer,
+                                        );
+                                        self.broadcast_status(role, &peers);
                                     }
                                 }
                                 GroupPacket::HealthPing { avg_rtt_us: _, uptime_secs: _, active_sources: _, buffer_health, packet_loss_pct } => {
@@ -1133,18 +1136,15 @@ impl Subsystem for GroupSubsystem {
                 // ── Election timeout check ──
                 _ = election_check_interval.tick() => {
                     let action = election_state.check_timeout(&self.peer_id);
-                    match action {
-                        ElectionAction::Winner { election_id, ref winner_id, ref source } => {
-                            Self::apply_election_result(
-                                &self.peer_id, winner_id, election_id, source,
-                                &mut role, &mut leader_id, &mut peer_mgr, &peers,
-                                &mut leader_task_handle, &self.network_tap, &self.tap_active,
-                                &udp_socket, self.buffer_ms as u64,
-                                &self.network_slot, &mut jitter_buffer,
-                            );
-                            self.broadcast_status(role, &peers);
-                        }
-                        _ => {}
+                    if let ElectionAction::Winner { election_id, ref winner_id, ref source } = action {
+                        Self::apply_election_result(
+                            &self.peer_id, winner_id, election_id, source,
+                            &mut role, &mut leader_id, &mut peer_mgr, &peers,
+                            &mut leader_task_handle, &self.network_tap, &self.tap_active,
+                            &udp_socket, self.buffer_ms as u64,
+                            &self.network_slot, &mut jitter_buffer,
+                        );
+                        self.broadcast_status(role, &peers);
                     }
                 }
 

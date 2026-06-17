@@ -126,13 +126,22 @@ pub struct EqBandConfig {
     pub filter_type: String,
 }
 
-fn default_eq_freq() -> u16 { 1000 }
-fn default_q() -> u16 { 10 }
-fn default_filter_type() -> String { "peak".into() }
+fn default_eq_freq() -> u16 {
+    1000
+}
+fn default_q() -> u16 {
+    10
+}
+fn default_filter_type() -> String {
+    "peak".into()
+}
 
 impl Default for EqConfig {
     fn default() -> Self {
-        Self { enabled: true, bands: Vec::new() }
+        Self {
+            enabled: true,
+            bands: Vec::new(),
+        }
     }
 }
 
@@ -148,8 +157,12 @@ pub struct DrcConfig {
     pub bands: Vec<DrcBandSaveConfig>,
 }
 
-fn default_low_mid() -> u16 { 200 }
-fn default_mid_high() -> u16 { 2000 }
+fn default_low_mid() -> u16 {
+    200
+}
+fn default_mid_high() -> u16 {
+    2000
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DrcBandSaveConfig {
@@ -163,14 +176,27 @@ pub struct DrcBandSaveConfig {
     pub release_ms: u16,
 }
 
-fn default_threshold() -> i8 { -20 }
-fn default_ratio() -> u8 { 10 }
-fn default_attack() -> u16 { 10 }
-fn default_release() -> u16 { 200 }
+fn default_threshold() -> i8 {
+    -20
+}
+fn default_ratio() -> u8 {
+    10
+}
+fn default_attack() -> u16 {
+    10
+}
+fn default_release() -> u16 {
+    200
+}
 
 impl Default for DrcConfig {
     fn default() -> Self {
-        Self { enabled: false, low_mid_hz: 200, mid_high_hz: 2000, bands: Vec::new() }
+        Self {
+            enabled: false,
+            low_mid_hz: 200,
+            mid_high_hz: 2000,
+            bands: Vec::new(),
+        }
     }
 }
 
@@ -454,7 +480,10 @@ mqtt_port = 1883
         assert_eq!(cfg.audio.tts_duck_percent, 80);
         // HA is enabled with config
         assert!(cfg.homeassistant.enabled);
-        assert_eq!(cfg.homeassistant.mqtt_host.as_deref(), Some("192.168.1.100"));
+        assert_eq!(
+            cfg.homeassistant.mqtt_host.as_deref(),
+            Some("192.168.1.100")
+        );
         assert_eq!(cfg.homeassistant.mqtt_port, Some(1883));
         // Spotify defaults to enabled even when section is absent
         assert!(cfg.spotify.enabled);
@@ -463,7 +492,9 @@ mqtt_port = 1883
     #[test]
     fn round_trip_serialize_deserialize() {
         let original = EncoreConfigFile {
-            device: DeviceConfig { name: "Test Speaker".into() },
+            device: DeviceConfig {
+                name: "Test Speaker".into(),
+            },
             audio: AudioConfig {
                 master_volume: 42,
                 spotify_volume: 80,
@@ -529,13 +560,19 @@ mqtt_port = 1883
         assert!((parsed.spotify.normalisation_pregain_db - (-3.0)).abs() < f32::EPSILON);
         assert!(!parsed.bluetooth.discoverable);
         assert!(parsed.homeassistant.enabled);
-        assert_eq!(parsed.homeassistant.mqtt_host.as_deref(), Some("mqtt.local"));
+        assert_eq!(
+            parsed.homeassistant.mqtt_host.as_deref(),
+            Some("mqtt.local")
+        );
         assert!(parsed.wyoming.enabled);
         assert_eq!(parsed.wyoming.server_port, Some(10300));
         assert_eq!(parsed.network.wifi_ssid.as_deref(), Some("MyWifi"));
         assert!(!parsed.network.ap_keep_alive);
         assert_eq!(parsed.debug.default_mode, "trace");
-        assert_eq!(parsed.debug.overrides.get("audio").map(|s| s.as_str()), Some("hold"));
+        assert_eq!(
+            parsed.debug.overrides.get("audio").map(|s| s.as_str()),
+            Some("hold")
+        );
     }
 
     #[test]
@@ -551,7 +588,9 @@ mqtt_port = 1883
         let path = dir.join("config.toml");
 
         let original = EncoreConfigFile {
-            device: DeviceConfig { name: "RoundTrip".into() },
+            device: DeviceConfig {
+                name: "RoundTrip".into(),
+            },
             ..EncoreConfigFile::default()
         };
 
@@ -574,6 +613,106 @@ cache_path = "/tmp/spotify"
         let cfg: EncoreConfigFile = toml::from_str(toml_str).unwrap();
         assert!(cfg.spotify.enabled); // field-level default kicks in
         assert_eq!(cfg.spotify.cache_path.as_deref(), Some("/tmp/spotify"));
+    }
+
+    #[test]
+    fn ap_fallback_alias_maps_to_ap_keep_alive() {
+        // The legacy field name `ap_fallback` is a serde alias for `ap_keep_alive`.
+        let toml_str = r#"
+[network]
+ap_fallback = false
+"#;
+        let cfg: EncoreConfigFile = toml::from_str(toml_str).unwrap();
+        assert!(!cfg.network.ap_keep_alive);
+    }
+
+    #[test]
+    fn ap_fallback_alias_true_value() {
+        let toml_str = r#"
+[network]
+ap_fallback = true
+"#;
+        let cfg: EncoreConfigFile = toml::from_str(toml_str).unwrap();
+        assert!(cfg.network.ap_keep_alive);
+    }
+
+    #[test]
+    fn ap_keep_alive_canonical_name_still_parses() {
+        // The canonical field name continues to work alongside the alias.
+        let toml_str = r#"
+[network]
+ap_keep_alive = false
+"#;
+        let cfg: EncoreConfigFile = toml::from_str(toml_str).unwrap();
+        assert!(!cfg.network.ap_keep_alive);
+    }
+
+    #[test]
+    fn vpn_config_defaults() {
+        let vpn = VpnConfig::default();
+        assert!(!vpn.enabled);
+        assert!(vpn.private_key.is_none());
+        assert!(vpn.address.is_none());
+        assert!(vpn.peer_public_key.is_none());
+        assert!(vpn.peer_preshared_key.is_none());
+        assert!(vpn.peer_endpoint.is_none());
+        assert!(vpn.peer_allowed_ips.is_none());
+        assert_eq!(vpn.persistent_keepalive, 25);
+    }
+
+    #[test]
+    fn vpn_config_serde_defaults_from_empty_section() {
+        // An empty [vpn] section should fill every field with its serde default.
+        let toml_str = r#"
+[vpn]
+"#;
+        let cfg: EncoreConfigFile = toml::from_str(toml_str).unwrap();
+        assert!(!cfg.vpn.enabled);
+        assert!(cfg.vpn.private_key.is_none());
+        assert_eq!(cfg.vpn.persistent_keepalive, 25);
+    }
+
+    #[test]
+    fn group_config_defaults() {
+        let group = GroupConfig::default();
+        assert!(!group.enabled);
+        assert_eq!(group.group_name, "Home");
+        assert_eq!(group.channel, "stereo");
+        assert_eq!(group.buffer_ms, 80);
+        assert!(group.peer_id.is_none());
+        assert!(group.peers.is_empty());
+        assert!(!group.party_mode);
+    }
+
+    #[test]
+    fn group_config_serde_defaults_from_empty_section() {
+        // An empty [group] section should yield the documented defaults.
+        let toml_str = r#"
+[group]
+"#;
+        let cfg: EncoreConfigFile = toml::from_str(toml_str).unwrap();
+        assert!(!cfg.group.enabled);
+        assert_eq!(cfg.group.group_name, "Home");
+        assert_eq!(cfg.group.channel, "stereo");
+        assert_eq!(cfg.group.buffer_ms, 80);
+        assert!(cfg.group.peers.is_empty());
+        assert!(!cfg.group.party_mode);
+    }
+
+    #[test]
+    fn eq_config_defaults() {
+        let eq = EqConfig::default();
+        assert!(eq.enabled);
+        assert!(eq.bands.is_empty());
+    }
+
+    #[test]
+    fn drc_config_defaults() {
+        let drc = DrcConfig::default();
+        assert!(!drc.enabled);
+        assert_eq!(drc.low_mid_hz, 200);
+        assert_eq!(drc.mid_high_hz, 2000);
+        assert!(drc.bands.is_empty());
     }
 
     #[test]

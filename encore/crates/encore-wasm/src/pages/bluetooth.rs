@@ -94,11 +94,9 @@ pub fn update() {
                     let addr_clone = addr.clone();
                     let dc_btn = dom::el("button", "btn btn-danger", Some("Disconnect"));
                     dom::on_click(&dc_btn, move || {
-                        crate::ws::send_msg(&ClientMsg::BluetoothControl(
-                            BtAction::Disconnect {
-                                addr: addr_clone.clone(),
-                            },
-                        ));
+                        crate::ws::send_msg(&ClientMsg::BluetoothControl(BtAction::Disconnect {
+                            addr: addr_clone.clone(),
+                        }));
                     });
                     dom::append(&row, &dc_btn);
                 }

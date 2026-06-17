@@ -6,14 +6,17 @@ use wasm_bindgen::JsCast;
 use crate::components::{SegmentedControl, SegmentedMode};
 use crate::dom;
 use encore_common::protocol::{
-    ClientMsg, SourceId, EqPreset, DrcPreset, DrcBand, DrcBandConfig, FilterType,
+    ClientMsg, DrcBand, DrcBandConfig, DrcPreset, EqPreset, FilterType, SourceId,
 };
 
 fn freq_display(hz: u16) -> String {
     if hz >= 1000 {
         let k = hz as f32 / 1000.0;
-        if k == k.floor() { format!("{}kHz", k as u16) }
-        else { format!("{:.1}kHz", k) }
+        if k == k.floor() {
+            format!("{}kHz", k as u16)
+        } else {
+            format!("{:.1}kHz", k)
+        }
     } else {
         format!("{}Hz", hz)
     }
@@ -71,9 +74,7 @@ fn render_volume_knob(container: &web_sys::Element) {
     let knob_el: web_sys::Element = knob_canvas.clone().into();
     dom::append(&card, &knob_el);
 
-    let vol = crate::state::with(|s| {
-        s.config.as_ref().map(|c| c.master_volume).unwrap_or(70)
-    });
+    let vol = crate::state::with(|s| s.config.as_ref().map(|c| c.master_volume).unwrap_or(70));
     crate::graphics::knob::draw(&knob_ctx, 180.0, vol);
 
     crate::graphics::knob::make_interactive(&knob_canvas, move |new_vol| {
@@ -128,7 +129,10 @@ fn render_source_volumes(container: &web_sys::Element) {
 
         let val_id = format!("vol-{}-val", id);
         let cb = Closure::wrap(Box::new(move |e: web_sys::Event| {
-            if let Some(input) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok()) {
+            if let Some(input) = e
+                .target()
+                .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+            {
                 let val: u8 = input.value().parse().unwrap_or(70);
                 if let Some(el) = dom::get_el(&val_id) {
                     dom::set_text(&el, &format!("{}%", val));
@@ -136,7 +140,9 @@ fn render_source_volumes(container: &web_sys::Element) {
                 crate::ws::send_msg(&ClientMsg::SetVolume { source, level: val });
             }
         }) as Box<dyn FnMut(_)>);
-        slider.add_event_listener_with_callback("input", cb.as_ref().unchecked_ref()).ok();
+        slider
+            .add_event_listener_with_callback("input", cb.as_ref().unchecked_ref())
+            .ok();
         cb.forget();
 
         dom::append(&row, &slider);
@@ -159,8 +165,11 @@ fn render_source_volumes(container: &web_sys::Element) {
     dom::append(&duck_header, &duck_val);
     dom::append(&card, &duck_header);
 
-    let duck_desc = dom::el("div", "text-sm text-muted mb-8",
-        Some("Music volume during voice announcements"));
+    let duck_desc = dom::el(
+        "div",
+        "text-sm text-muted mb-8",
+        Some("Music volume during voice announcements"),
+    );
     dom::append(&card, &duck_desc);
 
     let duck_slider = dom::create_el("input");
@@ -171,7 +180,10 @@ fn render_source_volumes(container: &web_sys::Element) {
     duck_slider.set_id("tts-duck");
 
     let duck_cb = Closure::wrap(Box::new(move |e: web_sys::Event| {
-        if let Some(input) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok()) {
+        if let Some(input) = e
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+        {
             let val: u8 = input.value().parse().unwrap_or(80);
             if let Some(el) = dom::get_el("tts-duck-val") {
                 dom::set_text(&el, &format!("{}%", val));
@@ -186,7 +198,9 @@ fn render_source_volumes(container: &web_sys::Element) {
             });
         }
     }) as Box<dyn FnMut(_)>);
-    duck_slider.add_event_listener_with_callback("input", duck_cb.as_ref().unchecked_ref()).ok();
+    duck_slider
+        .add_event_listener_with_callback("input", duck_cb.as_ref().unchecked_ref())
+        .ok();
     duck_cb.forget();
     dom::append(&card, &duck_slider);
 
@@ -205,8 +219,11 @@ fn render_source_volumes(container: &web_sys::Element) {
     dom::append(&ring_header, &ring_val);
     dom::append(&card, &ring_header);
 
-    let ring_desc = dom::el("div", "text-sm text-muted mb-8",
-        Some("Percent change per detent click (1\u{2013}5)"));
+    let ring_desc = dom::el(
+        "div",
+        "text-sm text-muted mb-8",
+        Some("Percent change per detent click (1\u{2013}5)"),
+    );
     dom::append(&card, &ring_desc);
 
     let ring_slider = dom::create_el("input");
@@ -217,7 +234,10 @@ fn render_source_volumes(container: &web_sys::Element) {
     ring_slider.set_id("vol-ring-step");
 
     let ring_cb = Closure::wrap(Box::new(move |e: web_sys::Event| {
-        if let Some(input) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok()) {
+        if let Some(input) = e
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+        {
             let val: u8 = input.value().parse().unwrap_or(2);
             if let Some(el) = dom::get_el("vol-ring-step-val") {
                 dom::set_text(&el, &format!("{}%", val));
@@ -231,7 +251,9 @@ fn render_source_volumes(container: &web_sys::Element) {
             });
         }
     }) as Box<dyn FnMut(_)>);
-    ring_slider.add_event_listener_with_callback("input", ring_cb.as_ref().unchecked_ref()).ok();
+    ring_slider
+        .add_event_listener_with_callback("input", ring_cb.as_ref().unchecked_ref())
+        .ok();
     ring_cb.forget();
     dom::append(&card, &ring_slider);
 
@@ -278,7 +300,11 @@ fn render_mic_test(container: &web_sys::Element) {
 
     dom::append(&card, &header);
 
-    let desc = dom::el("div", "text-muted text-sm mb-12", Some("Test the 7-mic beamformed array."));
+    let desc = dom::el(
+        "div",
+        "text-muted text-sm mb-12",
+        Some("Test the 7-mic beamformed array."),
+    );
     dom::append(&card, &desc);
 
     // Start/Stop button
@@ -314,7 +340,8 @@ fn render_mic_test(container: &web_sys::Element) {
             }
         }
     }) as Box<dyn FnMut(_)>);
-    btn.add_event_listener_with_callback("click", cb.as_ref().unchecked_ref()).ok();
+    btn.add_event_listener_with_callback("click", cb.as_ref().unchecked_ref())
+        .ok();
     cb.forget();
     dom::append(&card, &btn);
 
@@ -328,7 +355,11 @@ fn render_mic_test(container: &web_sys::Element) {
     dom::append(&card, &mic_el);
 
     // Legend (hidden initially)
-    let legend = dom::el("div", "text-muted text-sm", Some("Far-field (L) \u{00B7} Near-field (R)"));
+    let legend = dom::el(
+        "div",
+        "text-muted text-sm",
+        Some("Far-field (L) \u{00B7} Near-field (R)"),
+    );
     legend.set_id("mic-vu-legend");
     dom::set_style(&legend, "text-align", "center");
     dom::set_style(&legend, "margin-top", "4px");
@@ -355,7 +386,11 @@ fn render_visualization(container: &web_sys::Element) {
     let current_mode = crate::state::with(|s| s.viz_mode.clone());
     let toggle = SegmentedControl::create(
         "viz-toggle",
-        &[("spectrum", "Spectrum"), ("scope", "Scope"), ("both", "Both")],
+        &[
+            ("spectrum", "Spectrum"),
+            ("scope", "Scope"),
+            ("both", "Both"),
+        ],
         &[&current_mode],
         SegmentedMode::Single(Box::new(|mode| {
             let mode_str = mode.to_string();
@@ -382,7 +417,15 @@ fn render_visualization(container: &web_sys::Element) {
     // Spectrum canvas
     let spec_wrap = dom::create_div();
     spec_wrap.set_id("spectrum-wrap");
-    dom::set_style(&spec_wrap, "display", if viz_mode == "spectrum" || viz_mode == "both" { "block" } else { "none" });
+    dom::set_style(
+        &spec_wrap,
+        "display",
+        if viz_mode == "spectrum" || viz_mode == "both" {
+            "block"
+        } else {
+            "none"
+        },
+    );
     let (spec_canvas, _) = crate::graphics::create_canvas(320, 80);
     spec_canvas.set_id("spectrum-canvas");
     let spec_el: web_sys::Element = spec_canvas.into();
@@ -394,7 +437,15 @@ fn render_visualization(container: &web_sys::Element) {
     // Scope canvas
     let scope_wrap = dom::create_div();
     scope_wrap.set_id("scope-wrap");
-    dom::set_style(&scope_wrap, "display", if viz_mode == "scope" || viz_mode == "both" { "block" } else { "none" });
+    dom::set_style(
+        &scope_wrap,
+        "display",
+        if viz_mode == "scope" || viz_mode == "both" {
+            "block"
+        } else {
+            "none"
+        },
+    );
     let (scope_canvas, _) = crate::graphics::create_canvas(320, 80);
     scope_canvas.set_id("scope-canvas");
     let scope_el: web_sys::Element = scope_canvas.into();
@@ -431,7 +482,12 @@ fn redraw_eq_canvas() {
                 if let Ok(Some(ctx)) = canvas.get_context("2d") {
                     let ctx: web_sys::CanvasRenderingContext2d = ctx.unchecked_into();
                     if let Some(ref eq) = s.eq_state {
-                        crate::graphics::eq_curve::draw(&ctx, &eq.bands, eq.enabled, s.eq_selected_band);
+                        crate::graphics::eq_curve::draw(
+                            &ctx,
+                            &eq.bands,
+                            eq.enabled,
+                            s.eq_selected_band,
+                        );
                     }
                 }
             }
@@ -466,7 +522,14 @@ fn update_eq_detail() {
             ("eq-ft-notch", FilterType::Notch),
         ] {
             if let Some(btn) = dom::get_el(id) {
-                dom::set_class(&btn, if band.filter_type == ft { "seg-btn active" } else { "seg-btn" });
+                dom::set_class(
+                    &btn,
+                    if band.filter_type == ft {
+                        "seg-btn active"
+                    } else {
+                        "seg-btn"
+                    },
+                );
             }
         }
         if let Some(el) = dom::get_el("eq-freq") {
@@ -543,11 +606,13 @@ fn render_eq(container: &web_sys::Element) {
     dom::append(&card, &canvas_el);
 
     // Initial draw
-    let (bands, enabled, selected) = crate::state::with(|s| {
-        match s.eq_state.as_ref() {
-            Some(eq) => (eq.bands, eq.enabled, s.eq_selected_band),
-            None => (encore_common::protocol::EqState::default().bands, true, None),
-        }
+    let (bands, enabled, selected) = crate::state::with(|s| match s.eq_state.as_ref() {
+        Some(eq) => (eq.bands, eq.enabled, s.eq_selected_band),
+        None => (
+            encore_common::protocol::EqState::default().bands,
+            true,
+            None,
+        ),
     });
     crate::graphics::eq_curve::draw(&eq_ctx, &bands, enabled, selected);
 
@@ -555,7 +620,9 @@ fn render_eq(container: &web_sys::Element) {
     crate::graphics::eq_curve::make_interactive(
         &eq_canvas,
         |idx| {
-            crate::state::with_mut(|s| { s.eq_selected_band = Some(idx); });
+            crate::state::with_mut(|s| {
+                s.eq_selected_band = Some(idx);
+            });
             redraw_eq_canvas();
             update_eq_detail();
         },
@@ -571,7 +638,10 @@ fn render_eq(container: &web_sys::Element) {
                 }
             });
             if let Some(config) = config {
-                crate::ws::send_msg(&ClientMsg::SetEqBand { band: idx as u8, config });
+                crate::ws::send_msg(&ClientMsg::SetEqBand {
+                    band: idx as u8,
+                    config,
+                });
             }
             redraw_eq_canvas();
             update_eq_detail();
@@ -617,7 +687,10 @@ fn render_eq(container: &web_sys::Element) {
                 None
             });
             if let Some((idx, config)) = config {
-                crate::ws::send_msg(&ClientMsg::SetEqBand { band: idx as u8, config });
+                crate::ws::send_msg(&ClientMsg::SetEqBand {
+                    band: idx as u8,
+                    config,
+                });
                 redraw_eq_canvas();
                 update_eq_detail();
             }
@@ -641,7 +714,10 @@ fn render_eq(container: &web_sys::Element) {
         let val_el = dom::el("span", "eq-param-val", Some("1kHz"));
         val_el.set_id("eq-freq-val");
         let cb = Closure::wrap(Box::new(move |e: web_sys::Event| {
-            if let Some(input) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok()) {
+            if let Some(input) = e
+                .target()
+                .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+            {
                 let slider_val: i32 = input.value().parse().unwrap_or(500);
                 let freq_hz = slider_to_freq(slider_val);
                 let config = crate::state::with_mut(|s| {
@@ -655,13 +731,18 @@ fn render_eq(container: &web_sys::Element) {
                     None
                 });
                 if let Some((idx, config)) = config {
-                    crate::ws::send_msg(&ClientMsg::SetEqBand { band: idx as u8, config });
+                    crate::ws::send_msg(&ClientMsg::SetEqBand {
+                        band: idx as u8,
+                        config,
+                    });
                     redraw_eq_canvas();
                     update_eq_detail();
                 }
             }
         }) as Box<dyn FnMut(_)>);
-        slider.add_event_listener_with_callback("input", cb.as_ref().unchecked_ref()).ok();
+        slider
+            .add_event_listener_with_callback("input", cb.as_ref().unchecked_ref())
+            .ok();
         cb.forget();
         dom::append(&row, &slider);
         dom::append(&row, &val_el);
@@ -682,7 +763,10 @@ fn render_eq(container: &web_sys::Element) {
         let val_el = dom::el("span", "eq-param-val", Some("0 dB"));
         val_el.set_id("eq-gain-detail-val");
         let cb = Closure::wrap(Box::new(move |e: web_sys::Event| {
-            if let Some(input) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok()) {
+            if let Some(input) = e
+                .target()
+                .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+            {
                 let gain_cb: i16 = input.value().parse().unwrap_or(0);
                 let config = crate::state::with_mut(|s| {
                     if let Some(idx) = s.eq_selected_band {
@@ -695,13 +779,18 @@ fn render_eq(container: &web_sys::Element) {
                     None
                 });
                 if let Some((idx, config)) = config {
-                    crate::ws::send_msg(&ClientMsg::SetEqBand { band: idx as u8, config });
+                    crate::ws::send_msg(&ClientMsg::SetEqBand {
+                        band: idx as u8,
+                        config,
+                    });
                     redraw_eq_canvas();
                     update_eq_detail();
                 }
             }
         }) as Box<dyn FnMut(_)>);
-        slider.add_event_listener_with_callback("input", cb.as_ref().unchecked_ref()).ok();
+        slider
+            .add_event_listener_with_callback("input", cb.as_ref().unchecked_ref())
+            .ok();
         cb.forget();
         dom::append(&row, &slider);
         dom::append(&row, &val_el);
@@ -722,7 +811,10 @@ fn render_eq(container: &web_sys::Element) {
         let val_el = dom::el("span", "eq-param-val", Some("1.4"));
         val_el.set_id("eq-q-val");
         let cb = Closure::wrap(Box::new(move |e: web_sys::Event| {
-            if let Some(input) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok()) {
+            if let Some(input) = e
+                .target()
+                .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+            {
                 let q_x10: u16 = input.value().parse().unwrap_or(14);
                 let config = crate::state::with_mut(|s| {
                     if let Some(idx) = s.eq_selected_band {
@@ -735,13 +827,18 @@ fn render_eq(container: &web_sys::Element) {
                     None
                 });
                 if let Some((idx, config)) = config {
-                    crate::ws::send_msg(&ClientMsg::SetEqBand { band: idx as u8, config });
+                    crate::ws::send_msg(&ClientMsg::SetEqBand {
+                        band: idx as u8,
+                        config,
+                    });
                     redraw_eq_canvas();
                     update_eq_detail();
                 }
             }
         }) as Box<dyn FnMut(_)>);
-        slider.add_event_listener_with_callback("input", cb.as_ref().unchecked_ref()).ok();
+        slider
+            .add_event_listener_with_callback("input", cb.as_ref().unchecked_ref())
+            .ok();
         cb.forget();
         dom::append(&row, &slider);
         dom::append(&row, &val_el);
@@ -814,10 +911,24 @@ fn render_drc(container: &web_sys::Element) {
 
         // Helper to create a DRC parameter slider row
         for (param_label, param_id, min, max, default_val, suffix) in [
-            ("Thresh", format!("drc-thresh-{}", idx), -60i32, 0, -20, "dB"),
+            (
+                "Thresh",
+                format!("drc-thresh-{}", idx),
+                -60i32,
+                0,
+                -20,
+                "dB",
+            ),
             ("Ratio", format!("drc-ratio-{}", idx), 10, 100, 20, ""),
             ("Attack", format!("drc-attack-{}", idx), 1, 200, 10, "ms"),
-            ("Release", format!("drc-release-{}", idx), 10, 2000, 200, "ms"),
+            (
+                "Release",
+                format!("drc-release-{}", idx),
+                10,
+                2000,
+                200,
+                "ms",
+            ),
         ] {
             let row = dom::create_div();
             dom::set_class(&row, "drc-param-row");
@@ -832,7 +943,11 @@ fn render_drc(container: &web_sys::Element) {
             dom::set_attr(&slider, "value", &default_val.to_string());
             slider.set_id(&param_id);
 
-            let val_el = dom::el("span", "drc-val", Some(&format!("{}{}", default_val, suffix)));
+            let val_el = dom::el(
+                "span",
+                "drc-val",
+                Some(&format!("{}{}", default_val, suffix)),
+            );
             let val_id = format!("{}-val", param_id);
             val_el.set_id(&val_id);
 
@@ -841,22 +956,32 @@ fn render_drc(container: &web_sys::Element) {
             let suffix_s = suffix.to_string();
             let val_id_c = val_id.clone();
             let cb = Closure::wrap(Box::new(move |e: web_sys::Event| {
-                if let Some(input) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok()) {
+                if let Some(input) = e
+                    .target()
+                    .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+                {
                     let raw_val: i32 = input.value().parse().unwrap_or(default_val);
                     if let Some(el) = dom::get_el(&val_id_c) {
                         dom::set_text(&el, &format!("{}{}", raw_val, suffix_s));
                     }
                     // Read current band config from state, override the changed param
                     let config = crate::state::with(|s| {
-                        let base = s.drc_state.as_ref()
+                        let base = s
+                            .drc_state
+                            .as_ref()
                             .map(|d| d.bands[band_i])
                             .unwrap_or_default();
                         read_drc_band_from_dom(band_i, base)
                     });
-                    crate::ws::send_msg(&ClientMsg::SetDrc { band: band_e, config });
+                    crate::ws::send_msg(&ClientMsg::SetDrc {
+                        band: band_e,
+                        config,
+                    });
                 }
             }) as Box<dyn FnMut(_)>);
-            slider.add_event_listener_with_callback("input", cb.as_ref().unchecked_ref()).ok();
+            slider
+                .add_event_listener_with_callback("input", cb.as_ref().unchecked_ref())
+                .ok();
             cb.forget();
 
             dom::append(&row, &slider);
@@ -872,33 +997,46 @@ fn render_drc(container: &web_sys::Element) {
     let xover = dom::create_div();
     dom::set_class(&xover, "drc-crossover mt-12");
 
-    let xover_title = dom::el("div", "text-sm text-muted mb-8", Some("Crossover Frequencies"));
+    let xover_title = dom::el(
+        "div",
+        "text-sm text-muted mb-8",
+        Some("Crossover Frequencies"),
+    );
     dom::append(&xover, &xover_title);
 
     // Low/Mid crossover: 80-500 Hz
-    let low_mid = crate::components::Slider::create("drc-xover-lm", "Low/Mid", 80, 500, 200, "Hz", |v| {
-        let mid_high: u16 = dom::get_el("drc-xover-mh")
-            .and_then(|el| el.dyn_into::<web_sys::HtmlInputElement>().ok())
-            .map(|i| i.value().parse().unwrap_or(2000))
-            .unwrap_or(2000);
-        crate::ws::send_msg(&ClientMsg::SetDrcCrossover {
-            low_mid_hz: v as u16,
-            mid_high_hz: mid_high,
+    let low_mid =
+        crate::components::Slider::create("drc-xover-lm", "Low/Mid", 80, 500, 200, "Hz", |v| {
+            let mid_high: u16 = dom::get_el("drc-xover-mh")
+                .and_then(|el| el.dyn_into::<web_sys::HtmlInputElement>().ok())
+                .map(|i| i.value().parse().unwrap_or(2000))
+                .unwrap_or(2000);
+            crate::ws::send_msg(&ClientMsg::SetDrcCrossover {
+                low_mid_hz: v as u16,
+                mid_high_hz: mid_high,
+            });
         });
-    });
     dom::append(&xover, &low_mid);
 
     // Mid/High crossover: 1000-8000 Hz
-    let mid_high = crate::components::Slider::create("drc-xover-mh", "Mid/High", 1000, 8000, 2000, "Hz", |v| {
-        let low_mid: u16 = dom::get_el("drc-xover-lm")
-            .and_then(|el| el.dyn_into::<web_sys::HtmlInputElement>().ok())
-            .map(|i| i.value().parse().unwrap_or(200))
-            .unwrap_or(200);
-        crate::ws::send_msg(&ClientMsg::SetDrcCrossover {
-            low_mid_hz: low_mid,
-            mid_high_hz: v as u16,
-        });
-    });
+    let mid_high = crate::components::Slider::create(
+        "drc-xover-mh",
+        "Mid/High",
+        1000,
+        8000,
+        2000,
+        "Hz",
+        |v| {
+            let low_mid: u16 = dom::get_el("drc-xover-lm")
+                .and_then(|el| el.dyn_into::<web_sys::HtmlInputElement>().ok())
+                .map(|i| i.value().parse().unwrap_or(200))
+                .unwrap_or(200);
+            crate::ws::send_msg(&ClientMsg::SetDrcCrossover {
+                low_mid_hz: low_mid,
+                mid_high_hz: v as u16,
+            });
+        },
+    );
     dom::append(&xover, &mid_high);
 
     dom::append(&card, &xover);
@@ -924,7 +1062,12 @@ fn read_drc_band_from_dom(idx: usize, fallback: DrcBandConfig) -> DrcBandConfig 
         .and_then(|el| el.dyn_into::<web_sys::HtmlInputElement>().ok())
         .and_then(|i| i.value().parse::<u16>().ok())
         .unwrap_or(fallback.release_ms);
-    DrcBandConfig { threshold_db, ratio_x10, attack_ms, release_ms }
+    DrcBandConfig {
+        threshold_db,
+        ratio_x10,
+        attack_ms,
+        release_ms,
+    }
 }
 
 // ─────────────────────── DSP Engine ───────────────────────
@@ -949,16 +1092,18 @@ fn render_dsp(container: &web_sys::Element) {
     dom::append(&card, &info_row);
 
     // Mic mute toggle
-    let mic_toggle = crate::components::Toggle::create("mic-mute-toggle", "Mic Mute", false, |muted| {
-        crate::ws::send_msg(&ClientMsg::SetMicMute(muted));
-    });
+    let mic_toggle =
+        crate::components::Toggle::create("mic-mute-toggle", "Mic Mute", false, |muted| {
+            crate::ws::send_msg(&ClientMsg::SetMicMute(muted));
+        });
     dom::set_class(&mic_toggle, "toggle-wrap mb-12");
     dom::append(&card, &mic_toggle);
 
     // DSP volume slider
-    let dsp_vol = crate::components::Slider::create("dsp-vol", "DSP Volume", 1, 100, 50, "%", |v| {
-        crate::ws::send_msg(&ClientMsg::SetDspVolume(v as u8));
-    });
+    let dsp_vol =
+        crate::components::Slider::create("dsp-vol", "DSP Volume", 1, 100, 50, "%", |v| {
+            crate::ws::send_msg(&ClientMsg::SetDspVolume(v as u8));
+        });
     dom::append(&card, &dsp_vol);
 
     // Hidden explorer section (triple-tap to reveal)
@@ -1063,7 +1208,8 @@ fn render_dsp(container: &web_sys::Element) {
             .map(|i| i.value())
             .unwrap_or_default();
         let msg_type = u16::from_str_radix(msg_type_str.trim_start_matches("0x"), 16).unwrap_or(0);
-        let data: Vec<u8> = data_str.split_whitespace()
+        let data: Vec<u8> = data_str
+            .split_whitespace()
             .filter_map(|s| u8::from_str_radix(s.trim_start_matches("0x"), 16).ok())
             .collect();
         crate::ws::send_msg(&ClientMsg::DspSpiSend { msg_type, data });
@@ -1098,14 +1244,19 @@ fn render_dsp(container: &web_sys::Element) {
                 }
             }
             let tc = tap_count_c.clone();
-            crate::dom::set_timeout(move || {
-                if tc.get() > 0 && tc.get() < 3 {
-                    tc.set(0);
-                }
-            }, 1000);
+            crate::dom::set_timeout(
+                move || {
+                    if tc.get() > 0 && tc.get() < 3 {
+                        tc.set(0);
+                    }
+                },
+                1000,
+            );
         }) as Box<dyn FnMut(_)>);
         if let Some(title_el) = dom::get_el("dsp-title") {
-            title_el.add_event_listener_with_callback("click", tap_cb.as_ref().unchecked_ref()).ok();
+            title_el
+                .add_event_listener_with_callback("click", tap_cb.as_ref().unchecked_ref())
+                .ok();
         }
         tap_cb.forget();
     }
@@ -1133,7 +1284,9 @@ pub fn update() {
             ("mix-row-bluetooth", "bluetooth"),
             ("mix-row-wyoming", "wyoming"),
         ] {
-            let active = s.subsystems.get(subsystem_name)
+            let active = s
+                .subsystems
+                .get(subsystem_name)
                 .map(|snap| matches!(snap.state, encore_common::protocol::SubsystemState::Running))
                 .unwrap_or(false);
             if let Some(el) = dom::get_el(row_id) {
@@ -1173,9 +1326,13 @@ pub fn update() {
                 if let Ok(Some(ctx)) = canvas.get_context("2d") {
                     let ctx: web_sys::CanvasRenderingContext2d = ctx.unchecked_into();
                     crate::graphics::vu_meter::draw(
-                        &ctx, 320.0, 64.0,
-                        s.audio_left_rms, s.audio_right_rms,
-                        s.audio_left_peak, s.audio_right_peak,
+                        &ctx,
+                        320.0,
+                        64.0,
+                        s.audio_left_rms,
+                        s.audio_right_rms,
+                        s.audio_left_peak,
+                        s.audio_right_peak,
                     );
                 }
             }
@@ -1188,9 +1345,13 @@ pub fn update() {
                     if let Ok(Some(ctx)) = canvas.get_context("2d") {
                         let ctx: web_sys::CanvasRenderingContext2d = ctx.unchecked_into();
                         crate::graphics::vu_meter::draw_mic(
-                            &ctx, 320.0, 64.0,
-                            s.mic_left_rms, s.mic_right_rms,
-                            s.mic_left_peak, s.mic_right_peak,
+                            &ctx,
+                            320.0,
+                            64.0,
+                            s.mic_left_rms,
+                            s.mic_right_rms,
+                            s.mic_left_peak,
+                            s.mic_right_peak,
                         );
                     }
                 }
@@ -1243,7 +1404,12 @@ pub fn update() {
                 if let Some(canvas) = canvas.dyn_ref::<web_sys::HtmlCanvasElement>() {
                     if let Ok(Some(ctx)) = canvas.get_context("2d") {
                         let ctx: web_sys::CanvasRenderingContext2d = ctx.unchecked_into();
-                        crate::graphics::eq_curve::draw(&ctx, &eq.bands, eq.enabled, s.eq_selected_band);
+                        crate::graphics::eq_curve::draw(
+                            &ctx,
+                            &eq.bands,
+                            eq.enabled,
+                            s.eq_selected_band,
+                        );
                     }
                 }
             }

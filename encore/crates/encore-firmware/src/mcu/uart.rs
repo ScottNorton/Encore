@@ -59,11 +59,10 @@ impl McuUart {
         termios::cfsetospeed(&mut attrs, nix_baud).context("cfsetospeed")?;
 
         // Non-blocking read with 200ms timeout
-        attrs.control_chars[libc::VMIN as usize] = 0;
-        attrs.control_chars[libc::VTIME as usize] = 2; // 200ms (tenths of seconds)
+        attrs.control_chars[libc::VMIN] = 0;
+        attrs.control_chars[libc::VTIME] = 2; // 200ms (tenths of seconds)
 
-        termios::tcsetattr(file, termios::SetArg::TCSANOW, &attrs)
-            .context("tcsetattr failed")?;
+        termios::tcsetattr(file, termios::SetArg::TCSANOW, &attrs).context("tcsetattr failed")?;
 
         // Flush any stale data
         termios::tcflush(file, termios::FlushArg::TCIOFLUSH).ok();
@@ -105,7 +104,12 @@ impl McuUart {
             match uart.file.read(&mut buf) {
                 Ok(0) => continue,
                 Ok(n) => {
-                    debug!("MCU UART: {} baud got {} bytes: {:02X?}", baud, n, &buf[..n]);
+                    debug!(
+                        "MCU UART: {} baud got {} bytes: {:02X?}",
+                        baud,
+                        n,
+                        &buf[..n]
+                    );
                     return Ok(uart);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
@@ -156,7 +160,12 @@ impl McuUart {
         }
 
         let text = String::from_utf8_lossy(&response).to_string();
-        debug!("MCU UART: recv {:?} ({} bytes, {}ms)", text, response.len(), start.elapsed().as_millis());
+        debug!(
+            "MCU UART: recv {:?} ({} bytes, {}ms)",
+            text,
+            response.len(),
+            start.elapsed().as_millis()
+        );
         Ok(text)
     }
 

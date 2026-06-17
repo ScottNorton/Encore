@@ -1,0 +1,20 @@
+--- /home/scott/HKHacking/workspace/source/kernel/Invoke-kernel/drivers/usb/gadget/u_ether.c	2021-03-09 03:17:26.000000000 -0500
++++ /mnt/g/HKInvoke/vendor/kernel/drivers/usb/gadget/u_ether.c	2026-06-17 00:22:39.551581100 -0400
+@@ -803,6 +803,17 @@
+ 	SET_NETDEV_DEV(net, &g->dev);
+ 	SET_NETDEV_DEVTYPE(net, &gadget_type);
+ 
++	/*
++	 * Cap the MTU low so every RNDIS frame fits in a single high-speed bulk
++	 * packet (<=512 bytes). This mv_udc controller stalls *multi-packet* bulk
++	 * transfers: only the first 512-byte packet of a larger transfer is sent,
++	 * then the host times out and bus-resets (the dashboard's WASM and any
++	 * full-size frame never get through). Single-packet transfers are reliable.
++	 * The TCP MSS derived from this MTU keeps both directions single-packet, so
++	 * HTTP/SSH work end to end -- lower throughput, but a stable link.
++	 */
++	net->mtu = 400;
++
+ 	status = register_netdev(net);
+ 	if (status < 0) {
+ 		dev_dbg(&g->dev, "register_netdev failed, %d\n", status);

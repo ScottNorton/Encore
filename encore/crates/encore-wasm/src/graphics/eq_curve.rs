@@ -263,7 +263,11 @@ pub fn draw(
         let y = if enabled { gain_to_y(gain_db) } else { zero_y };
 
         let is_sel = selected == Some(i);
-        let r = if is_sel { DOT_SELECTED_RADIUS } else { DOT_RADIUS };
+        let r = if is_sel {
+            DOT_SELECTED_RADIUS
+        } else {
+            DOT_RADIUS
+        };
 
         // Outer glow for selected
         if is_sel {
@@ -289,12 +293,20 @@ pub fn draw(
         ctx.fill();
 
         // Dot border
-        ctx.set_stroke_style_str(if is_sel { "rgb(88,166,255)" } else { "rgba(230,237,243,0.3)" });
+        ctx.set_stroke_style_str(if is_sel {
+            "rgb(88,166,255)"
+        } else {
+            "rgba(230,237,243,0.3)"
+        });
         ctx.set_line_width(if is_sel { 2.0 } else { 1.0 });
         ctx.stroke();
 
         // Band number label inside dot
-        ctx.set_fill_style_str(if is_sel || band.gain_cb != 0 { "rgba(255,255,255,0.9)" } else { "rgba(230,237,243,0.5)" });
+        ctx.set_fill_style_str(if is_sel || band.gain_cb != 0 {
+            "rgba(255,255,255,0.9)"
+        } else {
+            "rgba(230,237,243,0.5)"
+        });
         ctx.set_font("bold 8px system-ui");
         ctx.set_text_align("center");
         ctx.set_text_baseline("middle");
@@ -394,9 +406,8 @@ pub fn make_interactive(
         let get_pos = get_canvas_pos.clone();
         let cb = Closure::wrap(Box::new(move |e: web_sys::MouseEvent| {
             let (cx, cy) = get_pos(e.client_x() as f64, e.client_y() as f64);
-            let bands = crate::state::with(|s| {
-                s.eq_state.as_ref().map(|eq| (eq.bands, eq.enabled))
-            });
+            let bands =
+                crate::state::with(|s| s.eq_state.as_ref().map(|eq| (eq.bands, eq.enabled)));
             if let Some((bands, enabled)) = bands {
                 if let Some(idx) = hit_test(&bands, enabled, cx, cy) {
                     dragging.set(Some(idx));
@@ -404,7 +415,9 @@ pub fn make_interactive(
                 }
             }
         }) as Box<dyn FnMut(_)>);
-        canvas.add_event_listener_with_callback("mousedown", cb.as_ref().unchecked_ref()).ok();
+        canvas
+            .add_event_listener_with_callback("mousedown", cb.as_ref().unchecked_ref())
+            .ok();
         cb.forget();
     }
 
@@ -424,7 +437,9 @@ pub fn make_interactive(
                 on_drag(idx, freq, gain_cb);
             }
         }) as Box<dyn FnMut(_)>);
-        canvas.add_event_listener_with_callback("mousemove", cb.as_ref().unchecked_ref()).ok();
+        canvas
+            .add_event_listener_with_callback("mousemove", cb.as_ref().unchecked_ref())
+            .ok();
         cb.forget();
     }
 
@@ -434,7 +449,9 @@ pub fn make_interactive(
         let cb = Closure::wrap(Box::new(move |_: web_sys::MouseEvent| {
             dragging.set(None);
         }) as Box<dyn FnMut(_)>);
-        canvas.add_event_listener_with_callback("mouseup", cb.as_ref().unchecked_ref()).ok();
+        canvas
+            .add_event_listener_with_callback("mouseup", cb.as_ref().unchecked_ref())
+            .ok();
         cb.forget();
     }
 
@@ -449,9 +466,8 @@ pub fn make_interactive(
             e.prevent_default();
             if let Some(touch) = e.touches().get(0) {
                 let (cx, cy) = get_pos_t(touch.client_x() as f64, touch.client_y() as f64);
-                let bands = crate::state::with(|s| {
-                    s.eq_state.as_ref().map(|eq| (eq.bands, eq.enabled))
-                });
+                let bands =
+                    crate::state::with(|s| s.eq_state.as_ref().map(|eq| (eq.bands, eq.enabled)));
                 if let Some((bands, enabled)) = bands {
                     if let Some(idx) = hit_test(&bands, enabled, cx, cy) {
                         dragging_t.set(Some(idx));
@@ -460,7 +476,9 @@ pub fn make_interactive(
                 }
             }
         }) as Box<dyn FnMut(_)>);
-        canvas.add_event_listener_with_callback("touchstart", touchstart.as_ref().unchecked_ref()).ok();
+        canvas
+            .add_event_listener_with_callback("touchstart", touchstart.as_ref().unchecked_ref())
+            .ok();
         touchstart.forget();
 
         let dragging_m = dragging.clone();
@@ -480,14 +498,171 @@ pub fn make_interactive(
                 }
             }
         }) as Box<dyn FnMut(_)>);
-        canvas.add_event_listener_with_callback("touchmove", touchmove.as_ref().unchecked_ref()).ok();
+        canvas
+            .add_event_listener_with_callback("touchmove", touchmove.as_ref().unchecked_ref())
+            .ok();
         touchmove.forget();
 
         let dragging_e = dragging;
         let touchend = Closure::wrap(Box::new(move |_: web_sys::TouchEvent| {
             dragging_e.set(None);
         }) as Box<dyn FnMut(_)>);
-        canvas.add_event_listener_with_callback("touchend", touchend.as_ref().unchecked_ref()).ok();
+        canvas
+            .add_event_listener_with_callback("touchend", touchend.as_ref().unchecked_ref())
+            .ok();
         touchend.forget();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn flat_band() -> EqBand {
+        EqBand {
+            freq_hz: 1000,
+            gain_cb: 0,
+            q_x10: 10,
+            filter_type: FilterType::Peak,
+        }
+    }
+
+    #[test]
+    fn freq_axis_endpoints() {
+        // 20 Hz maps to the left edge of the plot, 20 kHz to the right edge.
+        assert!((freq_to_x(F_MIN) - PAD_L).abs() < 1e-9);
+        assert!((freq_to_x(F_MAX) - (PAD_L + PLOT_W)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn freq_axis_clamps_out_of_range() {
+        // Below F_MIN clamps to the left edge, above F_MAX to the right edge.
+        assert!((freq_to_x(5.0) - PAD_L).abs() < 1e-9);
+        assert!((freq_to_x(50000.0) - (PAD_L + PLOT_W)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn freq_x_roundtrip() {
+        // f -> x -> f recovers the original frequency within tolerance.
+        for &f in &[20.0, 100.0, 440.0, 1000.0, 10000.0, 20000.0] {
+            let back = x_to_freq(freq_to_x(f));
+            let rel = (back - f).abs() / f;
+            assert!(rel < 1e-6, "f={} back={}", f, back);
+        }
+    }
+
+    #[test]
+    fn x_to_freq_endpoints() {
+        assert!((x_to_freq(PAD_L) - F_MIN).abs() < 1e-6);
+        assert!((x_to_freq(PAD_L + PLOT_W) - F_MAX).abs() < 1e-6);
+    }
+
+    #[test]
+    fn gain_axis_endpoints_and_center() {
+        // +12 dB at the top, -12 dB at the bottom, 0 dB at the vertical midpoint.
+        assert!((gain_to_y(G_MAX) - PAD_T).abs() < 1e-9);
+        assert!((gain_to_y(G_MIN) - (PAD_T + PLOT_H)).abs() < 1e-9);
+        assert!((gain_to_y(0.0) - (PAD_T + PLOT_H / 2.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn gain_y_roundtrip() {
+        for &db in &[-12.0, -6.0, 0.0, 3.5, 12.0] {
+            let back = y_to_gain(gain_to_y(db));
+            assert!((back - db).abs() < 1e-9, "db={} back={}", db, back);
+        }
+    }
+
+    #[test]
+    fn flat_band_has_zero_response() {
+        // gain_cb == 0 short-circuits to exactly 0 dB at any frequency.
+        let band = flat_band();
+        assert_eq!(band_response_db(&band, 1000.0), 0.0);
+        assert_eq!(band_response_db(&band, 50.0), 0.0);
+        assert_eq!(band_response_db(&band, 15000.0), 0.0);
+    }
+
+    #[test]
+    fn peak_boost_is_positive_near_center() {
+        // A +6 dB peak filter should raise the response near its center frequency.
+        let band = EqBand {
+            freq_hz: 1000,
+            gain_cb: 60,
+            q_x10: 10,
+            filter_type: FilterType::Peak,
+        };
+        let at_center = band_response_db(&band, 1000.0);
+        assert!(at_center > 0.0, "expected boost, got {}", at_center);
+        // The peak gain should be close to the requested 6 dB.
+        assert!((at_center - 6.0).abs() < 1.0, "got {}", at_center);
+    }
+
+    #[test]
+    fn peak_cut_is_negative_near_center() {
+        let band = EqBand {
+            freq_hz: 1000,
+            gain_cb: -60,
+            q_x10: 10,
+            filter_type: FilterType::Peak,
+        };
+        let at_center = band_response_db(&band, 1000.0);
+        assert!(at_center < 0.0, "expected cut, got {}", at_center);
+    }
+
+    #[test]
+    fn total_response_disabled_is_zero() {
+        let bands = [flat_band(); 10];
+        assert_eq!(total_response_db(&bands, false, 1000.0), 0.0);
+    }
+
+    #[test]
+    fn total_response_sums_bands() {
+        // All-flat bands sum to zero; one active band contributes its own response.
+        let mut bands = [flat_band(); 10];
+        assert_eq!(total_response_db(&bands, true, 1000.0), 0.0);
+
+        bands[0] = EqBand {
+            freq_hz: 1000,
+            gain_cb: 60,
+            q_x10: 10,
+            filter_type: FilterType::Peak,
+        };
+        let single = band_response_db(&bands[0], 1000.0);
+        let total = total_response_db(&bands, true, 1000.0);
+        assert!(
+            (total - single).abs() < 1e-9,
+            "total={} single={}",
+            total,
+            single
+        );
+    }
+
+    #[test]
+    fn coords_to_band_left_bottom() {
+        // Far-left x clamps to 20 Hz; the y of the 0 dB line yields 0 centibel gain.
+        let (freq, gain_cb) = coords_to_band(PAD_L, gain_to_y(0.0));
+        assert_eq!(freq, 20);
+        assert_eq!(gain_cb, 0);
+    }
+
+    #[test]
+    fn coords_to_band_right_top_clamps() {
+        // Far-right x clamps to 20000 Hz; top y clamps to +12 dB -> +120 centibel.
+        let (freq, gain_cb) = coords_to_band(PAD_L + PLOT_W, gain_to_y(G_MAX));
+        assert_eq!(freq, 20000);
+        assert_eq!(gain_cb, 120);
+    }
+
+    #[test]
+    fn coords_to_band_gain_rounds_to_nearest_five() {
+        // -12 dB -> -120 centibel, divisible by 5.
+        let (_freq, gain_cb) = coords_to_band(PAD_L + PLOT_W / 2.0, gain_to_y(G_MIN));
+        assert_eq!(gain_cb, -120);
+        assert_eq!(gain_cb % 5, 0);
+    }
+
+    #[test]
+    fn dimensions_match_constants() {
+        assert_eq!(dimensions(), (320, 160));
     }
 }

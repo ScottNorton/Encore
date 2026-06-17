@@ -47,7 +47,10 @@ impl I2CBus {
                 }
                 Err(e) => {
                     return Err(e).with_context(|| {
-                        format!("I2C 0x{:02X} write failed after {MAX_RETRIES} attempts", self.addr)
+                        format!(
+                            "I2C 0x{:02X} write failed after {MAX_RETRIES} attempts",
+                            self.addr
+                        )
                     });
                 }
             }

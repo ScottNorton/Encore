@@ -67,8 +67,3 @@ pub fn draw(ctx: &CanvasRenderingContext2d, samples: &[f32]) {
 
     ctx.set_shadow_blur(0.0);
 }
-
-/// Get canvas dimensions.
-pub fn dimensions() -> (u32, u32) {
-    (W as u32, H as u32)
-}

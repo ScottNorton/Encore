@@ -14,8 +14,8 @@ const RECONNECT_BASE_MS: i32 = 1_000;
 const RECONNECT_MAX_MS: i32 = 30_000;
 
 thread_local! {
-    static WS: RefCell<Option<WebSocket>> = RefCell::new(None);
-    static STOPPED: RefCell<bool> = RefCell::new(false);
+    static WS: RefCell<Option<WebSocket>> = const { RefCell::new(None) };
+    static STOPPED: RefCell<bool> = const { RefCell::new(false) };
 }
 
 /// Connect to the firmware WebSocket.
@@ -83,9 +83,7 @@ fn do_connect(backoff_ms: i32) {
             match serde_json::from_str::<ServerMsg>(&text) {
                 Ok(msg) => dispatch(msg),
                 Err(err) => {
-                    web_sys::console::warn_1(
-                        &format!("WS: JSON parse error: {}", err).into(),
-                    );
+                    web_sys::console::warn_1(&format!("WS: JSON parse error: {}", err).into());
                 }
             }
         }
@@ -141,9 +139,7 @@ pub fn send_msg(msg: &ClientMsg) {
                         ws.send_with_str(&json).ok();
                     }
                     Err(e) => {
-                        web_sys::console::error_1(
-                            &format!("WS: serialize error: {}", e).into(),
-                        );
+                        web_sys::console::error_1(&format!("WS: serialize error: {}", e).into());
                     }
                 }
             }
@@ -191,16 +187,34 @@ fn dispatch(msg: ServerMsg) {
                     let mut total_delta = 0u64;
                     let mut idle_delta = 0u64;
                     for (cur, prev) in snap.cores.iter().zip(s.prev_cores.iter()) {
-                        let ct = cur.user + cur.nice + cur.system + cur.idle + cur.iowait + cur.irq + cur.softirq;
-                        let pt = prev.user + prev.nice + prev.system + prev.idle + prev.iowait + prev.irq + prev.softirq;
+                        let ct = cur.user
+                            + cur.nice
+                            + cur.system
+                            + cur.idle
+                            + cur.iowait
+                            + cur.irq
+                            + cur.softirq;
+                        let pt = prev.user
+                            + prev.nice
+                            + prev.system
+                            + prev.idle
+                            + prev.iowait
+                            + prev.irq
+                            + prev.softirq;
                         total_delta += ct.saturating_sub(pt);
                         idle_delta += cur.idle.saturating_sub(prev.idle);
                     }
-                    if total_delta > 0 { ((total_delta - idle_delta) * 100 / total_delta) as u8 } else { 0 }
+                    if total_delta > 0 {
+                        ((total_delta - idle_delta) * 100 / total_delta) as u8
+                    } else {
+                        0
+                    }
                 } else {
                     snap.cpu_percent // fallback on first update
                 };
-                if s.cpu_history.len() >= 60 { s.cpu_history.pop_front(); }
+                if s.cpu_history.len() >= 60 {
+                    s.cpu_history.pop_front();
+                }
                 s.cpu_history.push_back(cpu_pct);
 
                 // Compute total RX throughput for network sparkline
@@ -208,7 +222,8 @@ fn dispatch(msg: ServerMsg) {
                     // Store previous cores/net for next delta
                     s.prev_cores = old.cores.clone();
                     for iface in &old.net_interfaces {
-                        s.prev_net.insert(iface.name.clone(), (iface.rx_bytes, iface.tx_bytes));
+                        s.prev_net
+                            .insert(iface.name.clone(), (iface.rx_bytes, iface.tx_bytes));
                     }
 
                     // Sum RX delta across all interfaces
@@ -218,7 +233,9 @@ fn dispatch(msg: ServerMsg) {
                             total_rx_delta += iface.rx_bytes.saturating_sub(*prev_rx);
                         }
                     }
-                    if s.net_rx_history.len() >= 60 { s.net_rx_history.pop_front(); }
+                    if s.net_rx_history.len() >= 60 {
+                        s.net_rx_history.pop_front();
+                    }
                     s.net_rx_history.push_back(total_rx_delta);
                 }
                 s.boot_system_received = true;
@@ -264,7 +281,12 @@ fn dispatch(msg: ServerMsg) {
         ServerMsg::LogEntries(entries) => {
             crate::pages::logs::append_entries(&entries);
         }
-        ServerMsg::AudioLevels { left_rms, right_rms, left_peak, right_peak } => {
+        ServerMsg::AudioLevels {
+            left_rms,
+            right_rms,
+            left_peak,
+            right_peak,
+        } => {
             crate::state::with_mut(|s| {
                 s.audio_left_rms = left_rms;
                 s.audio_right_rms = right_rms;
@@ -328,7 +350,10 @@ fn dispatch(msg: ServerMsg) {
                 s.group_status = Some(status);
             });
         }
-        ServerMsg::BootMode { safe_mode, boot_source } => {
+        ServerMsg::BootMode {
+            safe_mode,
+            boot_source,
+        } => {
             crate::state::with_mut(|s| {
                 s.safe_mode = safe_mode;
                 if !boot_source.is_empty() {
@@ -352,7 +377,12 @@ fn dispatch(msg: ServerMsg) {
         ServerMsg::AudioPowerState { state } => {
             crate::state::with_mut(|s| s.audio_power_state = state);
         }
-        ServerMsg::MicLevels { left_rms, right_rms, left_peak, right_peak } => {
+        ServerMsg::MicLevels {
+            left_rms,
+            right_rms,
+            left_peak,
+            right_peak,
+        } => {
             crate::state::with_mut(|s| {
                 s.mic_left_rms = left_rms;
                 s.mic_right_rms = right_rms;
@@ -378,9 +408,9 @@ fn dispatch(msg: ServerMsg) {
         "LedStateChanged" => Some("lights"),
         "VolumeChanged" => Some("audio"),
         "AudioLevels" => Some("audio"),
-        "EqState" | "DrcState" | "DspInfo" | "DacRegValue" | "DspSpiResponse"
-        | "AudioSpectrum" | "AudioWaveform" | "AudioPowerState" | "MicLevels" => Some("audio"),
-        "ConfigLoaded" => None,  // all pages may care about config
+        "EqState" | "DrcState" | "DspInfo" | "DacRegValue" | "DspSpiResponse" | "AudioSpectrum"
+        | "AudioWaveform" | "AudioPowerState" | "MicLevels" => Some("audio"),
+        "ConfigLoaded" => None, // all pages may care about config
         "LogEntries" => Some("logs"),
         _ => None,
     };
@@ -389,7 +419,7 @@ fn dispatch(msg: ServerMsg) {
         let active = s.active_page.as_str();
         let should_update = match relevant_page {
             Some(page) => active == page,
-            None => true,  // broadcast to whatever page is active
+            None => true, // broadcast to whatever page is active
         };
         if should_update {
             crate::pages::update(active);

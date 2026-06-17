@@ -6,11 +6,11 @@
 use crate::audio::mixer::MixerSlot;
 use crate::subsystem::{Subsystem, SubsystemContext};
 use anyhow::{Context, Result};
-use futures::StreamExt;
 use encore_common::protocol::{ServerMsg, SpotifyStatus, SubsystemState, TrackInfo};
-use librespot_connect::{Spirc, ConnectConfig};
-use librespot_core::config::DeviceType;
+use futures::StreamExt;
+use librespot_connect::{ConnectConfig, Spirc};
 use librespot_core::cache::Cache;
+use librespot_core::config::DeviceType;
 use librespot_core::config::SessionConfig;
 use librespot_core::session::Session;
 use librespot_discovery::Discovery;
@@ -132,9 +132,9 @@ impl Subsystem for SpotifySubsystem {
         let session_config = SessionConfig::default();
         // Credentials on NAND, audio cache on tmpfs (RAM-backed, won't fill NAND)
         let cache = Cache::new(
-            Some(CACHE_DIR),       // credentials/volume state on NAND
-            None,                  // no separate volume cache dir
-            Some("/run/spotify"),  // audio cache on tmpfs (RAM) — /run is 150MB vs /tmp's 32MB
+            Some(CACHE_DIR),        // credentials/volume state on NAND
+            None,                   // no separate volume cache dir
+            Some("/run/spotify"),   // audio cache on tmpfs (RAM) — /run is 150MB vs /tmp's 32MB
             Some(64 * 1024 * 1024), // 64MB cap
         )
         .ok();
@@ -162,7 +162,10 @@ impl Subsystem for SpotifySubsystem {
                 }
             };
 
-            info!("Spotify: starting discovery as '{}' (bind: {})", self.device_name, wlan_ip);
+            info!(
+                "Spotify: starting discovery as '{}' (bind: {})",
+                self.device_name, wlan_ip
+            );
             let discovery = Discovery::builder(device_id.clone(), session_config.client_id.clone())
                 .name(self.device_name.clone())
                 .device_type(DeviceType::Speaker)
@@ -218,14 +221,13 @@ impl Subsystem for SpotifySubsystem {
         // Create mixer (software volume)
         let mixer_config = MixerConfig::default();
         let mixer_fn = mixer::find(None).context("no mixer found")?;
-        let soft_mixer = mixer_fn(mixer_config)
-            .context("failed to create software mixer")?;
+        let soft_mixer = mixer_fn(mixer_config).context("failed to create software mixer")?;
         let volume_getter = soft_mixer.get_soft_volume();
 
         // Load audio quality settings from config
-        let cfg = encore_common::config::EncoreConfigFile::load(
-            std::path::Path::new("/lsync/encore/config.toml"),
-        )
+        let cfg = encore_common::config::EncoreConfigFile::load(std::path::Path::new(
+            "/lsync/encore/config.toml",
+        ))
         .unwrap_or_default();
         let bitrate = match cfg.spotify.bitrate.as_str() {
             "96" => librespot_playback::config::Bitrate::Bitrate96,
@@ -277,13 +279,17 @@ impl Subsystem for SpotifySubsystem {
             credentials,
             player,
             soft_mixer,
-        ).await
+        )
+        .await
         .context("Spotify Spirc creation failed")?;
 
         // Spawn the Spirc background task
         let spirc_handle = tokio::spawn(spirc_task);
 
-        info!("Spotify: connected and ready — device '{}' active", self.device_name);
+        info!(
+            "Spotify: connected and ready — device '{}' active",
+            self.device_name
+        );
 
         // Mutable playback state for broadcasting
         let mut play_state = SpotifyPlayState::new();
@@ -431,9 +437,12 @@ fn handle_player_event(
     match event {
         PlayerEvent::TrackChanged { audio_item } => {
             let artist = match &audio_item.unique_fields {
-                UniqueFields::Track { artists, .. } => {
-                    artists.0.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", ")
-                }
+                UniqueFields::Track { artists, .. } => artists
+                    .0
+                    .iter()
+                    .map(|a| a.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 UniqueFields::Episode { show_name, .. } => show_name.clone(),
                 _ => String::new(),
             };
@@ -441,7 +450,11 @@ fn handle_player_event(
                 UniqueFields::Track { album, .. } => album.clone(),
                 _ => String::new(),
             };
-            let cover_url = audio_item.covers.first().map(|c| c.url.clone()).unwrap_or_default();
+            let cover_url = audio_item
+                .covers
+                .first()
+                .map(|c| c.url.clone())
+                .unwrap_or_default();
             let track = TrackInfo {
                 title: audio_item.name.clone(),
                 artist,
@@ -452,7 +465,10 @@ fn handle_player_event(
                 uri: audio_item.uri.clone(),
                 is_explicit: audio_item.is_explicit,
             };
-            info!("Spotify: track changed — {} by {}", track.title, track.artist);
+            info!(
+                "Spotify: track changed — {} by {}",
+                track.title, track.artist
+            );
             state.duration_ms = audio_item.duration_ms;
             state.position_ms = 0;
             state.track = Some(track.clone());
@@ -475,7 +491,9 @@ fn handle_player_event(
             broadcast_status(state, ws_tx);
             if !was_playing {
                 if let Some(ref tx) = group_cmd_tx {
-                    let _ = tx.try_send(crate::group::GroupCmd::LocalAudioStarted { source: "spotify".into() });
+                    let _ = tx.try_send(crate::group::GroupCmd::LocalAudioStarted {
+                        source: "spotify".into(),
+                    });
                 }
             }
             ctx.health.beat(now);
@@ -487,7 +505,9 @@ fn handle_player_event(
             state.position_ms = *position_ms;
             broadcast_status(state, ws_tx);
             if let Some(ref tx) = group_cmd_tx {
-                let _ = tx.try_send(crate::group::GroupCmd::LocalAudioStopped { source: "spotify".into() });
+                let _ = tx.try_send(crate::group::GroupCmd::LocalAudioStopped {
+                    source: "spotify".into(),
+                });
             }
             ctx.health.beat(now);
         }
@@ -499,7 +519,9 @@ fn handle_player_event(
             state.duration_ms = 0;
             broadcast_status(state, ws_tx);
             if let Some(ref tx) = group_cmd_tx {
-                let _ = tx.try_send(crate::group::GroupCmd::LocalAudioStopped { source: "spotify".into() });
+                let _ = tx.try_send(crate::group::GroupCmd::LocalAudioStopped {
+                    source: "spotify".into(),
+                });
             }
             ctx.health.beat(now);
         }
@@ -540,7 +562,12 @@ fn handle_player_event(
                 broadcast_status(state, ws_tx);
             }
         }
-        PlayerEvent::SessionClientChanged { client_name, client_brand_name, client_model_name, .. } => {
+        PlayerEvent::SessionClientChanged {
+            client_name,
+            client_brand_name,
+            client_model_name,
+            ..
+        } => {
             let client_display = if !client_name.is_empty() {
                 client_name.clone()
             } else if !client_brand_name.is_empty() {

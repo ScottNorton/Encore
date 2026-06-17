@@ -173,23 +173,53 @@ mod tests {
     #[test]
     fn css_contains_palette_values() {
         let out = css();
-        assert!(out.contains(&format!("--accent: {}", palette::ACCENT)), "dark accent var missing");
-        assert!(out.contains(&format!("--accent: {}", palette::ACCENT_LIGHT)), "light accent var missing");
-        assert!(out.contains(&format!("--ring-cream: {}", palette::RING_CREAM)), "ring cream missing");
-        assert!(out.contains(&format!("--dome: {}", palette::DOME)), "dome var missing");
-        assert!(out.contains(&format!("--accent-r: {}", palette::ACCENT_R)), "accent R component missing");
-        assert!(out.contains(&format!("--accent-r: {}", palette::ACCENT_LIGHT_R)), "light accent R component missing");
+        assert!(
+            out.contains(&format!("--accent: {}", palette::ACCENT)),
+            "dark accent var missing"
+        );
+        assert!(
+            out.contains(&format!("--accent: {}", palette::ACCENT_LIGHT)),
+            "light accent var missing"
+        );
+        assert!(
+            out.contains(&format!("--ring-cream: {}", palette::RING_CREAM)),
+            "ring cream missing"
+        );
+        assert!(
+            out.contains(&format!("--dome: {}", palette::DOME)),
+            "dome var missing"
+        );
+        assert!(
+            out.contains(&format!("--accent-r: {}", palette::ACCENT_R)),
+            "accent R component missing"
+        );
+        assert!(
+            out.contains(&format!("--accent-r: {}", palette::ACCENT_LIGHT_R)),
+            "light accent R component missing"
+        );
     }
 
     #[test]
     fn css_contains_logo_rules() {
         let out = css();
         assert!(out.contains(".app-logo"), "app-logo selector missing");
-        assert!(out.contains(".logo-ring-container svg"), "ring container missing");
+        assert!(
+            out.contains(".logo-ring-container svg"),
+            "ring container missing"
+        );
         assert!(out.contains(".logo-wordmark"), "wordmark selector missing");
-        assert!(out.contains(".wordmark-rule"), "wordmark rule selector missing");
-        assert!(out.contains("@keyframes logo-spin"), "logo-spin keyframe missing");
-        assert!(out.contains("@keyframes logo-glow"), "logo-glow keyframe missing");
+        assert!(
+            out.contains(".wordmark-rule"),
+            "wordmark rule selector missing"
+        );
+        assert!(
+            out.contains("@keyframes logo-spin"),
+            "logo-spin keyframe missing"
+        );
+        assert!(
+            out.contains("@keyframes logo-glow"),
+            "logo-glow keyframe missing"
+        );
     }
 
     #[test]

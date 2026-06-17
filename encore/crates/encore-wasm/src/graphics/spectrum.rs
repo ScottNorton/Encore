@@ -12,7 +12,7 @@ const BAR_GAP: f64 = 2.0;
 const PEAK_DECAY: f32 = 0.02;
 
 thread_local! {
-    static PEAKS: RefCell<[f32; NUM_BARS]> = RefCell::new([0.0; NUM_BARS]);
+    static PEAKS: RefCell<[f32; NUM_BARS]> = const { RefCell::new([0.0; NUM_BARS]) };
 }
 
 /// Draw the spectrum analyzer.
@@ -59,14 +59,4 @@ pub fn draw(ctx: &CanvasRenderingContext2d, bins: &[f32; NUM_BARS]) {
             ctx.fill_rect(x, peak_y - 1.0, bar_w, 2.0);
         }
     });
-}
-
-/// Reset peak hold values.
-pub fn reset_peaks() {
-    PEAKS.with(|p| *p.borrow_mut() = [0.0; NUM_BARS]);
-}
-
-/// Get canvas dimensions.
-pub fn dimensions() -> (u32, u32) {
-    (W as u32, H as u32)
 }

@@ -84,10 +84,7 @@ pub enum AvdtpEvent {
 ///
 /// The listener socket (PSM 25) must already be bound and listening.
 /// Returns a channel receiver for AVDTP events.
-pub fn spawn_avdtp(
-    listener: OwnedFd,
-    slot: Arc<MixerSlot>,
-) -> mpsc::Receiver<AvdtpEvent> {
+pub fn spawn_avdtp(listener: OwnedFd, slot: Arc<MixerSlot>) -> mpsc::Receiver<AvdtpEvent> {
     let (tx, rx) = mpsc::channel(8);
 
     std::thread::Builder::new()
@@ -106,11 +103,12 @@ pub fn spawn_avdtp(
 ///
 /// Accepts signaling connections, processes AVDTP commands, and manages
 /// the media transport for audio streaming.
-fn avdtp_loop(
-    listener: OwnedFd,
-    slot: Arc<MixerSlot>,
-    tx: mpsc::Sender<AvdtpEvent>,
-) {
+// Session-state locals are defensively initialized at the loop top and reassigned per
+// session; configured_seid is negotiated but not yet applied to stream setup (PoC).
+// The 'session loop drives a connection state machine, not a simple value stream,
+// so the while_let_loop suggestion does not apply.
+#[allow(unused_assignments, unused_variables, clippy::while_let_loop)]
+fn avdtp_loop(listener: OwnedFd, slot: Arc<MixerSlot>, tx: mpsc::Sender<AvdtpEvent>) {
     let listener_fd = listener.as_raw_fd();
 
     loop {
@@ -208,17 +206,12 @@ fn avdtp_loop(
                 }
                 AVDTP_SET_CONFIGURATION => {
                     debug!("AVDTP: SET_CONFIGURATION");
-                    let (resp, detected_codec, seid) =
-                        handle_set_configuration(txn_label, payload);
+                    let (resp, detected_codec, seid) = handle_set_configuration(txn_label, payload);
                     if detected_codec.is_some() {
                         codec = detected_codec;
                         configured_seid = seid;
                         state = AvdtpState::Configured;
-                        info!(
-                            "AVDTP: configured seid={} codec={}",
-                            seid,
-                            codec.unwrap()
-                        );
+                        info!("AVDTP: configured seid={} codec={}", seid, codec.unwrap());
                     }
                     resp
                 }
@@ -253,10 +246,7 @@ fn avdtp_loop(
                             Ok(stop) => {
                                 reader_stop = Some(stop.clone());
                                 state = AvdtpState::Streaming;
-                                let _ = tx.blocking_send(AvdtpEvent::Streaming {
-                                    codec: c,
-                                    stop,
-                                });
+                                let _ = tx.blocking_send(AvdtpEvent::Streaming { codec: c, stop });
                                 info!("AVDTP: streaming started (codec={}, mtu={})", c, read_mtu);
                             }
                             Err(e) => {
@@ -307,17 +297,12 @@ fn avdtp_loop(
                     }
                     let _ = tx.blocking_send(AvdtpEvent::Stopped);
 
-                    let (resp, detected_codec, seid) =
-                        handle_set_configuration(txn_label, payload);
+                    let (resp, detected_codec, seid) = handle_set_configuration(txn_label, payload);
                     if detected_codec.is_some() {
                         codec = detected_codec;
                         configured_seid = seid;
                         state = AvdtpState::Open; // After reconfig, wait for START
-                        info!(
-                            "AVDTP: reconfigured seid={} codec={}",
-                            seid,
-                            codec.unwrap()
-                        );
+                        info!("AVDTP: reconfigured seid={} codec={}", seid, codec.unwrap());
                     }
                     resp
                 }
@@ -401,9 +386,12 @@ fn handle_discover(txn_label: u8) -> Vec<u8> {
     // byte1: [media_type:4][tsep:1][rfa:3]
     //   media_type=0x00 (audio), tsep=1 (sink)
     let sep_table: [u8; 6] = [
-        (1 << 2), (0x00 << 4) | (1 << 3), // SEID 1: aptX HD
-        (2 << 2), (0x00 << 4) | (1 << 3), // SEID 2: aptX
-        (3 << 2), (0x00 << 4) | (1 << 3), // SEID 3: SBC
+        (1 << 2),
+        (1 << 3), // SEID 1: aptX HD
+        (2 << 2),
+        (1 << 3), // SEID 2: aptX
+        (3 << 2),
+        (1 << 3), // SEID 3: SBC
     ];
     build_accept(txn_label, AVDTP_DISCOVER, &sep_table)
 }
@@ -438,10 +426,7 @@ fn build_codec_caps(codec_type: u8, codec_caps: &[u8]) -> Vec<u8> {
 
 /// Handle SET_CONFIGURATION: parse codec, return accept.
 /// Returns (response_bytes, detected_codec, acp_seid).
-fn handle_set_configuration(
-    txn_label: u8,
-    payload: &[u8],
-) -> (Vec<u8>, Option<A2dpCodec>, u8) {
+fn handle_set_configuration(txn_label: u8, payload: &[u8]) -> (Vec<u8>, Option<A2dpCodec>, u8) {
     if payload.len() < 2 {
         return (
             build_reject(txn_label, AVDTP_SET_CONFIGURATION, 0x01),

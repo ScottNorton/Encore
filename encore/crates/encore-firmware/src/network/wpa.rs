@@ -95,7 +95,8 @@ pub fn ensure_running() -> Result<()> {
             "-B",
             "-Dnl80211",
             "-iwlan0",
-            "-c", WPA_SUPPLICANT_CONF,
+            "-c",
+            WPA_SUPPLICANT_CONF,
             &format!("-e{}", WPA_ENTROPY),
         ])
         .status()
@@ -141,7 +142,10 @@ impl WpaClient {
             if !std::path::Path::new(&ctrl_path).exists()
                 && !std::path::Path::new(WPA_CTRL_ANDROID).exists()
             {
-                last_err = format!("control socket not found at {} or {}", ctrl_path, WPA_CTRL_ANDROID);
+                last_err = format!(
+                    "control socket not found at {} or {}",
+                    ctrl_path, WPA_CTRL_ANDROID
+                );
                 if attempt == 0 {
                     info!("wpa_cli: waiting for control socket...");
                 }
@@ -291,10 +295,16 @@ impl WpaClient {
         // Android socket FD mechanism and may not have a writable config path.
         // WiFi credential persistence is handled via config.toml instead.
         if let Err(e) = self.cli_ok(&["save_config"]) {
-            debug!("wpa: save_config failed (expected on Android socket): {}", e);
+            debug!(
+                "wpa: save_config failed (expected on Android socket): {}",
+                e
+            );
         }
 
-        info!("wpa: network {} configured and enabled (ssid={})", net_id, ssid);
+        info!(
+            "wpa: network {} configured and enabled (ssid={})",
+            net_id, ssid
+        );
         Ok(())
     }
 

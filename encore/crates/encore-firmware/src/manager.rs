@@ -6,8 +6,8 @@
 
 use crate::debugger::{DebugModes, CRASH_LOG};
 use crate::subsystem::{Subsystem, SubsystemContext, SubsystemHealth};
-use futures::FutureExt;
 use encore_common::protocol::{CrashSummary, DebugMode, SubsystemSnapshot, SubsystemState};
+use futures::FutureExt;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc};
@@ -76,10 +76,9 @@ impl SubsystemManager {
                 health_clone.set_state(SubsystemState::Running);
                 info!("[{}] starting (attempt {})", name, restarts + 1);
 
-                let result =
-                    std::panic::AssertUnwindSafe(subsystem.run(ctx))
-                        .catch_unwind()
-                        .await;
+                let result = std::panic::AssertUnwindSafe(subsystem.run(ctx))
+                    .catch_unwind()
+                    .await;
 
                 let error_msg = match &result {
                     Ok(Ok(())) => {
@@ -95,7 +94,7 @@ impl SubsystemManager {
                     Err(panic) => {
                         let msg = panic
                             .downcast_ref::<String>()
-                            .map(|s| s.clone())
+                            .cloned()
                             .or_else(|| panic.downcast_ref::<&str>().map(|s| s.to_string()))
                             .unwrap_or_else(|| "unknown panic".to_string());
                         error!("[{}] PANIC: {}", name, msg);
@@ -132,7 +131,10 @@ impl SubsystemManager {
 
                 // Check for Hold mode — freeze subsystem for dashboard inspection
                 if debug_modes.get(name) == DebugMode::Hold {
-                    info!("[{}] debug mode is Hold — subsystem frozen for inspection", name);
+                    info!(
+                        "[{}] debug mode is Hold — subsystem frozen for inspection",
+                        name
+                    );
                     health_clone.set_state(SubsystemState::Held);
                     // Block until shutdown — don't restart
                     let mut shutdown = shutdown_tx.subscribe();

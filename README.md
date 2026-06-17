@@ -73,9 +73,8 @@ the speaker, and play.
 
 ### Bluetooth A2DP
 
-Stream from any Bluetooth device. Encore supports aptX HD, aptX, and SBC; the stock firmware
-had no high-definition codec support. The Bluetooth stack talks to the kernel directly over
-raw HCI/L2CAP sockets, with no BlueZ daemon on the device.
+Stream from any Bluetooth device. Encore supports aptX HD, aptX, and SBC. The Bluetooth stack
+talks to the kernel directly over raw HCI/L2CAP sockets, with no BlueZ daemon on the device.
 
 ### Web Dashboard
 
@@ -123,7 +122,9 @@ in the dashboard, and Home Assistant access for notification effects.
 First boot brings up a setup AP (`Invoke-XXXX`, unique per device). A captive portal opens
 the dashboard, you enter WiFi credentials, and the speaker joins your network and announces
 itself as `encore.local` via mDNS. WireGuard
-([boringtun](https://github.com/cloudflare/boringtun)) is available for remote access.
+([boringtun](https://github.com/cloudflare/boringtun)) is available for remote access. A USB
+RNDIS gadget exposes the speaker at `10.55.55.1` over a USB cable, independent of WiFi, for
+setup and recovery (see [docs/usb-access.md](docs/usb-access.md)).
 
 ### Recovery
 
@@ -249,6 +250,12 @@ the air:
 3. Enter your WiFi credentials
 4. The speaker joins your network and appears at `http://encore.local`
 
+Alternatively, connect a USB cable from your computer to the speaker's USB Mini-B port. The
+speaker comes up as a USB network adapter at `10.55.55.1` with the dashboard at
+`http://10.55.55.1/` and SSH at `root@10.55.55.1`. This needs no WiFi and comes up at boot,
+so it also works as a recovery path when WiFi or the access point is down. See
+[docs/usb-access.md](docs/usb-access.md).
+
 Root SSH is available at the speaker's IP (user `root`, password `ridiculous`). The
 credentials are the same on every Encore device, so change the password if your network
 isn't trusted. See [SECURITY.md](.github/SECURITY.md).
@@ -267,6 +274,7 @@ Guides for using and building Encore:
 |-------|-|
 | [Build Guide](docs/build-guide.md) | Toolchain setup, end-to-end build |
 | [Flashing](docs/flashing.md) | USB boot, OTA updates, recovery |
+| [USB Access](docs/usb-access.md) | Reach the speaker over USB at `10.55.55.1` (dashboard, SSH, recovery) |
 | [Configuration](docs/config-reference.md) | Complete config.toml reference |
 | [Home Assistant](docs/home-assistant.md) | MQTT setup, entities, example automations |
 | [Groups](docs/groups.md) | Multi-speaker playback setup |

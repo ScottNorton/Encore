@@ -61,6 +61,9 @@ CLAUDE.md
 __pycache__/
 *.pyc
 
+# Rust compiler/clippy crash dumps (generated on an ICE)
+rustc-ice-*.txt
+
 # GitHub publish workflow
 .github-publish
 

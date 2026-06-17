@@ -72,9 +72,13 @@ pub fn render(container: &web_sys::Element) {
     // Draw initial state — start animation if animated, otherwise static
     let led_anim = crate::state::with(|s| s.led.clone());
     match &led_anim {
-        Some(anim @ (LedAnimation::Breathe { .. } | LedAnimation::Spin { .. }
-            | LedAnimation::Pulse { .. } | LedAnimation::BootSurge
-            | LedAnimation::Custom { .. })) => {
+        Some(
+            anim @ (LedAnimation::Breathe { .. }
+            | LedAnimation::Spin { .. }
+            | LedAnimation::Pulse { .. }
+            | LedAnimation::BootSurge
+            | LedAnimation::Custom { .. }),
+        ) => {
             // Draw one frame immediately, then start animation loop
             let color = match anim {
                 LedAnimation::Breathe { r, g, b, .. } => Some((*r, *g, *b)),
@@ -169,9 +173,32 @@ pub fn render(container: &web_sys::Element) {
     dom::set_class(&anim_grid, "flex gap-8");
 
     for (label, anim) in [
-        ("Breathe", LedAnimation::Breathe { r: 255, g: 200, b: 50, period_ms: 3000 }),
-        ("Spin", LedAnimation::Spin { r: 0, g: 150, b: 255, speed: 3 }),
-        ("Pulse", LedAnimation::Pulse { r: 255, g: 100, b: 0 }),
+        (
+            "Breathe",
+            LedAnimation::Breathe {
+                r: 255,
+                g: 200,
+                b: 50,
+                period_ms: 3000,
+            },
+        ),
+        (
+            "Spin",
+            LedAnimation::Spin {
+                r: 0,
+                g: 150,
+                b: 255,
+                speed: 3,
+            },
+        ),
+        (
+            "Pulse",
+            LedAnimation::Pulse {
+                r: 255,
+                g: 100,
+                b: 0,
+            },
+        ),
     ] {
         let btn = dom::el("button", "btn", Some(label));
         dom::set_style(&btn, "flex", "1");
@@ -192,9 +219,13 @@ pub fn update() {
     let led_anim = crate::state::with(|s| s.led.clone());
 
     match &led_anim {
-        Some(anim @ (LedAnimation::Breathe { .. } | LedAnimation::Spin { .. }
-            | LedAnimation::Pulse { .. } | LedAnimation::BootSurge
-            | LedAnimation::Custom { .. })) => {
+        Some(
+            anim @ (LedAnimation::Breathe { .. }
+            | LedAnimation::Spin { .. }
+            | LedAnimation::Pulse { .. }
+            | LedAnimation::BootSurge
+            | LedAnimation::Custom { .. }),
+        ) => {
             // Restart animation with new parameters
             crate::graphics::led_ring::start_animation(anim.clone());
         }
@@ -228,23 +259,6 @@ pub fn update() {
             }
         }
     }
-
-    // Sync header ring color
-    let color = crate::state::with(|s| {
-        match &s.led {
-            Some(LedAnimation::Solid { r, g, b }) => Some((*r, *g, *b)),
-            Some(LedAnimation::Breathe { r, g, b, .. }) => Some((*r, *g, *b)),
-            Some(LedAnimation::Spin { r, g, b, .. }) => Some((*r, *g, *b)),
-            Some(LedAnimation::Pulse { r, g, b }) => Some((*r, *g, *b)),
-            Some(LedAnimation::VolumeArc { .. }) => Some((255, 255, 255)),
-            Some(LedAnimation::BootSurge) => Some((255, 180, 30)),
-            Some(LedAnimation::Custom { .. }) => Some((100, 100, 255)),
-            _ => None,
-        }
-    });
-    if let Some((r, g, b)) = color {
-        crate::graphics::device::set_encore_color(r, g, b);
-    }
 }
 
 // ── Animation Designer ──
@@ -269,11 +283,7 @@ fn render_designer(container: &web_sys::Element) {
 
     let body = dom::create_div();
     body.set_id("designer-body");
-    dom::set_style(
-        &body,
-        "display",
-        if expanded { "block" } else { "none" },
-    );
+    dom::set_style(&body, "display", if expanded { "block" } else { "none" });
 
     // Toggle expand/collapse
     {
@@ -348,7 +358,11 @@ fn render_designer(container: &web_sys::Element) {
                     dom::set_style(
                         &el,
                         "border",
-                        if sel { "2px solid #fff" } else { "2px solid #333" },
+                        if sel {
+                            "2px solid #fff"
+                        } else {
+                            "2px solid #333"
+                        },
                     );
                 }
             });
@@ -394,7 +408,11 @@ fn render_designer(container: &web_sys::Element) {
             dom::set_style(
                 &el,
                 "border",
-                if sel { "2px solid #fff" } else { "2px solid #333" },
+                if sel {
+                    "2px solid #fff"
+                } else {
+                    "2px solid #333"
+                },
             );
         }
     });

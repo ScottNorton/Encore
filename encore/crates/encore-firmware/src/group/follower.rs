@@ -55,11 +55,7 @@ impl JitterBuffer {
     /// Drain all chunks whose play_at time has arrived (in local clock).
     /// Applies channel routing and drift correction. Returns processed
     /// stereo PCM samples ready for the MixerSlot.
-    pub fn drain_ready(
-        &mut self,
-        local_now_us: u64,
-        clock: &ClockSync,
-    ) -> Vec<i32> {
+    pub fn drain_ready(&mut self, local_now_us: u64, clock: &ClockSync) -> Vec<i32> {
         let mut output = Vec::new();
 
         while let Some(front) = self.chunks.front() {
@@ -194,8 +190,8 @@ impl JitterBuffer {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::clock::ClockSync;
+    use super::*;
 
     fn make_stereo_pcm(frames: usize, left: i32, right: i32) -> Vec<i32> {
         let mut pcm = Vec::with_capacity(frames * 2);

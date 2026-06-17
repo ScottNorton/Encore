@@ -13,7 +13,7 @@
 | CPU | 2x ARM Cortex-A7 @ 1.3GHz (dual-core) |
 | ISA | ARMv7-A with NEON, VFPv4, Thumb-2 |
 | RAM | 512MB DDR3 |
-| Flash | 512MB NAND — single Toshiba chip (flash ID da98, ext ID 1590). Page 2048, OOB 64. Berlin NFC driver creates two MTD views: single-plane (128KB erase) and SLC-mode (64KB erase) — same physical chip, different access modes |
+| Flash | 512MB NAND — single Toshiba chip (flash ID da98, ext ID 1590). Page 2048, OOB 64, 128KB erase blocks (64 pages/block, single-plane access) |
 | PMIC | Marvell 88PG868 |
 | Kernel | Linux 3.8.13 (RSA signature-locked on NAND, replaceable at runtime via kexec module) |
 
@@ -23,22 +23,28 @@ The 88DE3006 exposes the following buses. Marvell calls their I2C implementation
 
 | Bus | Dev Node | Status | Usage |
 |-----|----------|--------|-------|
-| I2C-0 | `/dev/i2c-0` | Active | Audio hardware (DAC, IO Expander), MCU. MMIO at 0xF7FC6000 |
+| I2C-0 | `/dev/i2c-0` | Active | Audio hardware (DAC, IO Expander), MCU. DesignWare controller in the AVIO block, MMIO at 0xF7E81400 (all I2C clients enumerate under `soc.0/f7e81400.i2c/i2c-0`) |
 | I2C-1 | — | Not enabled | MMIO at 0xF7FC7000. Dmesg: `Unknown Synopsys component type: 0x00000000` — clock not enabled |
 | I2C-2 | — | Not enabled | MMIO at 0xF7FC8000. Dmesg: `Unknown Synopsys component type: 0x00000000` — clock not enabled |
-| SPI-0 | `/dev/spidev0.0` | Active | DSP firmware upload + messaging |
+| SPI-0 | `/dev/spidev0.0` | Active | DSP firmware upload + messaging. MMIO at 0xF7E81C00 (AVIO block) |
 | SPI-1 | — | Pins on connector | GPIO5/8/9/10 — not wired on HK board |
 | UART-0 | `/dev/ttyS0` | Console | Debug serial (115200 baud) |
 | UART-1 | `/dev/ttyS1` | Not initialized | MMIO at 0xF7FCA000, `uart:unknown` — clock/pinmux not configured by kernel |
 | UART-2 | `/dev/ttyS2` | Not wired | No MMIO address |
 | UART-3 | `/dev/ttyS3` | Not wired | No MMIO address |
-| USB 2.0 OTG | `/dev/bus/usb` | Active | USB-mini port (flashing, mass storage, ADB). UDC at 0xF7ED0100 (4 endpoints), PHY at 0xF7B74000. Android composite gadget with ACM + ADB + FFS functions. Ramdisk `inittab` runs getty on `/dev/ttyGS0` (CDC ACM serial); main rootfs `init.rc` only activates ADB (ACM configured but not in active function list) |
+| USB 2.0 OTG | `/dev/bus/usb` | Active | USB Mini-B port. Host mode is used for flashing (USB-boot) and ADB. Encore also brings up an RNDIS network gadget on this port via the Marvell `mv_udc` device controller (see [USB Network Gadget](#usb-network-gadget) below). UDC at 0xF7ED0100 (4 endpoints), PHY at 0xF7B74000 |
 | SDIO | Internal | Active | Marvell 88W8887 WiFi+BT combo (in Libre Wireless LS9AD module) |
 | GPIO | sysfs | Partial | 4 banks of 32 (128 total), see GPIO section |
 | Watchdog | `/dev/watchdog` | Active | Hardware watchdog, Encore pets every 10s |
 | GPU | — | Not used | Vivante GC600 at 0xF7BC0000 (IRQ 52), Galcore v5.0.11.17486. Stock ramdisk has full libGAL.so/libGLESv2.so/libEGL.so (unused on Invoke) |
 | HDMI 1.4 TX | — | Not wired | SoC has full HDMI+CEC; not routed on HK board |
 | SPDIF | — | Muxed | Shares I2S TXD pin; mutually exclusive with I2S |
+
+The SoC has two separate I2C controller blocks. The active bus (`/dev/i2c-0`) is
+the AVIO controller at 0xF7E81400, where all audio/MCU clients enumerate. The
+controllers at 0xF7FC6000/7000/8000 are a separate block (the System Manager
+TWSI) and are disabled — their clock is not enabled, which is the source of the
+`Unknown Synopsys component type: 0x00000000` lines for I2C-1/I2C-2 above.
 
 ### GPIO Banks
 
@@ -56,7 +62,7 @@ The 88DE3006 exposes the following buses. Marvell calls their I2C implementation
 | 3 | Input | MCU interrupt line (falling edge, epoll) |
 | 4 | Output | DSP SPI flow control — CS toggle before reads |
 | 12 | Input | DSP SPI flow control — DSP has data to send |
-| 13 | Output | DSP SPI flow control — ARM ready to communicate |
+| 13 | Input | DSP SPI flow control — configured as input in stock (the vendor "ARM ready" output role is unused; driving it as an output pegs the CPU) |
 | 15 | Input | DSP SPI flow control — DSP ready to receive |
 
 GPIO 3 is exported by the kernel. GPIOs 4, 12, 13, 15 are exported at runtime
@@ -376,8 +382,7 @@ The BT radio is confirmed working: `insmod bt8xxx.ko drv_mode=1` creates
 assigned (WiFi MAC +1).
 
 Encore uses raw kernel sockets (HCI management + L2CAP) to control Bluetooth
-directly. A2DP sink with aptX HD, aptX, and
-SBC codecs is fully functional. This is a major improvement over stock which has no high-definition bluetooth audio.
+directly. A2DP sink with aptX HD, aptX, and SBC codecs is fully functional.
 
 ## Watchdog
 
@@ -482,3 +487,41 @@ driver parameters, and firmware files.
 - Primary: `hostapd` on `p2p0` with band-matched channel (same band as STA connection)
 - Fallback: Marvell uAP firmware mode via `uaputl.exe` (open network, no WPA2 — emergency only)
 - IP: 192.168.43.1/27, dnsmasq for DHCP + captive portal DNS redirect
+
+## USB Network Gadget
+
+The USB Mini-B port doubles as a wired network link. The Marvell `mv_udc`
+device controller runs an RNDIS Ethernet gadget, so plugging the speaker into a
+computer makes it appear as a USB network adapter. This is independent of WiFi,
+comes up automatically at boot, and works as a recovery channel when WiFi or the
+access point is unavailable. The same port still does USB host duties (USB-boot,
+ADB).
+
+| Property | Value |
+|----------|-------|
+| Function | RNDIS Ethernet gadget |
+| Controller | Marvell `mv_udc` USB device controller (UDC at 0xF7ED0100) |
+| Device IP | 10.55.55.1 |
+| DHCP | On-link server, pool 10.55.55.10–50 |
+| Gateway / DNS | None advertised (deliberate — keeps the host's normal internet intact) |
+| Gadget MTU | 400 bytes (fixed — see limitation below) |
+| Windows driver | Built-in RNDIS, bound automatically via Microsoft OS descriptors (no install) |
+
+Over the link you reach the web dashboard at `http://10.55.55.1/`, SSH at
+`root@10.55.55.1`, and the same HTTP/WebSocket API the desktop and mobile apps
+use.
+
+**Known limitation — fixed 400-byte MTU.** The `mv_udc` controller stalls
+multi-packet bulk transfers. The workaround is to pin the gadget MTU at 400
+bytes so every Ethernet frame fits in a single USB packet and the stall never
+triggers. This caps throughput (measured around 7 MB/s, which is enough for the
+dashboard, SSH, and OTA uploads) but keeps the link reliable. Raising the MTU
+brings the stall back. A controller-level fix is future work.
+
+**Implementation.** The RNDIS function uses patched `g_ether`/RNDIS kernel
+modules built with the period Linaro 4.9.4 cross-compiler (a modern gcc builds
+modules that load but then fault the 3.8.13 kernel). The modules are baked into
+the rootfs at `/usr/lib/usbgadget/` and brought up by `rootfs/sbin/usb_gadget.sh`
+(self-healed by `usb_gadget_monitor.sh` if the link drops). The kernel patches
+are tracked as diffs in `scripts/device/usb-gadget-patches/` and rebuilt with
+`scripts/device/build_usb_gadget_modules.sh`.

@@ -1,0 +1,51 @@
+--- /home/scott/HKHacking/workspace/source/kernel/Invoke-kernel/drivers/usb/gadget/mv_udc_core.c	2021-03-09 03:17:26.000000000 -0500
++++ /mnt/g/HKInvoke/vendor/kernel/drivers/usb/gadget/mv_udc_core.c	2026-06-17 00:06:19.714015000 -0400
+@@ -185,8 +185,12 @@
+ 				curr_dqh->size_ioc_int_sts &= ~errors;
+ 				retval = -EPIPE;
+ 			} else if (errors & DTD_STATUS_DATA_BUFF_ERR) {
++				/* clear the error bits so the dQH is clean for
++				 * the next prime (mirror the HALTED path above) */
++				curr_dqh->size_ioc_int_sts &= ~errors;
+ 				retval = -EPROTO;
+ 			} else if (errors & DTD_STATUS_TRANSACTION_ERR) {
++				curr_dqh->size_ioc_int_sts &= ~errors;
+ 				retval = -EILSEQ;
+ 			}
+ 		}
+@@ -1077,9 +1081,14 @@
+ {
+ 	u32 usbintr;
+ 
++	/* DEVICE_SUSPEND intentionally NOT enabled: this controller fakes VBUS
++	 * always-active, so handling host (Windows selective-) suspend desyncs ep0
++	 * and wedges enumeration (Code 43). For an always-on USB gadget we want the
++	 * controller to ignore suspend and stay live; RESET_EN still re-inits ep0
++	 * cleanly when the host resumes. */
+ 	usbintr = USBINTR_INT_EN | USBINTR_ERR_INT_EN
+ 		| USBINTR_PORT_CHANGE_DETECT_EN
+-		| USBINTR_RESET_EN | USBINTR_DEVICE_SUSPEND;
++		| USBINTR_RESET_EN;
+ 	/* Enable interrupts */
+ 	writel(usbintr, &udc->op_regs->usbintr);
+ 
+@@ -1973,7 +1982,18 @@
+ 		list_for_each_entry_safe(curr_req, temp_req,
+ 			&curr_ep->queue, queue) {
+ 			status = process_ep_req(udc, i, curr_req);
+-			if (status)
++			/*
++			 * status > 0: head dTD still ACTIVE (transfer not
++			 * finished) -- stop, nothing to retire yet.
++			 * status < 0: transfer error -- fall through and retire
++			 * the request with that error so its completion fires
++			 * and the gadget (u_ether) resubmits. The old
++			 * "if (status) break;" treated the error case like
++			 * "not done" and stranded the request forever, which
++			 * kills the bulk endpoint -- the host then sees the
++			 * link die and reports Code 43.
++			 */
++			if (status > 0)
+ 				break;
+ 
+ 			/* write back status to req */

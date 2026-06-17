@@ -99,13 +99,13 @@ impl ElemValueData {
 /// Element info — 272 bytes.
 #[repr(C)]
 struct SndCtlElemInfo {
-    id: SndCtlElemId,     // 64
-    type_: u32,           // 4
-    access: u32,          // 4
-    count: u32,           // 4
-    owner: i32,           // 4  (pid_t)
-    value: ElemInfoData,  // 128 (at offset 80, already 8-aligned)
-    reserved: [u8; 64],   // 64
+    id: SndCtlElemId,    // 64
+    type_: u32,          // 4
+    access: u32,         // 4
+    count: u32,          // 4
+    owner: i32,          // 4  (pid_t)
+    value: ElemInfoData, // 128 (at offset 80, already 8-aligned)
+    reserved: [u8; 64],  // 64
 }
 
 impl SndCtlElemInfo {
@@ -136,11 +136,11 @@ impl SndCtlElemInfo {
 /// has align(8), matching the C union's alignment from `long long`.
 #[repr(C)]
 struct SndCtlElemValue {
-    id: SndCtlElemId,       // 64
-    indirect: u32,          // 4  (+ 4 implicit padding)
-    value: ElemValueData,   // 512 at offset 72
-    tstamp: [u32; 2],       // 8  (struct timespec on 32-bit)
-    reserved: [u8; 120],    // 128 - sizeof(timespec)
+    id: SndCtlElemId,     // 64
+    indirect: u32,        // 4  (+ 4 implicit padding)
+    value: ElemValueData, // 512 at offset 72
+    tstamp: [u32; 2],     // 8  (struct timespec on 32-bit)
+    reserved: [u8; 120],  // 128 - sizeof(timespec)
 }
 
 impl SndCtlElemValue {
@@ -185,8 +185,7 @@ impl AlsaCtl {
         let mut info = SndCtlElemInfo::new(SndCtlElemId::mixer(name));
         let fd = self.file.as_raw_fd();
         unsafe {
-            ctl_elem_info(fd, &mut info)
-                .with_context(|| format!("ELEM_INFO '{}' failed", name))?;
+            ctl_elem_info(fd, &mut info).with_context(|| format!("ELEM_INFO '{}' failed", name))?;
         }
         Ok(info)
     }
@@ -195,8 +194,7 @@ impl AlsaCtl {
     fn elem_write(&self, ev: &mut SndCtlElemValue, name: &str) -> Result<()> {
         let fd = self.file.as_raw_fd();
         unsafe {
-            ctl_elem_write(fd, ev)
-                .with_context(|| format!("ELEM_WRITE '{}' failed", name))?;
+            ctl_elem_write(fd, ev).with_context(|| format!("ELEM_WRITE '{}' failed", name))?;
         }
         Ok(())
     }
@@ -207,7 +205,12 @@ impl AlsaCtl {
     pub fn set_integer(&self, name: &str, values: &[i32]) -> Result<()> {
         let info = self.elem_info(name)?;
         if info.type_ != TYPE_INTEGER {
-            bail!("'{}': type {} != INTEGER({})", name, info.type_, TYPE_INTEGER);
+            bail!(
+                "'{}': type {} != INTEGER({})",
+                name,
+                info.type_,
+                TYPE_INTEGER
+            );
         }
 
         let min = info.value.integer_min();
@@ -221,9 +224,17 @@ impl AlsaCtl {
         }
         self.elem_write(&mut ev, name)?;
 
-        debug!("{}: {} (range {}..{})", name,
-            values.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","),
-            min, max);
+        debug!(
+            "{}: {} (range {}..{})",
+            name,
+            values
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(","),
+            min,
+            max
+        );
         Ok(())
     }
 
@@ -231,7 +242,12 @@ impl AlsaCtl {
     pub fn set_bool(&self, name: &str, on: bool) -> Result<()> {
         let info = self.elem_info(name)?;
         if info.type_ != TYPE_BOOLEAN {
-            bail!("'{}': type {} != BOOLEAN({})", name, info.type_, TYPE_BOOLEAN);
+            bail!(
+                "'{}': type {} != BOOLEAN({})",
+                name,
+                info.type_,
+                TYPE_BOOLEAN
+            );
         }
 
         let count = info.count as usize;

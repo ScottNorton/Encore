@@ -21,13 +21,13 @@ pub fn apply() -> Result<()> {
     }
 
     // Start with safe defaults — INPUT=ACCEPT until all rules are in place
-    let _ = iptables_run(&["-P", "INPUT", "ACCEPT"]);
-    let _ = iptables_run(&["-P", "FORWARD", "DROP"]);
-    let _ = iptables_run(&["-P", "OUTPUT", "ACCEPT"]);
+    iptables_run(&["-P", "INPUT", "ACCEPT"]);
+    iptables_run(&["-P", "FORWARD", "DROP"]);
+    iptables_run(&["-P", "OUTPUT", "ACCEPT"]);
 
     // Flush existing rules
-    let _ = iptables_run(&["-F"]);
-    let _ = iptables_run(&["-X"]);
+    iptables_run(&["-F"]);
+    iptables_run(&["-X"]);
 
     // Track whether critical ACCEPT rules succeed
     let mut accepts_ok = true;
@@ -39,8 +39,26 @@ pub fn apply() -> Result<()> {
     // The state module (xt_state) is the older interface and available on kernel 3.8.
     // Without this rule, outbound TCP connections (Spotify, NTP, etc.) will break
     // because SYN-ACK responses from non-LAN IPs get DROP'd.
-    if !iptables_ok(&["-A", "INPUT", "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"]) {
-        if !iptables_ok(&["-A", "INPUT", "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT"]) {
+    if !iptables_ok(&[
+        "-A",
+        "INPUT",
+        "-m",
+        "conntrack",
+        "--ctstate",
+        "ESTABLISHED,RELATED",
+        "-j",
+        "ACCEPT",
+    ]) {
+        if !iptables_ok(&[
+            "-A",
+            "INPUT",
+            "-m",
+            "state",
+            "--state",
+            "ESTABLISHED,RELATED",
+            "-j",
+            "ACCEPT",
+        ]) {
             warn!("Firewall: neither conntrack nor state module available — outbound connections will break");
         } else {
             info!("Firewall: using state module (conntrack unavailable)");
@@ -54,7 +72,9 @@ pub fn apply() -> Result<()> {
     accepts_ok &= iptables_ok(&["-A", "INPUT", "-s", "169.254.0.0/16", "-j", "ACCEPT"]);
 
     // Allow DHCP
-    let _ = iptables_ok(&["-A", "INPUT", "-p", "udp", "--dport", "67:68", "-j", "ACCEPT"]);
+    let _ = iptables_ok(&[
+        "-A", "INPUT", "-p", "udp", "--dport", "67:68", "-j", "ACCEPT",
+    ]);
 
     // Allow multicast (mDNS, Spotify Connect discovery)
     let _ = iptables_ok(&["-A", "INPUT", "-d", "224.0.0.0/4", "-j", "ACCEPT"]);

@@ -12,7 +12,7 @@
 
 use encore_common::protocol::{LogEntry, ServerMsg};
 use std::collections::VecDeque;
-use std::sync::{LazyLock, Mutex, mpsc};
+use std::sync::{mpsc, LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
 use tracing::field::{Field, Visit};
@@ -120,18 +120,15 @@ struct MessageVisitor {
 
 impl Visit for MessageVisitor {
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-        if field.name() == "message" {
-            self.message = format!("{:?}", value);
-        } else if self.message.is_empty() {
-            // Fallback: use the first field if no "message" field
+        // Record the "message" field, or fall back to the first field seen when
+        // there is no "message" field. Both cases produce the same assignment.
+        if field.name() == "message" || self.message.is_empty() {
             self.message = format!("{:?}", value);
         }
     }
 
     fn record_str(&mut self, field: &Field, value: &str) {
-        if field.name() == "message" {
-            self.message = value.to_owned();
-        } else if self.message.is_empty() {
+        if field.name() == "message" || self.message.is_empty() {
             self.message = value.to_owned();
         }
     }
@@ -143,10 +140,7 @@ impl Visit for MessageVisitor {
 ///
 /// This task runs until the mpsc sender is dropped (i.e. the tracing
 /// subscriber is dropped, which effectively means process exit).
-pub fn spawn_log_broadcaster(
-    rx: mpsc::Receiver<LogEntry>,
-    ws_tx: broadcast::Sender<String>,
-) {
+pub fn spawn_log_broadcaster(rx: mpsc::Receiver<LogEntry>, ws_tx: broadcast::Sender<String>) {
     tokio::spawn(async move {
         let mut interval =
             tokio::time::interval(std::time::Duration::from_millis(FLUSH_INTERVAL_MS));

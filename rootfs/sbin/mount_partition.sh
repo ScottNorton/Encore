@@ -56,6 +56,10 @@ mkdir -p /lsync/data1/wifi /lsync/encore
 cd /sbin/ && ./wpa_supplicant_setup.sh & cd /
 /sbin/start_ap.sh &
 /sbin/auto_wifi_firewall.sh &
+# USB RNDIS gadget: SSH/terminal/web over the USB cable, independent of WiFi.
+# Backgrounded and fully non-fatal — never blocks boot or WiFi recovery.
+# Run via `sh` so it works even if the +x bit didn't survive the overlay copy.
+[ -f /sbin/usb_gadget.sh ] && sh /sbin/usb_gadget.sh &
 mkdir -p /data/spotify /lsync/encore
 
 # Create TUN device node for VPN (kernel has CONFIG_TUN=y)
@@ -67,16 +71,26 @@ mkdir -p /dev/net
 # Fallback is always the rootfs binary — last known-good release.
 
 # 4a. Promote staged OTA immediately (supervisor can't — it blocks on the running daemon)
+PROMOTED=0
 if [ -f /lsync/encore/encore_next ]; then
     chmod +x /lsync/encore/encore_next
     mv /lsync/encore/encore_next /lsync/encore/encore
+    PROMOTED=1
     echo "mount_partition: promoted encore_next → encore"
 fi
 
 # 4b. Clean stale OTA binary after rootfs flash.
 # A new rootfs means /usr/bin/encore is the intended version. Old OTA binaries
 # on /lsync survive the flash and would shadow it. Remove them if rootfs is newer.
-if [ -x /usr/bin/encore ] && [ -f /lsync/encore/encore ] && [ /usr/bin/encore -nt /lsync/encore/encore ]; then
+#
+# CRITICAL: skip this when we just promoted a fresh OTA above. The device has no
+# RTC and no internet until WiFi connects, so its clock can sit at 1970 — which
+# makes a freshly-staged binary look OLDER than the 2026 rootfs build by mtime,
+# and this check would delete the very update the user just flashed before it
+# ever runs. The PROMOTED guard makes the mtime heuristic apply only to a binary
+# left over from a previous boot, never to this boot's promotion. A bad promoted
+# binary is still caught safely by the supervisor's fast-crash quarantine.
+if [ "$PROMOTED" = "0" ] && [ -x /usr/bin/encore ] && [ -f /lsync/encore/encore ] && [ /usr/bin/encore -nt /lsync/encore/encore ]; then
     rm -f /lsync/encore/encore
     echo "mount_partition: removed stale OTA binary (rootfs is newer)"
 fi

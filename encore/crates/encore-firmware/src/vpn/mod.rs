@@ -110,7 +110,10 @@ fn configure_tun(address: &str, allowed_ips: &str) -> Result<()> {
             .status()
             .context(format!("ip route add {} failed", cidr))?;
         if !status.success() {
-            warn!("VPN: ip route add {} dev {} failed (may already exist)", cidr, TUN_NAME);
+            warn!(
+                "VPN: ip route add {} dev {} failed (may already exist)",
+                cidr, TUN_NAME
+            );
         }
     }
 
@@ -118,7 +121,18 @@ fn configure_tun(address: &str, allowed_ips: &str) -> Result<()> {
     // Without this, packets keep their LAN source IP which the server rejects.
     let vpn_ip = address.split('/').next().unwrap_or(address);
     let status = std::process::Command::new("/sbin/iptables")
-        .args(["-t", "nat", "-A", "POSTROUTING", "-o", TUN_NAME, "-j", "SNAT", "--to-source", vpn_ip])
+        .args([
+            "-t",
+            "nat",
+            "-A",
+            "POSTROUTING",
+            "-o",
+            TUN_NAME,
+            "-j",
+            "SNAT",
+            "--to-source",
+            vpn_ip,
+        ])
         .status()
         .context("iptables SNAT rule failed")?;
     if !status.success() {
@@ -252,7 +266,7 @@ impl Subsystem for VpnSubsystem {
             peer_public,
             preshared_key,
             keepalive,
-            0, // tunnel index
+            0,    // tunnel index
             None, // rate limiter
         );
 
@@ -268,7 +282,16 @@ impl Subsystem for VpnSubsystem {
         info!("VPN: TUN device {} created", TUN_NAME);
 
         // From here on, always clean up TUN on exit
-        let result = self.run_tunnel(&mut tunn, tun_fd, &address, &allowed_ips, endpoint, &mut ctx).await;
+        let result = self
+            .run_tunnel(
+                &mut tunn,
+                tun_fd,
+                &address,
+                &allowed_ips,
+                endpoint,
+                &mut ctx,
+            )
+            .await;
 
         // ── Cleanup: always remove TUN interface ──
         cleanup_tun();

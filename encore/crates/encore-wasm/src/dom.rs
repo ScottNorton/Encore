@@ -2,7 +2,7 @@
 
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use web_sys::{Document, Element, HtmlElement, HtmlCanvasElement, HtmlInputElement};
+use web_sys::{Document, Element, HtmlCanvasElement, HtmlElement, HtmlInputElement};
 
 pub fn window() -> web_sys::Window {
     web_sys::window().expect("no window")
@@ -94,40 +94,10 @@ where
 }
 
 // Toggle helpers
-pub fn toggle_is_on(el: &Element) -> bool {
-    if let Some(input) = el.dyn_ref::<HtmlInputElement>() {
-        input.checked()
-    } else {
-        false
-    }
-}
-
 pub fn toggle_set(el: &Element, is_on: bool) {
     if let Some(input) = el.dyn_ref::<HtmlInputElement>() {
         input.set_checked(is_on);
     }
-}
-
-pub fn toggle_on_change<F>(el: &Element, f: F)
-where
-    F: Fn(bool) + 'static,
-{
-    let id = if let Some(input) = el.dyn_ref::<HtmlInputElement>() {
-        input.id()
-    } else {
-        return;
-    };
-
-    let cb = Closure::wrap(Box::new(move || {
-        if let Some(el) = get_el(&id) {
-            if let Some(input) = el.dyn_ref::<HtmlInputElement>() {
-                f(input.checked());
-            }
-        }
-    }) as Box<dyn FnMut()>);
-
-    el.add_event_listener_with_callback("change", cb.as_ref().unchecked_ref()).unwrap();
-    cb.forget();
 }
 
 pub fn canvas(width: u32, height: u32) -> (HtmlCanvasElement, web_sys::CanvasRenderingContext2d) {
@@ -258,7 +228,11 @@ pub fn is_desktop_app() -> bool {
     // On mobile Tauri, __TAURI_INTERNALS__ exists but the user agent reveals the platform.
     // On desktop Tauri with withGlobalTauri:true, __TAURI__ is injected.
     is_standalone() && {
-        let ua = window().navigator().user_agent().unwrap_or_default().to_lowercase();
+        let ua = window()
+            .navigator()
+            .user_agent()
+            .unwrap_or_default()
+            .to_lowercase();
         !ua.contains("android") && !ua.contains("iphone") && !ua.contains("ipad")
     }
 }

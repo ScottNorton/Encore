@@ -32,6 +32,9 @@ spotify_volume = 70
 bluetooth_volume = 70
 tts_duck_percent = 80
 volume_ring_step = 2
+idle_timeout_secs = 5
+standby_timeout_secs = 60
+dsp_power_gate = false
 
 [eq]
 enabled = true
@@ -124,6 +127,9 @@ Volume levels and mixing behavior. All volumes are 0-100 (percent).
 | `bluetooth_volume` | u8   | `70`    | Bluetooth A2DP source volume. |
 | `tts_duck_percent` | u8   | `80`    | How much to duck music volume during TTS playback (percent of current volume). |
 | `volume_ring_step` | u8   | `2`     | Volume change per MCU volume ring tick. |
+| `idle_timeout_secs` | u32 | `5`     | Seconds of silence before muting the amp (Active to Idle). |
+| `standby_timeout_secs` | u32 | `60` | Seconds in Idle before DAC standby and mixer park (Idle to Standby). |
+| `dsp_power_gate` | bool | `false` | Power-gate the DSP in Standby. Saves ~500 mW-1W but adds ~3.5s to resume. |
 
 Volume changes take effect immediately (the mixer reads these at runtime). Values are
 persisted to config on change so they survive reboot.

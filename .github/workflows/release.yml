@@ -42,7 +42,7 @@ jobs:
           targets: armv7-unknown-linux-musleabihf, wasm32-unknown-unknown
 
       - name: Cache cargo tools
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cargo/bin
           key: ${{ runner.os }}-cargo-tools-zigbuild-wasm-pack-1
@@ -58,7 +58,7 @@ jobs:
           command -v wasm-pack || cargo install wasm-pack
 
       - name: Cache cargo registry and build
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -94,7 +94,7 @@ jobs:
 
       - name: Cache stock firmware image
         id: cache-stock
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: firmware/83_IMAGE_stock
           key: stock-firmware-83-image-b2e12178

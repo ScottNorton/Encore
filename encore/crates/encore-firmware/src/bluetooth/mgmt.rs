@@ -61,10 +61,7 @@ pub enum MgmtEvent {
         name: Option<String>,
     },
     /// Device disconnected.
-    DeviceDisconnected {
-        addr: [u8; 6],
-        addr_type: u8,
-    },
+    DeviceDisconnected { addr: [u8; 6], addr_type: u8 },
     /// New link key received (store it).
     NewLinkKey {
         store_hint: u8,
@@ -117,7 +114,10 @@ impl MgmtSocket {
         let async_fd = AsyncFd::new(fd).context("failed to create AsyncFd for mgmt")?;
 
         let link_keys = load_link_keys_from_file().unwrap_or_default();
-        info!("Bluetooth mgmt: loaded {} stored link keys", link_keys.len());
+        info!(
+            "Bluetooth mgmt: loaded {} stored link keys",
+            link_keys.len()
+        );
 
         Ok(Self {
             fd: async_fd,
@@ -139,7 +139,9 @@ impl MgmtSocket {
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
         // 2. READ_INFO — get adapter address
-        let info_data = self.send_and_wait(MGMT_OP_READ_INFO, 0, &[]).await
+        let info_data = self
+            .send_and_wait(MGMT_OP_READ_INFO, 0, &[])
+            .await
             .context("READ_INFO failed")?;
         let bdaddr = if info_data.len() >= 6 {
             let mut addr = [0u8; 6];
@@ -154,18 +156,25 @@ impl MgmtSocket {
         );
 
         // 3. SET_IO_CAPABILITY — NoInputNoOutput (0x03)
-        self.send_and_wait(MGMT_OP_SET_IO_CAPABILITY, 0, &[0x03]).await
+        self.send_and_wait(MGMT_OP_SET_IO_CAPABILITY, 0, &[0x03])
+            .await
             .context("SET_IO_CAPABILITY failed")?;
 
         // 4. SET_SSP — enable Secure Simple Pairing (non-fatal on old kernels)
         match self.send_and_wait(MGMT_OP_SET_SSP, 0, &[0x01]).await {
             Ok(_) => info!("Bluetooth mgmt: SSP enabled"),
-            Err(e) => warn!("Bluetooth mgmt: SSP not available ({}), continuing with legacy pairing", e),
+            Err(e) => warn!(
+                "Bluetooth mgmt: SSP not available ({}), continuing with legacy pairing",
+                e
+            ),
         }
 
         // 5. SET_DEV_CLASS — Audio (0x04), Loudspeaker (0x14)
         // Non-fatal: device class is cosmetic (affects phone icon) not functional.
-        match self.send_and_wait(MGMT_OP_SET_DEV_CLASS, 0, &[0x14, 0x04]).await {
+        match self
+            .send_and_wait(MGMT_OP_SET_DEV_CLASS, 0, &[0x14, 0x04])
+            .await
+        {
             Ok(_) => info!("Bluetooth mgmt: device class set (Audio/Loudspeaker)"),
             Err(e) => warn!("Bluetooth mgmt: SET_DEV_CLASS: {} (continuing)", e),
         }
@@ -175,20 +184,24 @@ impl MgmtSocket {
         let name_bytes = name.as_bytes();
         let len = name_bytes.len().min(248);
         name_buf[..len].copy_from_slice(&name_bytes[..len]);
-        self.send_and_wait(MGMT_OP_SET_LOCAL_NAME, 0, &name_buf).await
+        self.send_and_wait(MGMT_OP_SET_LOCAL_NAME, 0, &name_buf)
+            .await
             .context("SET_LOCAL_NAME failed")?;
 
         // 7. LOAD_LINK_KEYS — restore paired devices
         self.load_link_keys().await?;
 
         // 8-10. Enable adapter features
-        self.send_and_wait(MGMT_OP_SET_CONNECTABLE, 0, &[0x01]).await
+        self.send_and_wait(MGMT_OP_SET_CONNECTABLE, 0, &[0x01])
+            .await
             .context("SET_CONNECTABLE failed")?;
-        self.send_and_wait(MGMT_OP_SET_PAIRABLE, 0, &[0x01]).await
+        self.send_and_wait(MGMT_OP_SET_PAIRABLE, 0, &[0x01])
+            .await
             .context("SET_PAIRABLE failed")?;
 
         // SET_DISCOVERABLE with timeout=0 (forever): [val: u8, timeout: u16 LE]
-        self.send_and_wait(MGMT_OP_SET_DISCOVERABLE, 0, &[0x01, 0x00, 0x00]).await
+        self.send_and_wait(MGMT_OP_SET_DISCOVERABLE, 0, &[0x01, 0x00, 0x00])
+            .await
             .context("SET_DISCOVERABLE failed")?;
 
         info!("Bluetooth mgmt: adapter configured as '{}'", name);
@@ -199,8 +212,7 @@ impl MgmtSocket {
     pub async fn read_event(&self) -> Result<MgmtEvent> {
         let mut buf = [0u8; 1024];
         loop {
-            let mut guard = self.fd.readable().await
-                .context("mgmt readable failed")?;
+            let mut guard = self.fd.readable().await.context("mgmt readable failed")?;
             match guard.try_io(|inner| l2cap::raw_read(inner.get_ref().as_raw_fd(), &mut buf)) {
                 Ok(Ok(n)) if n >= 6 => {
                     return Ok(parse_mgmt_event(&buf[..n]));
@@ -243,7 +255,9 @@ impl MgmtSocket {
                 Ok(Ok(n)) => {
                     warn!(
                         "mgmt: short write for opcode 0x{:04x}: wrote {}/{} bytes",
-                        opcode, n, msg.len()
+                        opcode,
+                        n,
+                        msg.len()
                     );
                     anyhow::bail!("short write on mgmt socket ({}/{})", n, msg.len())
                 }
@@ -263,7 +277,10 @@ impl MgmtSocket {
 
         loop {
             if tokio::time::Instant::now() >= deadline {
-                anyhow::bail!("timeout waiting for CMD_COMPLETE for opcode 0x{:04x}", opcode);
+                anyhow::bail!(
+                    "timeout waiting for CMD_COMPLETE for opcode 0x{:04x}",
+                    opcode
+                );
             }
 
             let mut guard = self.fd.readable().await?;
@@ -329,7 +346,8 @@ impl MgmtSocket {
             params.push(key.pin_len);
         }
 
-        self.send_and_wait(MGMT_OP_LOAD_LINK_KEYS, 0, &params).await
+        self.send_and_wait(MGMT_OP_LOAD_LINK_KEYS, 0, &params)
+            .await
             .context("LOAD_LINK_KEYS failed")?;
 
         info!("Bluetooth mgmt: loaded {} link keys", key_count);

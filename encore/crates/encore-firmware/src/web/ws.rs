@@ -31,7 +31,10 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
 
     // Send boot mode on connect so the dashboard knows if we're in safe mode
     {
-        let msg = encore_common::protocol::ServerMsg::BootMode { safe_mode: state.safe_mode, boot_source: state.boot_source.clone() };
+        let msg = encore_common::protocol::ServerMsg::BootMode {
+            safe_mode: state.safe_mode,
+            boot_source: state.boot_source.clone(),
+        };
         if let Ok(json) = serde_json::to_string(&msg) {
             let _ = socket.send(Message::Text(json.into())).await;
         }
@@ -51,7 +54,11 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
 
     // Send cached network state so dashboard doesn't show "Loading..."
     {
-        let cached = state.network_state_cache.lock().ok().and_then(|g| g.clone());
+        let cached = state
+            .network_state_cache
+            .lock()
+            .ok()
+            .and_then(|g| g.clone());
         if let Some(net_state) = cached {
             let msg = encore_common::protocol::ServerMsg::NetworkChanged(net_state);
             if let Ok(json) = serde_json::to_string(&msg) {

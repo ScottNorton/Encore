@@ -41,7 +41,14 @@ impl SegmentedControl {
             let btn_id = format!("{}-{}", id, value);
             btn.set_id(&btn_id);
             let is_active = active.contains(&value);
-            dom::set_class(&btn, if is_active { "seg-btn active" } else { "seg-btn" });
+            dom::set_class(
+                &btn,
+                if is_active {
+                    "seg-btn active"
+                } else {
+                    "seg-btn"
+                },
+            );
             dom::set_text(&btn, label);
 
             let mode_rc = Rc::clone(&mode);
@@ -73,7 +80,11 @@ impl SegmentedControl {
                             let now_active = !classes.contains("active");
                             dom::set_class(
                                 &el,
-                                if now_active { "seg-btn active" } else { "seg-btn" },
+                                if now_active {
+                                    "seg-btn active"
+                                } else {
+                                    "seg-btn"
+                                },
                             );
                             cb(&value_str, now_active);
                         }

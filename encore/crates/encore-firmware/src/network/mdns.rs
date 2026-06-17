@@ -82,7 +82,10 @@ impl MdnsResponder {
 
         info!("mDNS: responding as {} -> {}", hostname, ip);
         for s in &services {
-            info!("mDNS: service {} ({}) port {}", s.service_type, s.instance_name, s.port);
+            info!(
+                "mDNS: service {} ({}) port {}",
+                s.service_type, s.instance_name, s.port
+            );
         }
 
         // Build gratuitous announcement with all records.
@@ -301,15 +304,8 @@ fn handle_response(pkt: &[u8], our_peer_id: &str) -> Option<MdnsDiscovery> {
         return None;
     }
 
-    let ancount = u16::from_be_bytes([pkt[4], pkt[5]]);
-    let _nscount = u16::from_be_bytes([pkt[6], pkt[7]]);
-    let arcount = u16::from_be_bytes([pkt[8], pkt[9]]);
-    // Also include QDCOUNT to skip questions section
-    let qdcount = u16::from_be_bytes([pkt[4], pkt[5]]);
-
     // Skip questions section (handle responses with 0 questions)
     let mut pos = 12;
-    // Actually ancount is at [6,7], let me re-read the header properly
     let qdcount = u16::from_be_bytes([pkt[4], pkt[5]]);
     let ancount = u16::from_be_bytes([pkt[6], pkt[7]]);
     let _nscount = u16::from_be_bytes([pkt[8], pkt[9]]);
@@ -318,13 +314,14 @@ fn handle_response(pkt: &[u8], our_peer_id: &str) -> Option<MdnsDiscovery> {
     // Skip question section
     for _ in 0..qdcount {
         pos = skip_dns_name(pkt, pos)?;
-        if pos + 4 > pkt.len() { return None; }
+        if pos + 4 > pkt.len() {
+            return None;
+        }
         pos += 4; // QTYPE + QCLASS
     }
 
     // State accumulated across answer + additional records
     let mut instance_name = String::new();
-    let mut host_name = String::new();
     let mut port: u16 = 0;
     let mut address: Option<std::net::IpAddr> = None;
     let mut txt_entries: Vec<String> = Vec::new();
@@ -333,11 +330,15 @@ fn handle_response(pkt: &[u8], our_peer_id: &str) -> Option<MdnsDiscovery> {
     // Parse answer + additional sections
     let total_rr = ancount as usize + arcount as usize;
     for _ in 0..total_rr {
-        if pos >= pkt.len() { break; }
+        if pos >= pkt.len() {
+            break;
+        }
 
         let name = decode_dns_name_compressed(pkt, pos);
         pos = skip_dns_name(pkt, pos)?;
-        if pos + 10 > pkt.len() { break; }
+        if pos + 10 > pkt.len() {
+            break;
+        }
 
         let rtype = u16::from_be_bytes([pkt[pos], pkt[pos + 1]]);
         let _rclass = u16::from_be_bytes([pkt[pos + 2], pkt[pos + 3]]);
@@ -345,7 +346,9 @@ fn handle_response(pkt: &[u8], our_peer_id: &str) -> Option<MdnsDiscovery> {
         let rdlen = u16::from_be_bytes([pkt[pos + 8], pkt[pos + 9]]) as usize;
         pos += 10;
 
-        if pos + rdlen > pkt.len() { break; }
+        if pos + rdlen > pkt.len() {
+            break;
+        }
         let rdata = &pkt[pos..pos + rdlen];
 
         match rtype {
@@ -362,9 +365,6 @@ fn handle_response(pkt: &[u8], our_peer_id: &str) -> Option<MdnsDiscovery> {
             TYPE_SRV => {
                 if rdlen >= 6 {
                     port = u16::from_be_bytes([rdata[4], rdata[5]]);
-                    if let Some(target) = decode_dns_name_compressed(pkt, pos + 6) {
-                        host_name = target;
-                    }
                 }
             }
             TYPE_TXT => {
@@ -372,7 +372,9 @@ fn handle_response(pkt: &[u8], our_peer_id: &str) -> Option<MdnsDiscovery> {
                 while tpos < rdata.len() {
                     let tlen = rdata[tpos] as usize;
                     tpos += 1;
-                    if tpos + tlen > rdata.len() { break; }
+                    if tpos + tlen > rdata.len() {
+                        break;
+                    }
                     if let Ok(s) = std::str::from_utf8(&rdata[tpos..tpos + tlen]) {
                         txt_entries.push(s.to_string());
                     }
@@ -446,21 +448,27 @@ fn decode_dns_name_compressed(pkt: &[u8], mut pos: usize) -> Option<String> {
     let mut parts = Vec::new();
     let mut jumps = 0;
     loop {
-        if pos >= pkt.len() || jumps > 10 { return None; }
+        if pos >= pkt.len() || jumps > 10 {
+            return None;
+        }
         let len = pkt[pos] as usize;
         if len == 0 {
             break;
         }
         if len & 0xC0 == 0xC0 {
             // Compression pointer
-            if pos + 1 >= pkt.len() { return None; }
+            if pos + 1 >= pkt.len() {
+                return None;
+            }
             let offset = ((len & 0x3F) << 8) | (pkt[pos + 1] as usize);
             pos = offset;
             jumps += 1;
             continue;
         }
         pos += 1;
-        if pos + len > pkt.len() { return None; }
+        if pos + len > pkt.len() {
+            return None;
+        }
         if let Ok(s) = std::str::from_utf8(&pkt[pos..pos + len]) {
             parts.push(s.to_string());
         }
@@ -477,7 +485,9 @@ fn decode_dns_name_compressed(pkt: &[u8], mut pos: usize) -> Option<String> {
 /// Returns the position after the name.
 fn skip_dns_name(pkt: &[u8], mut pos: usize) -> Option<usize> {
     loop {
-        if pos >= pkt.len() { return None; }
+        if pos >= pkt.len() {
+            return None;
+        }
         let len = pkt[pos] as usize;
         if len == 0 {
             return Some(pos + 1);
@@ -624,7 +634,7 @@ fn names_equal(a: &[u8], b: &[u8]) -> bool {
             return false;
         }
         for j in 0..len_a {
-            if a[i + j].to_ascii_lowercase() != b[i + j].to_ascii_lowercase() {
+            if !a[i + j].eq_ignore_ascii_case(&b[i + j]) {
                 return false;
             }
         }
@@ -741,7 +751,10 @@ mod tests {
 
     #[test]
     fn encode_dns_name_trailing_dot() {
-        assert_eq!(encode_dns_name("encore.local."), encode_dns_name("encore.local"));
+        assert_eq!(
+            encode_dns_name("encore.local."),
+            encode_dns_name("encore.local")
+        );
     }
 
     #[test]
@@ -802,7 +815,7 @@ mod tests {
         let resp = resp.unwrap();
         assert_eq!(resp[2], 0x84); // QR=1, AA=1
         assert_eq!(u16::from_be_bytes([resp[6], resp[7]]), 1); // 1 answer
-        // Last 4 bytes = IP
+                                                               // Last 4 bytes = IP
         assert_eq!(&resp[resp.len() - 4..], &ip);
     }
 
@@ -904,12 +917,12 @@ mod tests {
     fn decode_dns_name_compressed_pointer() {
         // Build a packet with a name at offset 0, then a compression pointer at offset 14
         let mut pkt = encode_dns_name("encore.local"); // 14 bytes: 6,e,n,c,o,r,e,5,l,o,c,a,l,0
-        // Append a label "test" followed by pointer to offset 0
+                                                       // Append a label "test" followed by pointer to offset 0
         pkt.push(4);
         pkt.extend_from_slice(b"test");
         pkt.push(0xC0); // compression pointer
         pkt.push(0x00); // offset 0
-        // Decode from offset 14 (the "test" label)
+                        // Decode from offset 14 (the "test" label)
         let result = decode_dns_name_compressed(&pkt, 14);
         assert_eq!(result, Some("test.encore.local".into()));
     }
@@ -923,13 +936,19 @@ mod tests {
 
     #[test]
     fn skip_dns_name_compressed() {
-        let mut pkt = vec![0xC0, 0x00]; // compression pointer
+        let pkt = vec![0xC0, 0x00]; // compression pointer
         let pos = skip_dns_name(&pkt, 0);
         assert_eq!(pos, Some(2)); // 2 bytes for pointer
     }
 
     /// Build a minimal mDNS response with PTR+SRV+TXT+A records for group discovery.
-    fn build_group_response(peer_id: &str, name: &str, ip: [u8; 4], port: u16, group: &str) -> Vec<u8> {
+    fn build_group_response(
+        peer_id: &str,
+        name: &str,
+        ip: [u8; 4],
+        port: u16,
+        group: &str,
+    ) -> Vec<u8> {
         let svc_type = encode_dns_name("_encore-group._tcp.local");
         let instance = encode_dns_name(&format!("{}.{}", name, "_encore-group._tcp.local"));
         let host = encode_dns_name("test.local");
@@ -973,7 +992,10 @@ mod tests {
         assert!(result.is_some(), "Should discover a peer");
         let disc = result.unwrap();
         assert_eq!(disc.peer_id, "abc-123");
-        assert_eq!(disc.address, std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 50)));
+        assert_eq!(
+            disc.address,
+            std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 50))
+        );
         assert_eq!(disc.port, 48200);
         assert_eq!(disc.group_name, "home");
         assert_eq!(disc.channel, "stereo");
@@ -981,7 +1003,13 @@ mod tests {
 
     #[test]
     fn parse_mdns_response_self_filtering() {
-        let pkt = build_group_response("my-peer-id", "Living Room", [192, 168, 1, 100], 48200, "home");
+        let pkt = build_group_response(
+            "my-peer-id",
+            "Living Room",
+            [192, 168, 1, 100],
+            48200,
+            "home",
+        );
         // When our_peer_id matches, should return None
         let result = handle_response(&pkt, "my-peer-id");
         assert!(result.is_none(), "Should filter out our own announcements");
@@ -1009,7 +1037,10 @@ mod tests {
         pkt.extend_from_slice(&a_rec);
 
         let result = handle_response(&pkt, "other");
-        assert!(result.is_none(), "Non-group services should not produce discovery");
+        assert!(
+            result.is_none(),
+            "Non-group services should not produce discovery"
+        );
     }
 
     #[test]

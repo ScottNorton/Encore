@@ -128,7 +128,9 @@ impl Modal {
                 Self::close();
             }
         }) as Box<dyn FnMut(_)>);
-        input.add_event_listener_with_callback("keydown", cb.as_ref().unchecked_ref()).ok();
+        input
+            .add_event_listener_with_callback("keydown", cb.as_ref().unchecked_ref())
+            .ok();
         cb.forget();
 
         dom::append(&btns, &cancel_btn);

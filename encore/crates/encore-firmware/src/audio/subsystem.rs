@@ -14,7 +14,7 @@ use crate::mcu::io_expander::IoExpander;
 use crate::subsystem::{Subsystem, SubsystemContext};
 use anyhow::{Context, Result};
 use encore_common::protocol::SubsystemState;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
@@ -122,7 +122,10 @@ impl MixerBridge {
 #[derive(Debug)]
 enum MixerMsg {
     Levels(f32, f32, f32, f32),
-    Spectrum { bins: [f32; 32], waveform: [f32; 256] },
+    Spectrum {
+        bins: [f32; 32],
+        waveform: [f32; 256],
+    },
 }
 
 /// Shared DRC parameters readable by the mixer thread (lock-free atomics).
@@ -156,10 +159,14 @@ impl SharedDrcParams {
         self.enabled.store(state.enabled, Ordering::Release);
         // Use the mid band for the single-band software compressor
         let mid = &state.bands[1];
-        self.threshold_db.store(mid.threshold_db as i32, Ordering::Release);
-        self.ratio_x10.store(mid.ratio_x10 as i32, Ordering::Release);
-        self.attack_ms.store(mid.attack_ms as i32, Ordering::Release);
-        self.release_ms.store(mid.release_ms as i32, Ordering::Release);
+        self.threshold_db
+            .store(mid.threshold_db as i32, Ordering::Release);
+        self.ratio_x10
+            .store(mid.ratio_x10 as i32, Ordering::Release);
+        self.attack_ms
+            .store(mid.attack_ms as i32, Ordering::Release);
+        self.release_ms
+            .store(mid.release_ms as i32, Ordering::Release);
     }
 }
 
@@ -170,24 +177,54 @@ pub enum AudioCmd {
     Mute,
     Unmute,
     // EQ
-    SetEqBand { band: u8, config: encore_common::protocol::EqBand },
+    SetEqBand {
+        band: u8,
+        config: encore_common::protocol::EqBand,
+    },
     SetEqPreset(encore_common::protocol::EqPreset),
     SetEqEnabled(bool),
     // DRC
-    SetDrc { band: encore_common::protocol::DrcBand, config: encore_common::protocol::DrcBandConfig },
-    SetDrcCrossover { low_mid_hz: u16, mid_high_hz: u16 },
+    SetDrc {
+        band: encore_common::protocol::DrcBand,
+        config: encore_common::protocol::DrcBandConfig,
+    },
+    SetDrcCrossover {
+        low_mid_hz: u16,
+        mid_high_hz: u16,
+    },
     SetDrcEnabled(bool),
     SetDrcPreset(encore_common::protocol::DrcPreset),
     // DSP
     SetDspVolume(u8),
     SetMicMute(bool),
     // Explorer (oneshot reply channels for async responses)
-    DacRegRead { page: u8, reg: u8, reply: tokio::sync::oneshot::Sender<anyhow::Result<u8>> },
-    DacRegWrite { page: u8, reg: u8, value: u8 },
-    DspSpiSend { msg_type: u16, data: Vec<u8>, reply: tokio::sync::oneshot::Sender<anyhow::Result<Vec<u8>>> },
-    DspMemoryDump { start_page: u16, num_pages: u16, reply: tokio::sync::oneshot::Sender<anyhow::Result<Vec<u8>>> },
-    DspDumpToFile { path: String, reply: tokio::sync::oneshot::Sender<anyhow::Result<usize>> },
-    DspPollEvents { reply: tokio::sync::oneshot::Sender<anyhow::Result<Vec<String>>> },
+    DacRegRead {
+        page: u8,
+        reg: u8,
+        reply: tokio::sync::oneshot::Sender<anyhow::Result<u8>>,
+    },
+    DacRegWrite {
+        page: u8,
+        reg: u8,
+        value: u8,
+    },
+    DspSpiSend {
+        msg_type: u16,
+        data: Vec<u8>,
+        reply: tokio::sync::oneshot::Sender<anyhow::Result<Vec<u8>>>,
+    },
+    DspMemoryDump {
+        start_page: u16,
+        num_pages: u16,
+        reply: tokio::sync::oneshot::Sender<anyhow::Result<Vec<u8>>>,
+    },
+    DspDumpToFile {
+        path: String,
+        reply: tokio::sync::oneshot::Sender<anyhow::Result<usize>>,
+    },
+    DspPollEvents {
+        reply: tokio::sync::oneshot::Sender<anyhow::Result<Vec<String>>>,
+    },
     // Mic test
     StartMicTest,
     StopMicTest,
@@ -302,12 +339,16 @@ impl AudioSubsystem {
 
     /// Broadcast current EQ state to dashboard.
     fn broadcast_eq(&self) {
-        self.broadcast(&encore_common::protocol::ServerMsg::EqState(self.eq_state.clone()));
+        self.broadcast(&encore_common::protocol::ServerMsg::EqState(
+            self.eq_state.clone(),
+        ));
     }
 
     /// Broadcast current DRC state to dashboard.
     fn broadcast_drc(&self) {
-        self.broadcast(&encore_common::protocol::ServerMsg::DrcState(self.drc_state.clone()));
+        self.broadcast(&encore_common::protocol::ServerMsg::DrcState(
+            self.drc_state.clone(),
+        ));
     }
 
     /// Broadcast current power state to dashboard.
@@ -385,12 +426,14 @@ impl AudioSubsystem {
 
     /// Broadcast current DSP info to dashboard.
     fn broadcast_dsp(&self) {
-        self.broadcast(&encore_common::protocol::ServerMsg::DspInfo(encore_common::protocol::DspInfo {
-            version: self.dsp_version.clone(),
-            hybridflow: 6,
-            mic_muted: self.mic_muted,
-            dsp_volume: self.dsp_volume,
-        }));
+        self.broadcast(&encore_common::protocol::ServerMsg::DspInfo(
+            encore_common::protocol::DspInfo {
+                version: self.dsp_version.clone(),
+                hybridflow: 6,
+                mic_muted: self.mic_muted,
+                dsp_volume: self.dsp_volume,
+            },
+        ));
     }
 }
 
@@ -425,7 +468,11 @@ impl Subsystem for AudioSubsystem {
         // Query DSP firmware version after upload
         self.dsp_version = match dsp.query_version() {
             Ok(bytes) => {
-                let ver = bytes.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
+                let ver = bytes
+                    .iter()
+                    .map(|b| format!("{:02X}", b))
+                    .collect::<Vec<_>>()
+                    .join(" ");
                 info!("Audio: DSP firmware version: {}", ver);
                 ver
             }
@@ -453,8 +500,7 @@ impl Subsystem for AudioSubsystem {
         info!("Audio: hardware initialized, unmuted (DSP volume=100)");
 
         // Open PCM after DSP is fully booted (matches stock boot order).
-        let mut pcm = AlsaPcm::open(&PcmConfig::default())
-            .context("PCM open failed")?;
+        let pcm = AlsaPcm::open(&PcmConfig::default()).context("PCM open failed")?;
 
         // Broadcast initial state to any connected dashboard clients
         self.broadcast_eq();
@@ -479,8 +525,10 @@ impl Subsystem for AudioSubsystem {
                     match mixer_msg {
                         MixerMsg::Levels(l_rms, r_rms, l_peak, r_peak) => {
                             let msg = encore_common::protocol::ServerMsg::AudioLevels {
-                                left_rms: l_rms, right_rms: r_rms,
-                                left_peak: l_peak, right_peak: r_peak,
+                                left_rms: l_rms,
+                                right_rms: r_rms,
+                                left_peak: l_peak,
+                                right_peak: r_peak,
                             };
                             if let Ok(json) = serde_json::to_string(&msg) {
                                 let _ = ws.send(json);
@@ -512,7 +560,17 @@ impl Subsystem for AudioSubsystem {
         let mixer_handle = std::thread::Builder::new()
             .name("encore-mixer".into())
             .spawn(move || {
-                mixer_thread(pcm, sources, running, samples_per_period, levels_tx, shared_drc, network_tap, tap_active, mixer_bridge);
+                mixer_thread(
+                    pcm,
+                    sources,
+                    running,
+                    samples_per_period,
+                    levels_tx,
+                    shared_drc,
+                    network_tap,
+                    tap_active,
+                    mixer_bridge,
+                );
             })
             .context("failed to spawn mixer thread")?;
 
@@ -827,72 +885,186 @@ fn init_wm8904_mixer() {
 }
 
 /// Convert EQ preset to full EqState with 10 band configurations.
-fn eq_preset_to_state(preset: encore_common::protocol::EqPreset) -> encore_common::protocol::EqState {
+fn eq_preset_to_state(
+    preset: encore_common::protocol::EqPreset,
+) -> encore_common::protocol::EqState {
     use encore_common::protocol::{EqBand, EqPreset, EqState, FilterType};
     let bands = match preset {
         EqPreset::Flat => [EqBand::default(); 10],
         EqPreset::BassBoost => {
             let mut b = [EqBand::default(); 10];
-            b[0] = EqBand { freq_hz: 60, gain_cb: 80, q_x10: 7, filter_type: FilterType::LowShelf };
-            b[1] = EqBand { freq_hz: 150, gain_cb: 40, q_x10: 10, filter_type: FilterType::Peak };
+            b[0] = EqBand {
+                freq_hz: 60,
+                gain_cb: 80,
+                q_x10: 7,
+                filter_type: FilterType::LowShelf,
+            };
+            b[1] = EqBand {
+                freq_hz: 150,
+                gain_cb: 40,
+                q_x10: 10,
+                filter_type: FilterType::Peak,
+            };
             b
         }
         EqPreset::VocalClarity => {
             let mut b = [EqBand::default(); 10];
-            b[0] = EqBand { freq_hz: 200, gain_cb: -30, q_x10: 8, filter_type: FilterType::Peak };
-            b[1] = EqBand { freq_hz: 2500, gain_cb: 50, q_x10: 12, filter_type: FilterType::Peak };
-            b[2] = EqBand { freq_hz: 5000, gain_cb: 30, q_x10: 10, filter_type: FilterType::Peak };
+            b[0] = EqBand {
+                freq_hz: 200,
+                gain_cb: -30,
+                q_x10: 8,
+                filter_type: FilterType::Peak,
+            };
+            b[1] = EqBand {
+                freq_hz: 2500,
+                gain_cb: 50,
+                q_x10: 12,
+                filter_type: FilterType::Peak,
+            };
+            b[2] = EqBand {
+                freq_hz: 5000,
+                gain_cb: 30,
+                q_x10: 10,
+                filter_type: FilterType::Peak,
+            };
             b
         }
         EqPreset::Warm => {
             let mut b = [EqBand::default(); 10];
-            b[0] = EqBand { freq_hz: 80, gain_cb: 40, q_x10: 7, filter_type: FilterType::LowShelf };
-            b[1] = EqBand { freq_hz: 3000, gain_cb: -20, q_x10: 10, filter_type: FilterType::Peak };
-            b[2] = EqBand { freq_hz: 10000, gain_cb: -40, q_x10: 7, filter_type: FilterType::HighShelf };
+            b[0] = EqBand {
+                freq_hz: 80,
+                gain_cb: 40,
+                q_x10: 7,
+                filter_type: FilterType::LowShelf,
+            };
+            b[1] = EqBand {
+                freq_hz: 3000,
+                gain_cb: -20,
+                q_x10: 10,
+                filter_type: FilterType::Peak,
+            };
+            b[2] = EqBand {
+                freq_hz: 10000,
+                gain_cb: -40,
+                q_x10: 7,
+                filter_type: FilterType::HighShelf,
+            };
             b
         }
         EqPreset::LateNight => {
             let mut b = [EqBand::default(); 10];
-            b[0] = EqBand { freq_hz: 60, gain_cb: -60, q_x10: 7, filter_type: FilterType::LowShelf };
-            b[1] = EqBand { freq_hz: 1000, gain_cb: 30, q_x10: 8, filter_type: FilterType::Peak };
-            b[2] = EqBand { freq_hz: 8000, gain_cb: -40, q_x10: 7, filter_type: FilterType::HighShelf };
+            b[0] = EqBand {
+                freq_hz: 60,
+                gain_cb: -60,
+                q_x10: 7,
+                filter_type: FilterType::LowShelf,
+            };
+            b[1] = EqBand {
+                freq_hz: 1000,
+                gain_cb: 30,
+                q_x10: 8,
+                filter_type: FilterType::Peak,
+            };
+            b[2] = EqBand {
+                freq_hz: 8000,
+                gain_cb: -40,
+                q_x10: 7,
+                filter_type: FilterType::HighShelf,
+            };
             b
         }
     };
-    EqState { bands, preset: Some(preset), enabled: true }
+    EqState {
+        bands,
+        preset: Some(preset),
+        enabled: true,
+    }
 }
 
 /// Convert DRC preset to full DrcState.
-fn drc_preset_to_state(preset: encore_common::protocol::DrcPreset) -> encore_common::protocol::DrcState {
+fn drc_preset_to_state(
+    preset: encore_common::protocol::DrcPreset,
+) -> encore_common::protocol::DrcState {
     use encore_common::protocol::{DrcBandConfig, DrcPreset, DrcState};
     match preset {
         DrcPreset::Off => DrcState::default(),
         DrcPreset::Gentle => DrcState {
             bands: [
-                DrcBandConfig { threshold_db: -25, ratio_x10: 20, attack_ms: 20, release_ms: 300 },
-                DrcBandConfig { threshold_db: -20, ratio_x10: 20, attack_ms: 15, release_ms: 250 },
-                DrcBandConfig { threshold_db: -20, ratio_x10: 20, attack_ms: 10, release_ms: 200 },
+                DrcBandConfig {
+                    threshold_db: -25,
+                    ratio_x10: 20,
+                    attack_ms: 20,
+                    release_ms: 300,
+                },
+                DrcBandConfig {
+                    threshold_db: -20,
+                    ratio_x10: 20,
+                    attack_ms: 15,
+                    release_ms: 250,
+                },
+                DrcBandConfig {
+                    threshold_db: -20,
+                    ratio_x10: 20,
+                    attack_ms: 10,
+                    release_ms: 200,
+                },
             ],
-            low_mid_hz: 200, mid_high_hz: 2000,
-            preset: Some(DrcPreset::Gentle), enabled: true,
+            low_mid_hz: 200,
+            mid_high_hz: 2000,
+            preset: Some(DrcPreset::Gentle),
+            enabled: true,
         },
         DrcPreset::LateNight => DrcState {
             bands: [
-                DrcBandConfig { threshold_db: -35, ratio_x10: 60, attack_ms: 5, release_ms: 500 },
-                DrcBandConfig { threshold_db: -25, ratio_x10: 30, attack_ms: 10, release_ms: 300 },
-                DrcBandConfig { threshold_db: -20, ratio_x10: 20, attack_ms: 10, release_ms: 200 },
+                DrcBandConfig {
+                    threshold_db: -35,
+                    ratio_x10: 60,
+                    attack_ms: 5,
+                    release_ms: 500,
+                },
+                DrcBandConfig {
+                    threshold_db: -25,
+                    ratio_x10: 30,
+                    attack_ms: 10,
+                    release_ms: 300,
+                },
+                DrcBandConfig {
+                    threshold_db: -20,
+                    ratio_x10: 20,
+                    attack_ms: 10,
+                    release_ms: 200,
+                },
             ],
-            low_mid_hz: 150, mid_high_hz: 2500,
-            preset: Some(DrcPreset::LateNight), enabled: true,
+            low_mid_hz: 150,
+            mid_high_hz: 2500,
+            preset: Some(DrcPreset::LateNight),
+            enabled: true,
         },
         DrcPreset::Protect => DrcState {
             bands: [
-                DrcBandConfig { threshold_db: -10, ratio_x10: 100, attack_ms: 1, release_ms: 100 },
-                DrcBandConfig { threshold_db: -10, ratio_x10: 100, attack_ms: 1, release_ms: 100 },
-                DrcBandConfig { threshold_db: -10, ratio_x10: 100, attack_ms: 1, release_ms: 100 },
+                DrcBandConfig {
+                    threshold_db: -10,
+                    ratio_x10: 100,
+                    attack_ms: 1,
+                    release_ms: 100,
+                },
+                DrcBandConfig {
+                    threshold_db: -10,
+                    ratio_x10: 100,
+                    attack_ms: 1,
+                    release_ms: 100,
+                },
+                DrcBandConfig {
+                    threshold_db: -10,
+                    ratio_x10: 100,
+                    attack_ms: 1,
+                    release_ms: 100,
+                },
             ],
-            low_mid_hz: 200, mid_high_hz: 2000,
-            preset: Some(DrcPreset::Protect), enabled: true,
+            low_mid_hz: 200,
+            mid_high_hz: 2000,
+            preset: Some(DrcPreset::Protect),
+            enabled: true,
         },
     }
 }
@@ -900,11 +1072,11 @@ fn drc_preset_to_state(preset: encore_common::protocol::DrcPreset) -> encore_com
 /// Software DRC (dynamic range compressor) state for the mixer thread.
 /// Single-band feed-forward compressor with peak detection envelope.
 struct DrcProcessor {
-    envelope: f32,         // current envelope level (0.0 - 1.0)
-    threshold: f32,        // threshold in linear scale
-    ratio: f32,            // compression ratio (e.g. 2.0)
-    attack_coeff: f32,     // smoothing coefficient for attack
-    release_coeff: f32,    // smoothing coefficient for release
+    envelope: f32,      // current envelope level (0.0 - 1.0)
+    threshold: f32,     // threshold in linear scale
+    ratio: f32,         // compression ratio (e.g. 2.0)
+    attack_coeff: f32,  // smoothing coefficient for attack
+    release_coeff: f32, // smoothing coefficient for release
     enabled: bool,
 }
 
@@ -923,7 +1095,9 @@ impl DrcProcessor {
     /// Reload parameters from shared atomics.
     fn sync_params(&mut self, params: &SharedDrcParams) {
         self.enabled = params.enabled.load(Ordering::Acquire);
-        if !self.enabled { return; }
+        if !self.enabled {
+            return;
+        }
 
         let thresh_db = params.threshold_db.load(Ordering::Relaxed) as f32;
         let ratio_x10 = params.ratio_x10.load(Ordering::Relaxed).max(10) as f32;
@@ -943,7 +1117,9 @@ impl DrcProcessor {
 
     /// Process stereo-interleaved i32 samples in-place.
     fn process(&mut self, buf: &mut [i32]) {
-        if !self.enabled || self.ratio <= 1.0 { return; }
+        if !self.enabled || self.ratio <= 1.0 {
+            return;
+        }
 
         let frames = buf.len() / 2;
         let inv_max = 1.0 / (i32::MAX as f32);
@@ -956,7 +1132,11 @@ impl DrcProcessor {
             let peak = l.abs().max(r.abs());
 
             // Envelope follower (attack/release)
-            let coeff = if peak > self.envelope { self.attack_coeff } else { self.release_coeff };
+            let coeff = if peak > self.envelope {
+                self.attack_coeff
+            } else {
+                self.release_coeff
+            };
             self.envelope += coeff * (peak - self.envelope);
 
             // Compute gain reduction
@@ -986,7 +1166,10 @@ fn mixer_thread(
     tap_active: Option<Arc<AtomicBool>>,
     bridge: Arc<MixerBridge>,
 ) {
-    info!("Mixer thread started (period={} samples)", samples_per_period);
+    info!(
+        "Mixer thread started (period={} samples)",
+        samples_per_period
+    );
 
     let mut pcm: Option<AlsaPcm> = Some(pcm);
     let mut mix_buf = vec![0i32; samples_per_period];
@@ -1083,8 +1266,11 @@ fn mixer_thread(
             if !logged_first_audio {
                 let max_abs = mix_buf.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
                 if max_abs > 0 {
-                    info!("Mixer: first audio output, max_abs={} ({:.1}dBFS)",
-                        max_abs, 20.0 * (max_abs as f64 / i32::MAX as f64).log10());
+                    info!(
+                        "Mixer: first audio output, max_abs={} ({:.1}dBFS)",
+                        max_abs,
+                        20.0 * (max_abs as f64 / i32::MAX as f64).log10()
+                    );
                     logged_first_audio = true;
                 }
             }
@@ -1108,8 +1294,12 @@ fn mixer_thread(
                 sum_sq_r += (r as f64) * (r as f64);
                 let al = l.abs();
                 let ar = r.abs();
-                if al > peak_l { peak_l = al; }
-                if ar > peak_r { peak_r = ar; }
+                if al > peak_l {
+                    peak_l = al;
+                }
+                if ar > peak_r {
+                    peak_r = ar;
+                }
 
                 // Accumulate mono samples for FFT
                 let mono = (l + r) * 0.5;
@@ -1164,7 +1354,7 @@ fn mixer_thread(
                     let f1 = (log_min + t1 * (log_max - log_min)).exp();
                     let bin_start = (f0 / bin_hz).floor() as usize;
                     let bin_end = (f1 / bin_hz).ceil() as usize;
-                    let bin_start = bin_start.max(1).min(256);
+                    let bin_start = bin_start.clamp(1, 256);
                     let bin_end = bin_end.max(bin_start + 1).min(257);
 
                     let mut max_mag = 0.0f32;
@@ -1172,11 +1362,17 @@ fn mixer_thread(
                         let re = spectrum[i].re;
                         let im = spectrum[i].im;
                         let mag = (re * re + im * im).sqrt();
-                        if mag > max_mag { max_mag = mag; }
+                        if mag > max_mag {
+                            max_mag = mag;
+                        }
                     }
 
                     // Convert to dBFS and map [-90, 0] to [0.0, 1.0]
-                    let db = if max_mag > 1e-10 { 20.0 * max_mag.log10() } else { -90.0 };
+                    let db = if max_mag > 1e-10 {
+                        20.0 * max_mag.log10()
+                    } else {
+                        -90.0
+                    };
                     bins_32[b] = ((db + 90.0) / 90.0).clamp(0.0, 1.0);
                 }
 
@@ -1214,7 +1410,9 @@ fn mixer_thread(
             // The DSP only generates I2S output to the DAC when it sees
             // continuous I2S input. If we stop writing, the WM8904 stops
             // generating clocks and the DSP stops its output.
-            for s in mix_buf.iter_mut() { *s = 0; }
+            for s in mix_buf.iter_mut() {
+                *s = 0;
+            }
             if let Some(ref mut p) = pcm {
                 if let Err(e) = p.write_frames(&mix_buf) {
                     warn!("Mixer: PCM silence write error: {}", e);

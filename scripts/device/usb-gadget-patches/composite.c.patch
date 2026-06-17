@@ -1,0 +1,82 @@
+--- /home/scott/HKHacking/workspace/source/kernel/Invoke-kernel/drivers/usb/gadget/composite.c	2021-03-09 03:17:26.000000000 -0500
++++ /mnt/g/HKInvoke/vendor/kernel/drivers/usb/gadget/composite.c	2026-06-16 16:42:43.527668200 -0400
+@@ -1042,6 +1042,38 @@
+ }
+ 
+ /*
++ * Microsoft OS Descriptor support (backported behavior for this 3.8 tree).
++ * Makes Windows auto-load its own signed RNDIS NIC driver for the RNDIS
++ * configuration instead of binding usbser.sys to the 02/02/ff control
++ * interface (which gives a useless COM port). The device answers the 0xEE
++ * "MSFT100" string descriptor, then the Extended Compat ID request with
++ * compatibleID "RNDIS" for interface 0.
++ * ponytail: hardcoded for "interface 0 == RNDIS"; correct for g_ether's RNDIS
++ * config. Gate per-config only if libcomposite is later reused for a non-RNDIS
++ * gadget on Windows.
++ */
++#define MSOS_VENDOR_CODE	0xA5
++static u8 msos_string_descriptor[18] = {
++	18,			/* bLength */
++	USB_DT_STRING,		/* bDescriptorType */
++	'M', 0, 'S', 0, 'F', 0, 'T', 0, '1', 0, '0', 0, '0', 0, /* "MSFT100" */
++	MSOS_VENDOR_CODE,	/* bMS_VendorCode */
++	0x00			/* bPad */
++};
++static u8 msos_compatid_descriptor[40] = {
++	0x28, 0x00, 0x00, 0x00,	/* dwLength = 40 */
++	0x00, 0x01,		/* bcdVersion = 1.00 */
++	0x04, 0x00,		/* wIndex = 0x0004 (Extended Compat ID) */
++	0x01,			/* bCount = 1 function */
++	0, 0, 0, 0, 0, 0, 0,	/* reserved[7] */
++	0x00,			/* bFirstInterfaceNumber = 0 */
++	0x01,			/* reserved (= 1) */
++	'R', 'N', 'D', 'I', 'S', 0, 0, 0,	/* compatibleID = "RNDIS" */
++	0, 0, 0, 0, 0, 0, 0, 0,	/* subCompatibleID */
++	0, 0, 0, 0, 0, 0	/* reserved[6] */
++};
++
++/*
+  * The setup() callback implements all the ep0 functionality that's
+  * not handled lower down, in hardware or the hardware driver(like
+  * device and endpoint feature flags, and their status).  It's all
+@@ -1115,6 +1147,13 @@
+ 				value = min(w_length, (u16) value);
+ 			break;
+ 		case USB_DT_STRING:
++			if ((w_value & 0xff) == 0xEE) {
++				/* Microsoft OS String Descriptor */
++				value = min_t(int, w_length,
++					(int) sizeof(msos_string_descriptor));
++				memcpy(req->buf, msos_string_descriptor, value);
++				break;
++			}
+ 			value = get_string(cdev, req->buf,
+ 					w_index, w_value & 0xff);
+ 			if (value >= 0)
+@@ -1250,6 +1289,26 @@
+ 		break;
+ 	default:
+ unknown:
++		/* Microsoft OS Feature Descriptor (Extended Compat ID): answer
++		 * "RNDIS" so Windows loads its signed RNDIS NIC driver. */
++		if ((ctrl->bRequestType & USB_TYPE_MASK) == USB_TYPE_VENDOR &&
++		    (ctrl->bRequestType & USB_DIR_IN) &&
++		    ctrl->bRequest == MSOS_VENDOR_CODE &&
++		    w_index == 0x0004) {
++			value = min_t(int, w_length,
++				(int) sizeof(msos_compatid_descriptor));
++			memcpy(req->buf, msos_compatid_descriptor, value);
++			req->length = value;
++			req->zero = value < w_length;
++			value = usb_ep_queue(gadget->ep0, req, GFP_ATOMIC);
++			if (value < 0) {
++				DBG(cdev, "ep_queue --> %d\n", value);
++				req->status = 0;
++				composite_setup_complete(gadget->ep0, req);
++			}
++			goto done;
++		}
++
+ 		VDBG(cdev,
+ 			"non-core control req%02x.%02x v%04x i%04x l%d\n",
+ 			ctrl->bRequestType, ctrl->bRequest,

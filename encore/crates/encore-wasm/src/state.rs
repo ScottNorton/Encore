@@ -9,11 +9,11 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
-use wasm_bindgen::JsValue;
 use encore_common::protocol::*;
+use wasm_bindgen::JsValue;
 
 thread_local! {
-    static STATE: RefCell<Option<Rc<RefCell<AppState>>>> = RefCell::new(None);
+    static STATE: RefCell<Option<Rc<RefCell<AppState>>>> = const { RefCell::new(None) };
 }
 
 /// All dashboard state in one place.
@@ -101,8 +101,6 @@ pub struct AppState {
     pub speaker_host: Option<String>,
 
     // ── Boot sequence ──
-    /// Pre-scanned speakers from mDNS discovery during boot (name, host).
-    pub boot_speakers: Vec<(String, String)>,
     /// Set to true when ConfigLoaded message arrives via WebSocket.
     pub boot_config_received: bool,
     /// Set to true when first SystemStatus message arrives via WebSocket.
@@ -157,7 +155,6 @@ impl Default for AppState {
             safe_mode_modal_shown: false,
             boot_source: String::new(),
             speaker_host: None,
-            boot_speakers: Vec::new(),
             boot_config_received: false,
             boot_system_received: false,
         }
@@ -182,8 +179,7 @@ where
         let borrow = s.borrow();
         let state = borrow.as_ref().expect("state not initialized");
         let inner = state.borrow();
-        let result = f(&inner);
-        result
+        f(&inner)
     })
 }
 
@@ -196,7 +192,6 @@ where
         let borrow = s.borrow();
         let state = borrow.as_ref().expect("state not initialized");
         let mut inner = state.borrow_mut();
-        let result = f(&mut inner);
-        result
+        f(&mut inner)
     })
 }

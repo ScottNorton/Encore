@@ -12,7 +12,7 @@ const NUM_TOTAL: usize = 13; // 12 ring + 1 center
 
 thread_local! {
     /// Epoch counter — incremented to cancel running animation loops.
-    static ANIM_EPOCH: Cell<u32> = Cell::new(0);
+    static ANIM_EPOCH: Cell<u32> = const { Cell::new(0) };
 }
 
 /// Draw a single frame of the LED ring.
@@ -29,7 +29,8 @@ pub fn draw_frame(ctx: &CanvasRenderingContext2d, size: f64, colors: &[(u8, u8, 
 
     // Draw 12 ring LEDs starting from 12 o'clock, clockwise
     for i in 0..NUM_RING {
-        let angle = (i as f64 / NUM_RING as f64) * std::f64::consts::TAU - std::f64::consts::FRAC_PI_2;
+        let angle =
+            (i as f64 / NUM_RING as f64) * std::f64::consts::TAU - std::f64::consts::FRAC_PI_2;
         let x = cx + ring_r * angle.cos();
         let y = cy + ring_r * angle.sin();
         let (r, g, b) = colors[i];
@@ -155,8 +156,12 @@ fn compute_frame(anim: &LedAnimation, t_ms: f64) -> [(u8, u8, u8); NUM_TOTAL] {
                 }
             }
             // Center: alternates amber/blue every 2 seconds
-            let center_amber = ((t_ms / 2000.0) as u32) % 2 == 0;
-            colors[NUM_RING] = if center_amber { (255, 160, 48) } else { (32, 96, 255) };
+            let center_amber = ((t_ms / 2000.0) as u32).is_multiple_of(2);
+            colors[NUM_RING] = if center_amber {
+                (255, 160, 48)
+            } else {
+                (32, 96, 255)
+            };
             colors
         }
         LedAnimation::Custom { ref frames } => {
@@ -230,4 +235,193 @@ fn run_anim_frame(anim: LedAnimation, epoch: u32) {
 /// Stop any running animation loop.
 pub fn stop_animation() {
     ANIM_EPOCH.with(|e| e.set(e.get().wrapping_add(1)));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use encore_common::protocol::LedFrame;
+
+    #[test]
+    fn off_is_all_black() {
+        let frame = compute_frame(&LedAnimation::Off, 0.0);
+        assert_eq!(frame, [(0, 0, 0); NUM_TOTAL]);
+    }
+
+    #[test]
+    fn off_is_black_at_any_time() {
+        let frame = compute_frame(&LedAnimation::Off, 12345.678);
+        assert!(frame.iter().all(|&c| c == (0, 0, 0)));
+    }
+
+    #[test]
+    fn solid_sets_every_led() {
+        let frame = compute_frame(
+            &LedAnimation::Solid {
+                r: 12,
+                g: 34,
+                b: 56,
+            },
+            999.0,
+        );
+        assert_eq!(frame.len(), NUM_TOTAL);
+        assert!(frame.iter().all(|&c| c == (12, 34, 56)));
+    }
+
+    #[test]
+    fn solid_independent_of_time() {
+        let a = compute_frame(&LedAnimation::Solid { r: 1, g: 2, b: 3 }, 0.0);
+        let b = compute_frame(&LedAnimation::Solid { r: 1, g: 2, b: 3 }, 5000.0);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn breathe_half_intensity_at_t_zero() {
+        // sin(0) == 0 -> intensity = (0 + 1) / 2 = 0.5
+        let frame = compute_frame(
+            &LedAnimation::Breathe {
+                r: 200,
+                g: 100,
+                b: 50,
+                period_ms: 1000,
+            },
+            0.0,
+        );
+        // floor(200 * 0.5) = 100, floor(100 * 0.5) = 50, floor(50 * 0.5) = 25
+        assert!(frame.iter().all(|&c| c == (100, 50, 25)));
+    }
+
+    #[test]
+    fn breathe_peak_at_quarter_period() {
+        // t = period/4 -> sin(TAU * 0.25) = sin(PI/2) = 1 -> intensity = 1.0
+        let frame = compute_frame(
+            &LedAnimation::Breathe {
+                r: 200,
+                g: 100,
+                b: 50,
+                period_ms: 1000,
+            },
+            250.0,
+        );
+        assert!(frame.iter().all(|&c| c == (200, 100, 50)));
+    }
+
+    #[test]
+    fn volume_arc_full_lights_all_ring() {
+        // level 100 -> lit = round(1.0 * 12) = 12, every ring LED is white.
+        let frame = compute_frame(&LedAnimation::VolumeArc { level: 100 }, 0.0);
+        for i in 0..NUM_RING {
+            assert_eq!(frame[i], (255, 255, 255), "ring led {}", i);
+        }
+        // Center LED is not part of the arc.
+        assert_eq!(frame[NUM_RING], (0, 0, 0));
+    }
+
+    #[test]
+    fn volume_arc_zero_lights_nothing() {
+        let frame = compute_frame(&LedAnimation::VolumeArc { level: 0 }, 0.0);
+        assert!(frame.iter().all(|&c| c == (0, 0, 0)));
+    }
+
+    #[test]
+    fn volume_arc_half_lights_six() {
+        // level 50 -> lit = round(0.5 * 12) = 6 ring LEDs.
+        let frame = compute_frame(&LedAnimation::VolumeArc { level: 50 }, 0.0);
+        for i in 0..NUM_RING {
+            let expected = if i < 6 { (255, 255, 255) } else { (0, 0, 0) };
+            assert_eq!(frame[i], expected, "ring led {}", i);
+        }
+    }
+
+    #[test]
+    fn pulse_attack_start_is_dark() {
+        // t = 0 -> cycle 0 -> intensity = 0/100 = 0 -> all off.
+        let frame = compute_frame(
+            &LedAnimation::Pulse {
+                r: 100,
+                g: 100,
+                b: 100,
+            },
+            0.0,
+        );
+        assert!(frame.iter().all(|&c| c == (0, 0, 0)));
+    }
+
+    #[test]
+    fn pulse_peak_at_attack_end() {
+        // t = 100 -> cycle 100 -> decay branch with (100-100)/900 = 0 -> intensity 1.0.
+        let frame = compute_frame(
+            &LedAnimation::Pulse {
+                r: 100,
+                g: 80,
+                b: 60,
+            },
+            100.0,
+        );
+        assert!(frame.iter().all(|&c| c == (100, 80, 60)));
+    }
+
+    #[test]
+    fn custom_empty_is_black() {
+        let frame = compute_frame(&LedAnimation::Custom { frames: vec![] }, 0.0);
+        assert_eq!(frame, [(0, 0, 0); NUM_TOTAL]);
+    }
+
+    #[test]
+    fn custom_single_frame_returned() {
+        let colors = [(7, 8, 9); NUM_TOTAL];
+        let anim = LedAnimation::Custom {
+            frames: vec![LedFrame {
+                colors,
+                duration_ms: 100,
+            }],
+        };
+        // Any time within the frame returns that frame's colors.
+        assert_eq!(compute_frame(&anim, 0.0), colors);
+        assert_eq!(compute_frame(&anim, 50.0), colors);
+        // After the single frame's duration, wraps back to it.
+        assert_eq!(compute_frame(&anim, 250.0), colors);
+    }
+
+    #[test]
+    fn custom_selects_frame_by_cumulative_duration() {
+        let a = [(1, 1, 1); NUM_TOTAL];
+        let b = [(2, 2, 2); NUM_TOTAL];
+        let anim = LedAnimation::Custom {
+            frames: vec![
+                LedFrame {
+                    colors: a,
+                    duration_ms: 100,
+                },
+                LedFrame {
+                    colors: b,
+                    duration_ms: 100,
+                },
+            ],
+        };
+        // t in [0,100) -> first frame; t in [100,200) -> second frame.
+        assert_eq!(compute_frame(&anim, 0.0), a);
+        assert_eq!(compute_frame(&anim, 99.0), a);
+        assert_eq!(compute_frame(&anim, 100.0), b);
+        assert_eq!(compute_frame(&anim, 150.0), b);
+    }
+
+    #[test]
+    fn custom_zero_total_duration_returns_first() {
+        let a = [(5, 5, 5); NUM_TOTAL];
+        let anim = LedAnimation::Custom {
+            frames: vec![LedFrame {
+                colors: a,
+                duration_ms: 0,
+            }],
+        };
+        assert_eq!(compute_frame(&anim, 1234.0), a);
+    }
+
+    #[test]
+    fn draw_legacy_color_is_uniform_via_compute() {
+        // Solid mirrors the legacy `draw(Some(color))` fill of all 13 LEDs.
+        let frame = compute_frame(&LedAnimation::Solid { r: 255, g: 0, b: 0 }, 0.0);
+        assert_eq!(frame, [(255, 0, 0); NUM_TOTAL]);
+    }
 }

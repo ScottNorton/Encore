@@ -84,7 +84,11 @@ impl SbcDecoder {
     /// so frames = samples / 2).
     ///
     /// `pcm_out` must be at least `SBC_MAX_SAMPLES * 2` elements (stereo).
-    pub fn decode(&mut self, sbc_data: &[u8], pcm_out: &mut [i16]) -> Result<(usize, usize), SbcError> {
+    pub fn decode(
+        &mut self,
+        sbc_data: &[u8],
+        pcm_out: &mut [i16],
+    ) -> Result<(usize, usize), SbcError> {
         if sbc_data.len() < 4 {
             return Err(SbcError::TooShort);
         }

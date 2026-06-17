@@ -127,9 +127,7 @@ impl WebSubsystem {
 
     /// Take the ClientMsg receiver. The SubsystemManager calls this
     /// to route dashboard commands to subsystem channels.
-    pub fn take_client_rx(
-        &mut self,
-    ) -> Option<mpsc::Receiver<encore_common::protocol::ClientMsg>> {
+    pub fn take_client_rx(&mut self) -> Option<mpsc::Receiver<encore_common::protocol::ClientMsg>> {
         self.client_rx.take()
     }
 
@@ -168,7 +166,10 @@ impl Subsystem for WebSubsystem {
     async fn run(&mut self, ctx: SubsystemContext) -> Result<()> {
         ctx.health.set_state(SubsystemState::Running);
 
-        let ws_tx = self.ws_tx_pre.take().unwrap_or_else(|| broadcast::channel::<String>(256).0);
+        let ws_tx = self
+            .ws_tx_pre
+            .take()
+            .unwrap_or_else(|| broadcast::channel::<String>(256).0);
         let debug_state = self.debug_state.take();
         let state = Arc::new(AppState {
             ws_tx: ws_tx.clone(),
@@ -246,20 +247,30 @@ impl Subsystem for WebSubsystem {
 
         let mut app = Router::new()
             .route("/api/system", get(api::system_handler))
-            .route("/api/config", get(api::config_handler).post(api::config_save_handler))
+            .route(
+                "/api/config",
+                get(api::config_handler).post(api::config_save_handler),
+            )
             .route("/api/setup", get(api::setup_handler))
             .route("/api/setup/complete", post(api::setup_complete_handler))
             .route("/api/logs", get(api::logs_handler))
             .route("/api/crashes", get(api::crashes_handler))
-            .route("/api/crashes/{subsystem}", get(api::crashes_subsystem_handler))
-            .route("/api/update", post(api::update_handler)
-                .layer(axum::extract::DefaultBodyLimit::max(api::MAX_UPDATE_SIZE)))
-            .route("/api/firmware/flash", post(api::firmware_flash_handler)
-                .layer(axum::extract::DefaultBodyLimit::disable()))
+            .route(
+                "/api/crashes/{subsystem}",
+                get(api::crashes_subsystem_handler),
+            )
+            .route(
+                "/api/update",
+                post(api::update_handler)
+                    .layer(axum::extract::DefaultBodyLimit::max(api::MAX_UPDATE_SIZE)),
+            )
+            .route(
+                "/api/firmware/flash",
+                post(api::firmware_flash_handler).layer(axum::extract::DefaultBodyLimit::disable()),
+            )
             .route("/api/wifi/scan", get(api::wifi_scan_handler))
             .route("/api/reboot", post(api::reboot_handler))
             .route("/ca.crt", get(tls::ca_cert_handler))
-
             .route("/ws", get(ws::ws_handler))
             .fallback(static_handler)
             .layer(CorsLayer::permissive())
@@ -278,12 +289,10 @@ impl Subsystem for WebSubsystem {
             .unwrap_or_else(|| "Encore".into());
 
         // Build TLS config — try runtime CA-signed cert, fall back to embedded
-        let tls_acceptor = build_tls_acceptor(&device_name)
-            .context("build TLS acceptor")?;
+        let tls_acceptor = build_tls_acceptor(&device_name).context("build TLS acceptor")?;
 
         // Bind HTTPS on configured port (default 443)
-        let socket = tokio::net::TcpSocket::new_v4()
-            .context("create HTTPS socket")?;
+        let socket = tokio::net::TcpSocket::new_v4().context("create HTTPS socket")?;
         socket.set_reuseaddr(true).ok();
         socket
             .bind(std::net::SocketAddr::from(([0, 0, 0, 0], self.port)))
@@ -299,7 +308,9 @@ impl Subsystem for WebSubsystem {
             let ap_active = self.ap_active.clone();
             let http_state = state;
             tokio::spawn(async move {
-                if let Err(e) = run_http_portal(https_port, shutdown_redir, ap_active, http_state).await {
+                if let Err(e) =
+                    run_http_portal(https_port, shutdown_redir, ap_active, http_state).await
+                {
                     warn!("HTTP portal server failed: {}", e);
                 }
             });
@@ -335,10 +346,7 @@ async fn static_handler(uri: Uri) -> Response {
         let mime = mime_for_path(path);
         let cache = cache_control_for(path);
         (
-            [
-                (header::CONTENT_TYPE, mime),
-                (header::CACHE_CONTROL, cache),
-            ],
+            [(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, cache)],
             file.data,
         )
             .into_response()
@@ -408,8 +416,8 @@ fn build_tls_acceptor(device_name: &str) -> Result<tokio_rustls::TlsAcceptor> {
 
 /// Build a TLS acceptor from PEM-encoded cert and key bytes.
 fn build_acceptor_from_pem(cert_pem: &[u8], key_pem: &[u8]) -> Result<tokio_rustls::TlsAcceptor> {
-    use tokio_rustls::rustls::ServerConfig;
     use std::io::BufReader;
+    use tokio_rustls::rustls::ServerConfig;
 
     let cert_chain: Vec<_> = rustls_pemfile::certs(&mut BufReader::new(cert_pem))
         .collect::<std::result::Result<Vec<_>, _>>()
@@ -438,9 +446,7 @@ impl axum::serve::Listener for TlsListener {
     type Io = tokio_rustls::server::TlsStream<tokio::net::TcpStream>;
     type Addr = std::net::SocketAddr;
 
-    fn accept(
-        &mut self,
-    ) -> impl std::future::Future<Output = (Self::Io, Self::Addr)> + Send + '_ {
+    fn accept(&mut self) -> impl std::future::Future<Output = (Self::Io, Self::Addr)> + Send + '_ {
         async {
             loop {
                 let (stream, addr) = match self.tcp.accept().await {
@@ -488,16 +494,27 @@ async fn run_http_portal(
     // Build the full app router (same as HTTPS but over HTTP)
     let http_app = Router::new()
         .route("/api/system", get(api::system_handler))
-        .route("/api/config", get(api::config_handler).post(api::config_save_handler))
+        .route(
+            "/api/config",
+            get(api::config_handler).post(api::config_save_handler),
+        )
         .route("/api/setup", get(api::setup_handler))
         .route("/api/setup/complete", post(api::setup_complete_handler))
         .route("/api/logs", get(api::logs_handler))
         .route("/api/crashes", get(api::crashes_handler))
-        .route("/api/crashes/{subsystem}", get(api::crashes_subsystem_handler))
-        .route("/api/update", post(api::update_handler)
-            .layer(axum::extract::DefaultBodyLimit::max(api::MAX_UPDATE_SIZE)))
-        .route("/api/firmware/flash", post(api::firmware_flash_handler)
-            .layer(axum::extract::DefaultBodyLimit::disable()))
+        .route(
+            "/api/crashes/{subsystem}",
+            get(api::crashes_subsystem_handler),
+        )
+        .route(
+            "/api/update",
+            post(api::update_handler)
+                .layer(axum::extract::DefaultBodyLimit::max(api::MAX_UPDATE_SIZE)),
+        )
+        .route(
+            "/api/firmware/flash",
+            post(api::firmware_flash_handler).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
         .route("/api/wifi/scan", get(api::wifi_scan_handler))
         .route("/api/reboot", post(api::reboot_handler))
         .route("/ca.crt", get(tls::ca_cert_handler))
@@ -505,31 +522,42 @@ async fn run_http_portal(
         .fallback(move |req: axum::extract::Request| {
             let ap_on = ap_flag.load(Ordering::Relaxed);
             async move {
-                if ap_on {
-                    // Check for captive portal detection probes
-                    let path = req.uri().path();
-                    if is_captive_portal_probe(path) {
+                // Serve the dashboard over plain HTTP (no HTTPS upgrade) when the
+                // request targets one of the device's own link IPs: the AP
+                // (192.168.43.1) or the USB RNDIS admin link (10.55.55.1). Those
+                // links have no trusted-cert path, so a 308 -> HTTPS strands a
+                // browser on the self-signed cert. This does NOT rely on the
+                // ap_active flag, which is false when the AP was started by the
+                // boot script rather than by Encore. WiFi/LAN still upgrade to TLS.
+                let host = req
+                    .headers()
+                    .get("host")
+                    .and_then(|h| h.to_str().ok())
+                    .unwrap_or("encore.local");
+                let host = host.split(':').next().unwrap_or(host);
+                let on_local_link = host == "192.168.43.1" || host == "10.55.55.1";
+                if ap_on || on_local_link {
+                    // Captive-portal probes only matter while the AP is up; bounce
+                    // those to the dashboard. Everything else gets the dashboard.
+                    if ap_on && is_captive_portal_probe(req.uri().path()) {
                         return axum::response::Redirect::temporary("http://192.168.43.1/")
                             .into_response();
                     }
                     // Serve the embedded dashboard over HTTP
-                    static_handler(req.uri().clone()).await
-                } else {
-                    // AP not active — redirect to HTTPS
-                    let host = req
-                        .headers()
-                        .get("host")
-                        .and_then(|h| h.to_str().ok())
-                        .unwrap_or("encore.local");
-                    let host = host.split(':').next().unwrap_or(host);
-                    let path = req.uri().path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
-                    let url = if https_port == 443 {
-                        format!("https://{}{}", host, path)
-                    } else {
-                        format!("https://{}:{}{}", host, https_port, path)
-                    };
-                    axum::response::Redirect::permanent(&url).into_response()
+                    return static_handler(req.uri().clone()).await;
                 }
+                // Not a device link and AP inactive — redirect to HTTPS
+                let path = req
+                    .uri()
+                    .path_and_query()
+                    .map(|pq| pq.as_str())
+                    .unwrap_or("/");
+                let url = if https_port == 443 {
+                    format!("https://{}{}", host, path)
+                } else {
+                    format!("https://{}:{}{}", host, https_port, path)
+                };
+                axum::response::Redirect::permanent(&url).into_response()
             }
         })
         .layer(CorsLayer::permissive())
@@ -538,11 +566,13 @@ async fn run_http_portal(
     // Mount debug routes on HTTP portal too
     let mut http_app = http_app;
     if let Some(ds) = &app_state.debug_state {
-        http_app = http_app.nest("/api/debug", crate::debug::routes::router().with_state(ds.clone()));
+        http_app = http_app.nest(
+            "/api/debug",
+            crate::debug::routes::router().with_state(ds.clone()),
+        );
     }
 
-    let socket = tokio::net::TcpSocket::new_v4()
-        .context("create HTTP portal socket")?;
+    let socket = tokio::net::TcpSocket::new_v4().context("create HTTP portal socket")?;
     socket.set_reuseaddr(true).ok();
     socket
         .bind(std::net::SocketAddr::from((

@@ -1,10 +1,9 @@
 //! App shell — header, pill tabs, gear menu, hash routing.
 
+use crate::dom;
+use std::cell::Cell;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use crate::dom;
-use js_sys;
-use std::cell::Cell;
 
 /// Tab definitions: (route_id, display_label)
 pub const TABS: &[(&str, &str)] = &[
@@ -20,7 +19,7 @@ pub const TABS: &[(&str, &str)] = &[
 
 thread_local! {
     /// Guards against overlapping page transitions.
-    static TRANSITIONING: Cell<bool> = Cell::new(false);
+    static TRANSITIONING: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Gear menu items: (id, label). Empty string id = separator.
@@ -74,7 +73,7 @@ pub fn init_after_boot(landing: &str) {
     let overlay = dom::create_div();
     overlay.set_id("panel-overlay");
     dom::set_class(&overlay, "panel-overlay");
-    dom::on_click(&overlay, || close_panel());
+    dom::on_click(&overlay, close_panel);
     dom::append(&app, &overlay);
 
     let panel = dom::create_div();
@@ -88,25 +87,34 @@ pub fn init_after_boot(landing: &str) {
     if let Some(loading) = dom::get_el("loading") {
         dom::add_class(&loading, "exit");
         let landing_page = landing.to_string();
-        dom::set_timeout(move || {
-            if let Some(app) = dom::get_el("app") {
-                dom::set_style(&app, "transition", "opacity 0.5s ease");
-                dom::set_style(&app, "opacity", "1");
-            }
-            let lp = landing_page.clone();
-            dom::set_timeout(move || {
-                if lp == "connect" {
-                    crate::brand::set_state(crate::brand::LogoState::Hero);
-                } else {
-                    crate::brand::set_state(crate::brand::LogoState::Header);
+        dom::set_timeout(
+            move || {
+                if let Some(app) = dom::get_el("app") {
+                    dom::set_style(&app, "transition", "opacity 0.5s ease");
+                    dom::set_style(&app, "opacity", "1");
                 }
-            }, 100);
-            dom::set_timeout(move || {
-                if let Some(loading) = dom::get_el("loading") {
-                    loading.remove();
-                }
-            }, 1200);
-        }, 50);
+                let lp = landing_page.clone();
+                dom::set_timeout(
+                    move || {
+                        if lp == "connect" {
+                            crate::brand::set_state(crate::brand::LogoState::Hero);
+                        } else {
+                            crate::brand::set_state(crate::brand::LogoState::Header);
+                        }
+                    },
+                    100,
+                );
+                dom::set_timeout(
+                    move || {
+                        if let Some(loading) = dom::get_el("loading") {
+                            loading.remove();
+                        }
+                    },
+                    1200,
+                );
+            },
+            50,
+        );
     } else {
         // No loading screen (hot reload) — show immediately
         dom::set_style(&app, "opacity", "1");
@@ -123,7 +131,7 @@ pub fn init_after_boot(landing: &str) {
 
     // Desktop Tauri: add body class for drag region
     apply_desktop_mode();
-    dom::set_timeout(|| apply_desktop_mode(), 150);
+    dom::set_timeout(apply_desktop_mode, 150);
 
     // Sync localStorage speaker host into state (boot.rs may have set it already)
     if let Some(host) = dom::get_local("encore_speaker_host") {
@@ -212,7 +220,9 @@ fn build_header() -> web_sys::Element {
             let cb = Closure::wrap(Box::new(move |_: web_sys::MouseEvent| {
                 wnd_eval("minimize()");
             }) as Box<dyn FnMut(_)>);
-            btn_min.add_event_listener_with_callback("click", cb.as_ref().unchecked_ref()).unwrap();
+            btn_min
+                .add_event_listener_with_callback("click", cb.as_ref().unchecked_ref())
+                .unwrap();
             cb.forget();
         }
         dom::append(&right, &btn_min);
@@ -230,9 +240,11 @@ fn build_header() -> web_sys::Element {
             let cb = Closure::wrap(Box::new(move |_: web_sys::MouseEvent| {
                 wnd_eval("toggleMaximize()");
                 // Swap icon after a short delay to let the state change
-                dom::set_timeout(|| update_maximize_icon(), 50);
+                dom::set_timeout(update_maximize_icon, 50);
             }) as Box<dyn FnMut(_)>);
-            btn_max.add_event_listener_with_callback("click", cb.as_ref().unchecked_ref()).unwrap();
+            btn_max
+                .add_event_listener_with_callback("click", cb.as_ref().unchecked_ref())
+                .unwrap();
             cb.forget();
         }
         dom::append(&right, &btn_max);
@@ -246,7 +258,9 @@ fn build_header() -> web_sys::Element {
             let cb = Closure::wrap(Box::new(move |_: web_sys::MouseEvent| {
                 wnd_eval("close()");
             }) as Box<dyn FnMut(_)>);
-            btn_close.add_event_listener_with_callback("click", cb.as_ref().unchecked_ref()).unwrap();
+            btn_close
+                .add_event_listener_with_callback("click", cb.as_ref().unchecked_ref())
+                .unwrap();
             cb.forget();
         }
         dom::append(&right, &btn_close);
@@ -310,7 +324,8 @@ fn build_tabs() -> web_sys::Element {
         let cb = Closure::wrap(Box::new(|_: web_sys::Event| {
             update_nav_fades();
         }) as Box<dyn FnMut(_)>);
-        nav.add_event_listener_with_callback("scroll", cb.as_ref().unchecked_ref()).ok();
+        nav.add_event_listener_with_callback("scroll", cb.as_ref().unchecked_ref())
+            .ok();
         cb.forget();
     }
 
@@ -334,7 +349,8 @@ fn build_tabs() -> web_sys::Element {
             "wheel",
             cb.as_ref().unchecked_ref(),
             &opts,
-        ).ok();
+        )
+        .ok();
         cb.forget();
     }
 
@@ -353,7 +369,8 @@ fn build_tabs() -> web_sys::Element {
                     dom::add_class(&nav, "dragging");
                 }
             }) as Box<dyn FnMut(_)>);
-            nav.add_event_listener_with_callback("mousedown", cb.as_ref().unchecked_ref()).ok();
+            nav.add_event_listener_with_callback("mousedown", cb.as_ref().unchecked_ref())
+                .ok();
             cb.forget();
         }
 
@@ -368,7 +385,9 @@ fn build_tabs() -> web_sys::Element {
                     }
                 }
             }) as Box<dyn FnMut(_)>);
-            dom::document().add_event_listener_with_callback("mousemove", cb.as_ref().unchecked_ref()).ok();
+            dom::document()
+                .add_event_listener_with_callback("mousemove", cb.as_ref().unchecked_ref())
+                .ok();
             cb.forget();
         }
 
@@ -384,13 +403,15 @@ fn build_tabs() -> web_sys::Element {
                     }
                 }
             }) as Box<dyn FnMut(_)>);
-            dom::document().add_event_listener_with_callback("mouseup", cb.as_ref().unchecked_ref()).ok();
+            dom::document()
+                .add_event_listener_with_callback("mouseup", cb.as_ref().unchecked_ref())
+                .ok();
             cb.forget();
         }
     }
 
     // Initial fade check after first layout
-    dom::set_timeout(|| update_nav_fades(), 100);
+    dom::set_timeout(update_nav_fades, 100);
 
     wrap
 }
@@ -432,7 +453,7 @@ fn scroll_tab_into_view(page: &str) {
         }
     }
     // Update fade indicators after scroll settles
-    dom::set_timeout(|| update_nav_fades(), 300);
+    dom::set_timeout(update_nav_fades, 300);
 }
 
 fn build_gear_menu() -> web_sys::Element {
@@ -564,7 +585,7 @@ pub fn open_panel(id: &str) {
         let back = dom::create_el("button");
         dom::set_class(&back, "panel-back");
         back.set_inner_html("&#8592;"); // ← arrow
-        dom::on_click(&back, || close_panel());
+        dom::on_click(&back, close_panel);
         dom::append(&header, &back);
 
         let title_text = match id {
@@ -673,7 +694,8 @@ pub fn check_setup_status() {
         let origin = dom::api_origin();
         let url = format!("{}/api/setup", origin);
 
-        let resp_val = match wasm_bindgen_futures::JsFuture::from(window.fetch_with_str(&url)).await {
+        let resp_val = match wasm_bindgen_futures::JsFuture::from(window.fetch_with_str(&url)).await
+        {
             Ok(v) => v,
             Err(_) => return,
         };
@@ -691,7 +713,11 @@ pub fn check_setup_status() {
         };
 
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
-            if val.get("setup_required").and_then(|v| v.as_bool()).unwrap_or(false) {
+            if val
+                .get("setup_required")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
                 // Enter setup mode: hide tab bar, navigate to setup
                 crate::state::with_mut(|s| {
                     s.setup_complete = false;
@@ -778,29 +804,38 @@ pub fn route() {
         dom::add_class(&content, "page-exit");
 
         let page = page.to_string();
-        dom::set_timeout(move || {
-            if let Some(content) = dom::get_el("content") {
-                dom::clear(&content);
-                crate::pages::render(&page, &content);
-                dom::remove_class(&content, "page-exit");
-                // Force reflow so browser doesn't coalesce
-                let _ = content.client_width();
-                dom::add_class(&content, "page-enter");
+        dom::set_timeout(
+            move || {
+                if let Some(content) = dom::get_el("content") {
+                    dom::clear(&content);
+                    crate::pages::render(&page, &content);
+                    dom::remove_class(&content, "page-exit");
+                    // Force reflow so browser doesn't coalesce
+                    let _ = content.client_width();
+                    dom::add_class(&content, "page-enter");
 
-                dom::set_timeout(move || {
-                    if let Some(content) = dom::get_el("content") {
-                        dom::remove_class(&content, "page-enter");
-                        dom::add_class(&content, "page-enter-active");
-                        dom::set_timeout(move || {
+                    dom::set_timeout(
+                        move || {
                             if let Some(content) = dom::get_el("content") {
-                                dom::remove_class(&content, "page-enter-active");
+                                dom::remove_class(&content, "page-enter");
+                                dom::add_class(&content, "page-enter-active");
+                                dom::set_timeout(
+                                    move || {
+                                        if let Some(content) = dom::get_el("content") {
+                                            dom::remove_class(&content, "page-enter-active");
+                                        }
+                                        TRANSITIONING.with(|t| t.set(false));
+                                    },
+                                    120,
+                                );
                             }
-                            TRANSITIONING.with(|t| t.set(false));
-                        }, 120);
-                    }
-                }, 10);
-            }
-        }, 120);
+                        },
+                        10,
+                    );
+                }
+            },
+            120,
+        );
     }
 }
 
@@ -833,7 +868,9 @@ fn setup_swipe_navigation() {
             }
         }) as Box<dyn FnMut(_)>);
         if let Some(content) = dom::get_el("content") {
-            content.add_event_listener_with_callback("touchstart", cb.as_ref().unchecked_ref()).ok();
+            content
+                .add_event_listener_with_callback("touchstart", cb.as_ref().unchecked_ref())
+                .ok();
         }
         cb.forget();
     }
@@ -859,12 +896,15 @@ fn setup_swipe_navigation() {
 
                         let next_id = if dx < 0.0 {
                             // Swipe left → next visible tab
-                            TABS.iter().skip(idx + 1)
+                            TABS.iter()
+                                .skip(idx + 1)
                                 .find(|(id, _)| is_tab_visible(id))
                                 .map(|(id, _)| *id)
                         } else {
                             // Swipe right → prev visible tab
-                            TABS.iter().take(idx).rev()
+                            TABS.iter()
+                                .take(idx)
+                                .rev()
                                 .find(|(id, _)| is_tab_visible(id))
                                 .map(|(id, _)| *id)
                         };
@@ -878,7 +918,9 @@ fn setup_swipe_navigation() {
             }
         }) as Box<dyn FnMut(_)>);
         if let Some(content) = dom::get_el("content") {
-            content.add_event_listener_with_callback("touchend", cb.as_ref().unchecked_ref()).ok();
+            content
+                .add_event_listener_with_callback("touchend", cb.as_ref().unchecked_ref())
+                .ok();
         }
         cb.forget();
     }
@@ -903,7 +945,11 @@ pub fn set_connection_status(connected: bool) {
 pub fn update_tab_visibility() {
     let (spotify, bluetooth, group) = crate::state::with(|s| {
         match &s.config {
-            Some(cfg) => (cfg.spotify_enabled, cfg.bluetooth_enabled, cfg.group_enabled),
+            Some(cfg) => (
+                cfg.spotify_enabled,
+                cfg.bluetooth_enabled,
+                cfg.group_enabled,
+            ),
             None => (true, true, false), // defaults before config arrives
         }
     });
@@ -922,7 +968,9 @@ pub fn update_tab_visibility() {
 
     // If the active page is now hidden, redirect to dashboard
     let active = crate::state::with(|s| s.active_page.clone());
-    let hidden = conditional.iter().any(|(id, enabled)| *id == active && !enabled);
+    let hidden = conditional
+        .iter()
+        .any(|(id, enabled)| *id == active && !enabled);
     if hidden {
         dom::window().location().set_hash("dashboard").ok();
     }
@@ -949,10 +997,7 @@ fn apply_desktop_mode() {
 
 /// Call a method on the Tauri window object (e.g. "minimize()", "close()").
 fn wnd_eval(method: &str) {
-    let code = format!(
-        "window.__TAURI__.window.getCurrentWindow().{}",
-        method
-    );
+    let code = format!("window.__TAURI__.window.getCurrentWindow().{}", method);
     let _ = js_sys::eval(&code);
 }
 
@@ -964,7 +1009,7 @@ fn update_maximize_icon() {
             var b=document.getElementById('wc-maximize-btn');\
             if(b){if(m){b.classList.add('maximized')}else{b.classList.remove('maximized')}\
             b.title=m?'Restore Down':'Maximize';b.setAttribute('aria-label',b.title)}\
-        })"
+        })",
     );
 }
 

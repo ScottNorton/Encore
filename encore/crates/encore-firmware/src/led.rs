@@ -4,7 +4,7 @@
 //! and writes 39-byte frames to the MCU via I2C.
 
 use crate::audio::subsystem::AudioCmd;
-use crate::mcu::{LED_COUNT, LED_FRAME_SIZE, McuEvent, Mcu};
+use crate::mcu::{Mcu, McuEvent, LED_COUNT, LED_FRAME_SIZE};
 use crate::subsystem::{Subsystem, SubsystemContext};
 use anyhow::Result;
 use encore_common::protocol::{LedAnimation, ServerMsg, SubsystemState};
@@ -64,7 +64,8 @@ impl AnimationCache {
                 if path.extension().and_then(|e| e.to_str()) != Some("bin") {
                     continue;
                 }
-                let name = path.file_stem()
+                let name = path
+                    .file_stem()
                     .and_then(|s| s.to_str())
                     .unwrap_or("")
                     .to_string();
@@ -82,7 +83,12 @@ impl AnimationCache {
                         files.insert(name, frames);
                     }
                     Ok(data) => {
-                        info!("LED: skipped {} ({}B, not multiple of {})", name, data.len(), LED_FRAME_SIZE);
+                        info!(
+                            "LED: skipped {} ({}B, not multiple of {})",
+                            name,
+                            data.len(),
+                            LED_FRAME_SIZE
+                        );
                     }
                     Err(e) => {
                         info!("LED: failed to read {}: {}", name, e);
@@ -274,7 +280,7 @@ impl Subsystem for LedSubsystem {
                         let mut bin_done = false;
                         if let Some(ref mut player) = bin_playback {
                             // Only write a batch every ~8 ticks (8 x 33ms = 264ms, matching stock ~280ms timing)
-                            if frame_num % 8 == 0 {
+                            if frame_num.is_multiple_of(8) {
                                 let remaining = player.frames.len() - player.position;
                                 if remaining == 0 {
                                     if player.repeat {
@@ -313,7 +319,7 @@ impl Subsystem for LedSubsystem {
 
                     frame_num = frame_num.wrapping_add(1);
 
-                    if frame_num % (FPS as u32 * 10) == 0 {
+                    if frame_num.is_multiple_of(FPS as u32 * 10) {
                         let now = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap_or_default()
@@ -595,7 +601,7 @@ fn render_frame(animation: &LedAnimation, frame_num: u32, brightness: u8) -> [u8
                 }
             }
             // Center LED: alternates amber/blue every 2 seconds (60 frames)
-            let center_amber = (frame_num / 60) % 2 == 0;
+            let center_amber = (frame_num / 60).is_multiple_of(2);
             if center_amber {
                 frame[12 * 3] = scale_byte(255, s);
                 frame[12 * 3 + 1] = scale_byte(160, s);
@@ -634,17 +640,174 @@ fn scale_byte(val: u8, factor: f32) -> u8 {
 
 /// Distance between two positions on a ring.
 fn ring_distance(a: u32, b: u32, ring_size: u32) -> u32 {
-    let d = if a > b { a - b } else { b - a };
+    let d = a.abs_diff(b);
     d.min(ring_size - d)
 }
 
 /// Volume level → RGB color (matches web UI knob gradient).
 fn volume_color(level: u8) -> (u8, u8, u8) {
     if level > 80 {
-        (248, 81, 73)   // red — loud
+        (248, 81, 73) // red — loud
     } else if level > 60 {
-        (227, 179, 65)  // yellow — moderate-high
+        (227, 179, 65) // yellow — moderate-high
     } else {
-        (88, 166, 255)  // blue — normal
+        (88, 166, 255) // blue — normal
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- scale_byte ----
+
+    #[test]
+    fn scale_byte_identity_and_zero() {
+        assert_eq!(scale_byte(255, 1.0), 255);
+        assert_eq!(scale_byte(0, 1.0), 0);
+        assert_eq!(scale_byte(255, 0.0), 0);
+        assert_eq!(scale_byte(100, 0.5), 50);
+    }
+
+    #[test]
+    fn scale_byte_clamps_above_255() {
+        // 255 * 2.0 = 510 -> clamped to 255
+        assert_eq!(scale_byte(255, 2.0), 255);
+        // 200 * 10.0 = 2000 -> clamped to 255
+        assert_eq!(scale_byte(200, 10.0), 255);
+    }
+
+    #[test]
+    fn scale_byte_rounds_half_away_from_zero() {
+        // 10 * 0.05 = 0.5 -> rounds to 1
+        assert_eq!(scale_byte(10, 0.05), 1);
+        // 10 * 0.04 = 0.4 -> rounds to 0
+        assert_eq!(scale_byte(10, 0.04), 0);
+    }
+
+    // ---- ring_distance ----
+
+    #[test]
+    fn ring_distance_zero_when_equal() {
+        assert_eq!(ring_distance(0, 0, 12), 0);
+        assert_eq!(ring_distance(5, 5, 12), 0);
+    }
+
+    #[test]
+    fn ring_distance_is_symmetric() {
+        assert_eq!(ring_distance(0, 1, 12), 1);
+        assert_eq!(ring_distance(1, 0, 12), 1);
+        assert_eq!(ring_distance(2, 5, 12), 3);
+        assert_eq!(ring_distance(5, 2, 12), 3);
+    }
+
+    #[test]
+    fn ring_distance_takes_shorter_wrap_around() {
+        // Direct distance 11, wrapped distance 1 -> 1
+        assert_eq!(ring_distance(0, 11, 12), 1);
+        assert_eq!(ring_distance(11, 0, 12), 1);
+        // Halfway is the max distance on a 12-ring
+        assert_eq!(ring_distance(0, 6, 12), 6);
+    }
+
+    // ---- volume_color ----
+
+    #[test]
+    fn volume_color_blue_at_low_and_lower_boundary() {
+        assert_eq!(volume_color(0), (88, 166, 255));
+        // 60 is NOT > 60, so still blue
+        assert_eq!(volume_color(60), (88, 166, 255));
+    }
+
+    #[test]
+    fn volume_color_yellow_band() {
+        // 61 is the first yellow value
+        assert_eq!(volume_color(61), (227, 179, 65));
+        // 80 is NOT > 80, so still yellow
+        assert_eq!(volume_color(80), (227, 179, 65));
+    }
+
+    #[test]
+    fn volume_color_red_band() {
+        // 81 is the first red value
+        assert_eq!(volume_color(81), (248, 81, 73));
+        assert_eq!(volume_color(100), (248, 81, 73));
+    }
+
+    // ---- render_frame ----
+
+    #[test]
+    fn render_frame_off_is_all_zeros() {
+        // Off ignores frame_num and brightness.
+        let frame = render_frame(&LedAnimation::Off, 0, 100);
+        assert_eq!(frame, [0u8; LED_FRAME_SIZE]);
+        let frame2 = render_frame(&LedAnimation::Off, 999, 50);
+        assert_eq!(frame2, [0u8; LED_FRAME_SIZE]);
+    }
+
+    #[test]
+    fn render_frame_solid_full_brightness() {
+        // brightness=100 -> scale=1.0 -> every LED is the exact color.
+        let frame = render_frame(
+            &LedAnimation::Solid {
+                r: 10,
+                g: 20,
+                b: 30,
+            },
+            0,
+            100,
+        );
+        let mut expected = [0u8; LED_FRAME_SIZE];
+        for i in 0..LED_COUNT {
+            expected[i * 3] = 10;
+            expected[i * 3 + 1] = 20;
+            expected[i * 3 + 2] = 30;
+        }
+        assert_eq!(frame, expected);
+    }
+
+    #[test]
+    fn render_frame_solid_zero_brightness_is_black() {
+        // brightness=0 -> scale=0.0 -> all channels zero.
+        let frame = render_frame(
+            &LedAnimation::Solid {
+                r: 255,
+                g: 128,
+                b: 64,
+            },
+            0,
+            0,
+        );
+        assert_eq!(frame, [0u8; LED_FRAME_SIZE]);
+    }
+
+    /// Count how many of the 12 ring LEDs (indices 0..12) are lit, judged by a
+    /// non-zero red channel. The center LED (index 12) is excluded.
+    fn lit_ring_count(frame: &[u8; LED_FRAME_SIZE]) -> usize {
+        (0..12).filter(|&i| frame[i * 3] != 0).count()
+    }
+
+    #[test]
+    fn render_frame_volume_arc_lit_count_boundaries() {
+        // lit_count = (level * 12 + 50) / 100
+        // level 0  -> 0
+        let f0 = render_frame(&LedAnimation::VolumeArc { level: 0 }, 0, 100);
+        assert_eq!(lit_ring_count(&f0), 0);
+        // level 5  -> (60+50)/100 = 1
+        let f5 = render_frame(&LedAnimation::VolumeArc { level: 5 }, 0, 100);
+        assert_eq!(lit_ring_count(&f5), 1);
+        // level 50 -> (600+50)/100 = 6
+        let f50 = render_frame(&LedAnimation::VolumeArc { level: 50 }, 0, 100);
+        assert_eq!(lit_ring_count(&f50), 6);
+        // level 100 -> (1200+50)/100 = 12 (full ring)
+        let f100 = render_frame(&LedAnimation::VolumeArc { level: 100 }, 0, 100);
+        assert_eq!(lit_ring_count(&f100), 12);
+    }
+
+    #[test]
+    fn render_frame_volume_arc_uses_volume_color_for_lit_leds() {
+        // At full volume + full brightness, the first ring LED carries the red color.
+        let frame = render_frame(&LedAnimation::VolumeArc { level: 100 }, 0, 100);
+        assert_eq!((frame[0], frame[1], frame[2]), volume_color(100));
     }
 }

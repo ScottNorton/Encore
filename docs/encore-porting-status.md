@@ -310,6 +310,25 @@ These are stock binaries that Encore (or the boot chain) still depends on.
 | mDNS (Spotify discovery) | `mdnsd` (stock) + librespot | :white_check_mark: | librespot handles mDNS |
 | DNS resolution fix | `auto_wifi_firewall.sh` | :red_circle: Shell | Writes gateway IP to `/etc/resolv.conf` |
 
+### USB RNDIS network gadget — :white_check_mark: Working (verified on hardware 2026-06-17)
+
+Encore adds a USB network gadget the stock firmware does not configure for end users. Plug a USB cable from the speaker's USB Mini-B port into a computer and the speaker appears as a USB network adapter. On Windows it binds the built-in RNDIS driver automatically (via Microsoft OS descriptors), with no driver install. This does not depend on WiFi and comes up automatically at boot, so it also works as a recovery channel when WiFi or the access point is unavailable.
+
+| Property | Value |
+|----------|-------|
+| Speaker USB address | `10.55.55.1` (runs a small DHCP server on the link, pool `10.55.55.10-50`) |
+| Gateway / DNS advertised | None (deliberate, so plugging in never disturbs the computer's existing internet, e.g. a phone tether) |
+| Services over USB | Web dashboard at `http://10.55.55.1/` (plain HTTP, no certificate prompt on this link), SSH at `root@10.55.55.1`, the same HTTP/WebSocket API the desktop/mobile apps use |
+| Controller | Marvell `mv_udc` USB device controller |
+| Kernel modules | Patched `g_ether`/RNDIS, built with the period Linaro 4.9.4 cross-compiler (a modern gcc builds modules that load but then fault the 3.8.13 kernel) |
+| Module location | Baked into the rootfs at `/usr/lib/usbgadget/` |
+| Bring-up | `rootfs/sbin/usb_gadget.sh`, self-healed by `usb_gadget_monitor.sh` |
+| Kernel patches | Tracked as diffs in `scripts/device/usb-gadget-patches/`, rebuilt with `scripts/device/build_usb_gadget_modules.sh` |
+
+**SSH note**: the speaker runs Dropbear (an older SSH server). Add `-o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedKeyTypes=+ssh-rsa`. User `root`, password `ridiculous` (same on every device; change with `passwd` on an untrusted network).
+
+**Known limitation (open)**: the `mv_udc` controller stalls multi-packet bulk transfers, so the gadget MTU is fixed at 400 bytes. This keeps every frame a single USB packet, so the stall never triggers. It caps throughput (measured around 7 MB/s, which is fine for the dashboard, SSH, and OTA uploads) but keeps the link reliable. Raising the MTU brings the stall back. A controller-level fix is future work; the 400-byte MTU is the workaround that ships.
+
 ---
 
 ## 11. Vendor Source Discoveries (New Insights)

@@ -63,10 +63,7 @@ pub fn draw(ctx: &CanvasRenderingContext2d, size: f64, value: u8) {
 /// Set up mouse/touch drag interaction on a canvas for knob control.
 /// Returns a closure that removes the listeners (for cleanup).
 /// `on_change` is called with the new value (0-100).
-pub fn make_interactive(
-    canvas: &web_sys::HtmlCanvasElement,
-    on_change: impl Fn(u8) + 'static,
-) {
+pub fn make_interactive(canvas: &web_sys::HtmlCanvasElement, on_change: impl Fn(u8) + 'static) {
     // Prevent browser scroll/zoom while interacting with the knob
     let el: &web_sys::Element = canvas.as_ref();
     crate::dom::set_style(el, "touch-action", "none");
@@ -105,7 +102,9 @@ pub fn make_interactive(
             let mut angle = dy.atan2(dx).to_degrees();
             // Rotate so 0° = top (up)
             angle += 90.0;
-            if angle < 0.0 { angle += 360.0; }
+            if angle < 0.0 {
+                angle += 360.0;
+            }
 
             // Arc starts at 225° (lower-left) and sweeps 270° clockwise to 135° (lower-right).
             // Dead zone is the bottom 90° (from 135° to 225°).
@@ -114,7 +113,11 @@ pub fn make_interactive(
                 (offset / 270.0 * 100.0).clamp(0.0, 100.0)
             } else {
                 // In dead zone — snap to nearest end
-                if offset > 315.0 { 0.0 } else { 100.0 }
+                if offset > 315.0 {
+                    0.0
+                } else {
+                    100.0
+                }
             };
 
             on_change(value as u8);
@@ -126,7 +129,9 @@ pub fn make_interactive(
     let mousedown = Closure::wrap(Box::new(move |e: web_sys::MouseEvent| {
         handler_clone(e.client_x() as f64, e.client_y() as f64);
     }) as Box<dyn FnMut(_)>);
-    canvas.add_event_listener_with_callback("mousedown", mousedown.as_ref().unchecked_ref()).ok();
+    canvas
+        .add_event_listener_with_callback("mousedown", mousedown.as_ref().unchecked_ref())
+        .ok();
     mousedown.forget();
 
     let handler_clone = handler.clone();
@@ -135,7 +140,9 @@ pub fn make_interactive(
             handler_clone(e.client_x() as f64, e.client_y() as f64);
         }
     }) as Box<dyn FnMut(_)>);
-    canvas.add_event_listener_with_callback("mousemove", mousemove.as_ref().unchecked_ref()).ok();
+    canvas
+        .add_event_listener_with_callback("mousemove", mousemove.as_ref().unchecked_ref())
+        .ok();
     mousemove.forget();
 
     // Touch drag
@@ -146,7 +153,11 @@ pub fn make_interactive(
             handler_clone(touch.client_x() as f64, touch.client_y() as f64);
         }
     }) as Box<dyn FnMut(_)>);
-    canvas.add_event_listener_with_callback("touchmove", touchmove.as_ref().unchecked_ref()).ok();
-    canvas.add_event_listener_with_callback("touchstart", touchmove.as_ref().unchecked_ref()).ok();
+    canvas
+        .add_event_listener_with_callback("touchmove", touchmove.as_ref().unchecked_ref())
+        .ok();
+    canvas
+        .add_event_listener_with_callback("touchstart", touchmove.as_ref().unchecked_ref())
+        .ok();
     touchmove.forget();
 }

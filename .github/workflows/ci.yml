@@ -9,12 +9,22 @@ name: CI
 
 on:
   workflow_dispatch:
+  schedule:
+    # Mondays 06:00 UTC — catch dependency rot and nightly-toolchain breakage between PRs.
+    - cron: '0 6 * * 1'
   pull_request:
     branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -28,6 +38,7 @@ jobs:
         with:
           toolchain: nightly-2025-12-07
           targets: armv7-unknown-linux-musleabihf, wasm32-unknown-unknown
+          components: clippy, rustfmt
 
       - name: Cache cargo registry and build
         uses: actions/cache@v4
@@ -41,6 +52,9 @@ jobs:
 
       - name: Run tests
         run: make test
+
+      - name: Lint (rustfmt + clippy)
+        run: make lint
 
   build:
     name: Build ARM binary
@@ -151,3 +165,23 @@ jobs:
 
       - name: Check for credential leaks
         run: make verify
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    # Informational for now: surfaces RUSTSEC advisories in the logs without
+    # blocking PRs. Promote to a required check once the advisory allow-list is
+    # tuned. Uses stable Rust — cargo-audit only reads Cargo.lock, it does not
+    # build the project, so the pinned nightly is not needed here.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit dependencies
+        run: cd encore && cargo audit

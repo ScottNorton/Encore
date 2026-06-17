@@ -58,15 +58,15 @@ const INIT_SEQUENCE: [(u8, u8); 10] = [
 
 // TAS5756M page-selectable registers
 const REG_PAGE_SEL: u8 = 0x00;
-const REG_DSP_PROG_SEL: u8 = 0x2B;  // HybridFlow selection (page 0)
-const HYBRIDFLOW_6: u8 = 6;          // 10 generic biquad filters
+const REG_DSP_PROG_SEL: u8 = 0x2B; // HybridFlow selection (page 0)
+const HYBRIDFLOW_6: u8 = 6; // 10 generic biquad filters
 
 // CRAM (Coefficient RAM) pages
 const CRAM_BUFFER_A_START: u8 = 44;
 #[allow(dead_code)]
 const CRAM_BUFFER_B_START: u8 = 62;
-const CRAM_CTRL_REG: u8 = 0x01;      // Page 44, reg 0x01: buffer swap control
-const CRAM_DATA_START: u8 = 0x08;     // First coefficient byte within a CRAM page
+const CRAM_CTRL_REG: u8 = 0x01; // Page 44, reg 0x01: buffer swap control
+const CRAM_DATA_START: u8 = 0x08; // First coefficient byte within a CRAM page
 
 /// Number of EQ biquad filters available in HybridFlow 6
 pub const EQ_BAND_COUNT: usize = 10;
@@ -88,7 +88,13 @@ struct BiquadCoeffs {
 
 impl BiquadCoeffs {
     fn passthrough() -> Self {
-        Self { b0: FIXED_ONE, b1: 0, b2: 0, a1: 0, a2: 0 }
+        Self {
+            b0: FIXED_ONE,
+            b1: 0,
+            b2: 0,
+            a1: 0,
+            a2: 0,
+        }
     }
 
     fn to_fixed(val: f64) -> u32 {
@@ -108,32 +114,44 @@ impl BiquadCoeffs {
         let a_lin = 10.0_f64.powf(gain_db / 40.0);
 
         let (b0, b1, b2, a0, a1, a2) = match filter_type {
-            FilterType::Peak => {
-                (1.0 + alpha * a_lin, -2.0 * cos_w0, 1.0 - alpha * a_lin,
-                 1.0 + alpha / a_lin, -2.0 * cos_w0, 1.0 - alpha / a_lin)
-            }
+            FilterType::Peak => (
+                1.0 + alpha * a_lin,
+                -2.0 * cos_w0,
+                1.0 - alpha * a_lin,
+                1.0 + alpha / a_lin,
+                -2.0 * cos_w0,
+                1.0 - alpha / a_lin,
+            ),
             FilterType::LowShelf => {
                 let tsa = 2.0 * a_lin.sqrt() * alpha;
-                (a_lin * ((a_lin + 1.0) - (a_lin - 1.0) * cos_w0 + tsa),
-                 2.0 * a_lin * ((a_lin - 1.0) - (a_lin + 1.0) * cos_w0),
-                 a_lin * ((a_lin + 1.0) - (a_lin - 1.0) * cos_w0 - tsa),
-                 (a_lin + 1.0) + (a_lin - 1.0) * cos_w0 + tsa,
-                 -2.0 * ((a_lin - 1.0) + (a_lin + 1.0) * cos_w0),
-                 (a_lin + 1.0) + (a_lin - 1.0) * cos_w0 - tsa)
+                (
+                    a_lin * ((a_lin + 1.0) - (a_lin - 1.0) * cos_w0 + tsa),
+                    2.0 * a_lin * ((a_lin - 1.0) - (a_lin + 1.0) * cos_w0),
+                    a_lin * ((a_lin + 1.0) - (a_lin - 1.0) * cos_w0 - tsa),
+                    (a_lin + 1.0) + (a_lin - 1.0) * cos_w0 + tsa,
+                    -2.0 * ((a_lin - 1.0) + (a_lin + 1.0) * cos_w0),
+                    (a_lin + 1.0) + (a_lin - 1.0) * cos_w0 - tsa,
+                )
             }
             FilterType::HighShelf => {
                 let tsa = 2.0 * a_lin.sqrt() * alpha;
-                (a_lin * ((a_lin + 1.0) + (a_lin - 1.0) * cos_w0 + tsa),
-                 -2.0 * a_lin * ((a_lin - 1.0) + (a_lin + 1.0) * cos_w0),
-                 a_lin * ((a_lin + 1.0) + (a_lin - 1.0) * cos_w0 - tsa),
-                 (a_lin + 1.0) - (a_lin - 1.0) * cos_w0 + tsa,
-                 2.0 * ((a_lin - 1.0) - (a_lin + 1.0) * cos_w0),
-                 (a_lin + 1.0) - (a_lin - 1.0) * cos_w0 - tsa)
+                (
+                    a_lin * ((a_lin + 1.0) + (a_lin - 1.0) * cos_w0 + tsa),
+                    -2.0 * a_lin * ((a_lin - 1.0) + (a_lin + 1.0) * cos_w0),
+                    a_lin * ((a_lin + 1.0) + (a_lin - 1.0) * cos_w0 - tsa),
+                    (a_lin + 1.0) - (a_lin - 1.0) * cos_w0 + tsa,
+                    2.0 * ((a_lin - 1.0) - (a_lin + 1.0) * cos_w0),
+                    (a_lin + 1.0) - (a_lin - 1.0) * cos_w0 - tsa,
+                )
             }
-            FilterType::Notch => {
-                (1.0, -2.0 * cos_w0, 1.0,
-                 1.0 + alpha, -2.0 * cos_w0, 1.0 - alpha)
-            }
+            FilterType::Notch => (
+                1.0,
+                -2.0 * cos_w0,
+                1.0,
+                1.0 + alpha,
+                -2.0 * cos_w0,
+                1.0 - alpha,
+            ),
         };
 
         Self {
@@ -277,7 +295,11 @@ impl Dac {
     }
 
     /// Program all 10 EQ bands. Writes to CRAM + swaps buffer.
-    pub fn program_eq(&mut self, bands: &[encore_common::protocol::EqBand; EQ_BAND_COUNT], enabled: bool) -> Result<()> {
+    pub fn program_eq(
+        &mut self,
+        bands: &[encore_common::protocol::EqBand; EQ_BAND_COUNT],
+        enabled: bool,
+    ) -> Result<()> {
         for (i, band) in bands.iter().enumerate() {
             let coeffs = if enabled && band.gain_cb != 0 {
                 BiquadCoeffs::compute(
@@ -292,7 +314,10 @@ impl Dac {
             self.write_biquad_cram(i, &coeffs)?;
         }
         self.swap_cram_buffer()?;
-        info!("DAC: EQ programmed ({} bands, enabled={})", EQ_BAND_COUNT, enabled);
+        info!(
+            "DAC: EQ programmed ({} bands, enabled={})",
+            EQ_BAND_COUNT, enabled
+        );
         Ok(())
     }
 

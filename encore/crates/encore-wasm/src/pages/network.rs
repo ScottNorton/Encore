@@ -34,9 +34,11 @@ pub fn render(container: &web_sys::Element) {
     let cfg_title = dom::el("div", "card-title", Some("WiFi Configuration"));
     dom::append(&cfg_card, &cfg_title);
 
-    let cfg_desc = dom::el("div", "text-muted text-sm", Some(
-        "Configure the WiFi network and access point. Changes require a reboot."
-    ));
+    let cfg_desc = dom::el(
+        "div",
+        "text-muted text-sm",
+        Some("Configure the WiFi network and access point. Changes require a reboot."),
+    );
     dom::set_style(&cfg_desc, "margin-bottom", "12px");
     dom::append(&cfg_card, &cfg_desc);
 
@@ -80,16 +82,18 @@ pub fn render(container: &web_sys::Element) {
     dom::set_attr(&ap_toggle, "type", "checkbox");
     dom::append(&ap_row, &ap_toggle);
     dom::append(&cfg_card, &ap_row);
-    let ap_hint = dom::el("div", "text-muted text-sm", Some(
-        "AP stays active alongside WiFi for recovery access. Disable to free the radio."
-    ));
+    let ap_hint = dom::el(
+        "div",
+        "text-muted text-sm",
+        Some("AP stays active alongside WiFi for recovery access. Disable to free the radio."),
+    );
     dom::set_style(&ap_hint, "margin-bottom", "16px");
     dom::append(&cfg_card, &ap_hint);
 
     // Save button
     let save_btn = dom::el("button", "btn", Some("Save & Reboot"));
     save_btn.set_id("net-cfg-save");
-    dom::on_click(&save_btn, || save_network_config());
+    dom::on_click(&save_btn, save_network_config);
     dom::append(&cfg_card, &save_btn);
 
     // Save result feedback
@@ -112,13 +116,17 @@ pub fn render(container: &web_sys::Element) {
 
     let scan_btn = dom::el("button", "btn", Some("Scan"));
     scan_btn.set_id("wifi-scan-btn");
-    dom::on_click(&scan_btn, || scan_wifi());
+    dom::on_click(&scan_btn, scan_wifi);
     dom::append(&scan_header, &scan_btn);
     dom::append(&scan_card, &scan_header);
 
     let network_list = dom::create_div();
     network_list.set_id("wifi-networks");
-    let placeholder = dom::el("div", "text-muted text-center", Some("Tap Scan to search for networks"));
+    let placeholder = dom::el(
+        "div",
+        "text-muted text-center",
+        Some("Tap Scan to search for networks"),
+    );
     dom::append(&network_list, &placeholder);
     dom::append(&scan_card, &network_list);
     dom::append(container, &scan_card);
@@ -150,7 +158,14 @@ pub fn render(container: &web_sys::Element) {
     let dev_title = dom::el("div", "card-title", Some("Developer"));
     dom::append(&dev_card, &dev_title);
 
-    let subsystems = ["audio", "spotify", "bluetooth", "wyoming", "network", "homeassistant"];
+    let subsystems = [
+        "audio",
+        "spotify",
+        "bluetooth",
+        "wyoming",
+        "network",
+        "homeassistant",
+    ];
     for name in subsystems {
         let row = dom::create_div();
         dom::set_class(&row, "flex justify-between items-center mb-8");
@@ -171,7 +186,10 @@ pub fn render(container: &web_sys::Element) {
 
         let name_owned = name.to_string();
         let cb = Closure::wrap(Box::new(move |e: web_sys::Event| {
-            if let Some(target) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok()) {
+            if let Some(target) = e
+                .target()
+                .and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok())
+            {
                 let mode = match target.value().as_str() {
                     "Hold" => encore_common::protocol::DebugMode::Hold,
                     _ => encore_common::protocol::DebugMode::Production,
@@ -182,7 +200,9 @@ pub fn render(container: &web_sys::Element) {
                 });
             }
         }) as Box<dyn FnMut(_)>);
-        select.add_event_listener_with_callback("change", cb.as_ref().unchecked_ref()).ok();
+        select
+            .add_event_listener_with_callback("change", cb.as_ref().unchecked_ref())
+            .ok();
         cb.forget();
 
         dom::append(&row, &select);
@@ -211,7 +231,8 @@ fn scan_wifi() {
                         serde_json::from_str::<Vec<encore_common::protocol::WifiNetwork>>(&text)
                     {
                         if networks.is_empty() {
-                            let empty = dom::el("div", "text-muted text-center", Some("No networks found"));
+                            let empty =
+                                dom::el("div", "text-muted text-center", Some("No networks found"));
                             dom::append(&list_el, &empty);
                         } else {
                             for net in &networks {
@@ -221,14 +242,25 @@ fn scan_wifi() {
                                 dom::set_style(&row, "border-bottom", "1px solid var(--border)");
 
                                 let info = dom::create_div();
-                                let ssid_text = if net.ssid.is_empty() { "(hidden)" } else { &net.ssid };
+                                let ssid_text = if net.ssid.is_empty() {
+                                    "(hidden)"
+                                } else {
+                                    &net.ssid
+                                };
                                 let ssid = dom::el("div", "", Some(ssid_text));
                                 dom::set_style(&ssid, "font-weight", "500");
-                                let band = if net.frequency_mhz >= 5000 { "5G" } else { "2.4G" };
+                                let band = if net.frequency_mhz >= 5000 {
+                                    "5G"
+                                } else {
+                                    "2.4G"
+                                };
                                 let detail = dom::el(
                                     "div",
                                     "text-muted text-sm",
-                                    Some(&format!("{}  {}dBm  {}", band, net.signal_dbm, net.security)),
+                                    Some(&format!(
+                                        "{}  {}dBm  {}",
+                                        band, net.signal_dbm, net.security
+                                    )),
                                 );
                                 dom::append(&info, &ssid);
                                 dom::append(&info, &detail);
@@ -263,7 +295,11 @@ fn scan_wifi() {
             Err(e) => {
                 if let Some(list_el) = dom::get_el("wifi-networks") {
                     dom::clear(&list_el);
-                    let err = dom::el("div", "text-muted text-center", Some(&format!("Scan failed: {}", e)));
+                    let err = dom::el(
+                        "div",
+                        "text-muted text-center",
+                        Some(&format!("Scan failed: {}", e)),
+                    );
                     dom::append(&list_el, &err);
                 }
             }
@@ -307,8 +343,16 @@ fn save_network_config() {
     // Build a full config from current state, overriding network fields
     let config = crate::state::with(|s| {
         let mut cfg = s.config.clone().unwrap_or_default();
-        cfg.wifi_ssid = if ssid_val.is_empty() { None } else { Some(ssid_val.clone()) };
-        cfg.wifi_password = if pass_val.is_empty() { None } else { Some(pass_val) };
+        cfg.wifi_ssid = if ssid_val.is_empty() {
+            None
+        } else {
+            Some(ssid_val.clone())
+        };
+        cfg.wifi_password = if pass_val.is_empty() {
+            None
+        } else {
+            Some(pass_val)
+        };
         cfg.ap_keep_alive = ap_keep;
         cfg
     });
@@ -343,12 +387,14 @@ fn prompt_wifi_password(ssid: &str, target_freq: u32) {
     let target_is_5g = target_freq >= 5000;
 
     // Check if current AP is on a different band
-    let ap_is_5g = crate::state::with(|s| {
-        match s.network.as_ref() {
-            Some(NetworkState::ApMode { ap_frequency_mhz, .. }) => *ap_frequency_mhz >= 5000,
-            Some(NetworkState::ConnectedWithAp { ap_frequency_mhz, .. }) => *ap_frequency_mhz >= 5000,
-            _ => false,
-        }
+    let ap_is_5g = crate::state::with(|s| match s.network.as_ref() {
+        Some(NetworkState::ApMode {
+            ap_frequency_mhz, ..
+        }) => *ap_frequency_mhz >= 5000,
+        Some(NetworkState::ConnectedWithAp {
+            ap_frequency_mhz, ..
+        }) => *ap_frequency_mhz >= 5000,
+        _ => false,
     });
 
     let band_switch = target_is_5g != ap_is_5g && target_freq > 0;
@@ -412,7 +458,15 @@ fn fill_config_input(id: &str, value: &str) {
 
 /// Create signal strength bars element (4 bars)
 fn signal_bars_el(dbm: i16) -> web_sys::Element {
-    let active_count = if dbm > -50 { 4 } else if dbm > -60 { 3 } else if dbm > -70 { 2 } else { 1 };
+    let active_count = if dbm > -50 {
+        4
+    } else if dbm > -60 {
+        3
+    } else if dbm > -70 {
+        2
+    } else {
+        1
+    };
     let container = dom::create_div();
     dom::set_class(&container, "signal-bars");
     for i in 0..4 {
@@ -435,11 +489,25 @@ pub fn update() {
         if let Some(el) = dom::get_el("wifi-info") {
             dom::clear(&el);
             match s.network.as_ref() {
-                Some(NetworkState::Connected { ssid, ip, signal, hostname, .. }) => {
+                Some(NetworkState::Connected {
+                    ssid,
+                    ip,
+                    signal,
+                    hostname,
+                    ..
+                }) => {
                     stat_row(&el, "Status", "Connected");
                     wifi_info_rows(&el, ssid, ip, *signal, hostname);
                 }
-                Some(NetworkState::ConnectedWithAp { ssid, ip, signal, hostname, ap_ssid, ap_clients, .. }) => {
+                Some(NetworkState::ConnectedWithAp {
+                    ssid,
+                    ip,
+                    signal,
+                    hostname,
+                    ap_ssid,
+                    ap_clients,
+                    ..
+                }) => {
                     stat_row(&el, "Status", "Connected + AP");
                     wifi_info_rows(&el, ssid, ip, *signal, hostname);
                     // AP info section
@@ -511,15 +579,21 @@ pub fn update() {
                 } else {
                     dom::set_class(banner_el, "result-banner error");
                     let msg = result.error.as_deref().unwrap_or("Connection failed");
-                    dom::set_text(banner_el, &format!("Failed to join {}: {}", result.ssid, msg));
+                    dom::set_text(
+                        banner_el,
+                        &format!("Failed to join {}: {}", result.ssid, msg),
+                    );
                 }
                 // Auto-hide after 10s
-                dom::set_timeout(|| {
-                    if let Some(b) = dom::get_el("wifi-result-banner") {
-                        dom::add_class(&b, "hidden");
-                    }
-                    crate::state::with_mut(|s| s.wifi_connect_result = None);
-                }, 10_000);
+                dom::set_timeout(
+                    || {
+                        if let Some(b) = dom::get_el("wifi-result-banner") {
+                            dom::add_class(&b, "hidden");
+                        }
+                        crate::state::with_mut(|s| s.wifi_connect_result = None);
+                    },
+                    10_000,
+                );
             } else {
                 dom::add_class(banner_el, "hidden");
             }
@@ -603,7 +677,10 @@ pub fn update() {
         // ── Populate WiFi config form (once, when config first arrives) ──
         if let Some(ref cfg) = s.config {
             populate_config_field("net-cfg-ssid", cfg.wifi_ssid.as_deref().unwrap_or(""));
-            populate_config_field("net-cfg-password", cfg.wifi_password.as_deref().unwrap_or(""));
+            populate_config_field(
+                "net-cfg-password",
+                cfg.wifi_password.as_deref().unwrap_or(""),
+            );
             set_checkbox_from_config("net-cfg-ap-keep", cfg.ap_keep_alive);
         }
     });
@@ -638,10 +715,15 @@ fn set_checkbox_from_config(id: &str, checked: bool) {
 
 /// Classify signal strength into a quality label.
 fn signal_quality(dbm: i8) -> (&'static str, &'static str) {
-    if dbm > -50 { ("Excellent", "var(--green)") }
-    else if dbm > -65 { ("Good", "var(--green)") }
-    else if dbm > -75 { ("Fair", "var(--orange)") }
-    else { ("Poor", "var(--red)") }
+    if dbm > -50 {
+        ("Excellent", "var(--green)")
+    } else if dbm > -65 {
+        ("Good", "var(--green)")
+    } else if dbm > -75 {
+        ("Fair", "var(--orange)")
+    } else {
+        ("Poor", "var(--red)")
+    }
 }
 
 /// Render WiFi info rows (SSID with signal bars, IP, signal + quality, hostname).

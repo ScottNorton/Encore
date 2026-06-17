@@ -101,12 +101,19 @@ pub enum DspEvent {
     CancelTrigger,
     Version(Vec<u8>),
     MicMute(bool),
-    MemoryDump { page: u16, data: Vec<u8> },
+    MemoryDump {
+        page: u16,
+        data: Vec<u8>,
+    },
     TriggerFound,
     PayloadBegin,
     PayloadEnd,
     Bootup,
-    Unknown { category: u16, code: u8, data: Vec<u8> },
+    Unknown {
+        category: u16,
+        code: u8,
+        data: Vec<u8>,
+    },
 }
 
 /// DSP driver. All post-upload operations use bounded `spi_transfer`.
@@ -123,7 +130,10 @@ impl Dsp {
         let cur = devmem_read(AUDIO_CLK_REG)?;
         let val = cur | AUDIO_CLK_PLL_BIT;
         devmem_write(AUDIO_CLK_REG, val)?;
-        info!("DSP: audio clock enabled (0xF7EA8008: 0x{:08X} → 0x{:08X})", cur, val);
+        info!(
+            "DSP: audio clock enabled (0xF7EA8008: 0x{:08X} → 0x{:08X})",
+            cur, val
+        );
         Ok(())
     }
 }
@@ -145,8 +155,15 @@ impl Dsp {
             spi_wr_speed(fd, &UPLOAD_SPEED).context("SPI set speed")?;
         }
 
-        info!("SPI: opened {} (mode=3, 8-bit, {} Hz)", SPI_DEVICE, UPLOAD_SPEED);
-        Ok(Self { spi_fd, fw_loaded: false, gpio: None })
+        info!(
+            "SPI: opened {} (mode=3, 8-bit, {} Hz)",
+            SPI_DEVICE, UPLOAD_SPEED
+        );
+        Ok(Self {
+            spi_fd,
+            fw_loaded: false,
+            gpio: None,
+        })
     }
 
     /// Reset firmware loaded state (for re-upload after DSP power cycle).
@@ -165,7 +182,9 @@ impl Dsp {
         info!("DSP: loading firmware from {}", fw_path);
 
         let mut fw = Vec::new();
-        File::open(fw_path)?.take(MAX_FW_SIZE as u64).read_to_end(&mut fw)?;
+        File::open(fw_path)?
+            .take(MAX_FW_SIZE as u64)
+            .read_to_end(&mut fw)?;
         info!("DSP: firmware size: {} bytes", fw.len());
 
         for byte in fw.iter_mut() {
@@ -182,7 +201,10 @@ impl Dsp {
         // GPIO 4: set HIGH (SPI CS idle)
         let reg_400 = devmem_read(AVIO_REG_400)?;
         devmem_write(AVIO_REG_400, reg_400 | (1 << 4))?;
-        info!("DSP: AVIO 0x404: 0x{:08X}→0x{:08X}, 0x400: GPIO4 HIGH", reg_404, new_404);
+        info!(
+            "DSP: AVIO 0x404: 0x{:08X}→0x{:08X}, 0x400: GPIO4 HIGH",
+            reg_404, new_404
+        );
 
         // Read GPIO input states (stock step 5)
         let reg_450 = devmem_read(0xF7E8_0450)?;
@@ -190,15 +212,16 @@ impl Dsp {
 
         // Stock step 6-8: sysfs GPIO export + directions + values
         info!("DSP: setting up GPIO sysfs...");
-        for &pin in &[4u32, 13, 12, 15] {  // stock export order
+        for &pin in &[4u32, 13, 12, 15] {
+            // stock export order
             super::gpio::export(pin).ok();
         }
         thread::sleep(Duration::from_millis(50)); // sysfs settle
-        super::gpio::set_direction(4, true)?;   // output
-        super::gpio::set_direction(13, false)?;  // input (stock order: 13 before 12)
-        super::gpio::set_direction(12, false)?;  // input
-        super::gpio::set_direction(15, false)?;  // input
-        super::gpio::write_value(4, true)?;      // CS idle HIGH
+        super::gpio::set_direction(4, true)?; // output
+        super::gpio::set_direction(13, false)?; // input (stock order: 13 before 12)
+        super::gpio::set_direction(12, false)?; // input
+        super::gpio::set_direction(15, false)?; // input
+        super::gpio::write_value(4, true)?; // CS idle HIGH
         info!("DSP: GPIO 4=out(H), 13=in, 12=in, 15=in");
 
         info!("DSP: resetting DSP...");
@@ -211,7 +234,10 @@ impl Dsp {
         let clk = devmem_read(AUDIO_CLK_REG)?;
         let clk_upload = clk | AUDIO_CLK_PLL_BIT | AUDIO_CLK_UPLOAD_BIT;
         devmem_write(AUDIO_CLK_REG, clk_upload)?;
-        info!("DSP: AUDIO_CLK 0x{:08X} → 0x{:08X} (upload mode)", clk, clk_upload);
+        info!(
+            "DSP: AUDIO_CLK 0x{:08X} → 0x{:08X} (upload mode)",
+            clk, clk_upload
+        );
 
         // Stock: configure GPIO 5 as output via AVIO devmem BEFORE sysfs export.
         // FUN_0008e1f0(5,0) — set bit 5 in 0x404 (output enable)
@@ -230,7 +256,10 @@ impl Dsp {
         super::gpio::write_value(5, false)?;
         info!("DSP: GPIO 5 pulsed (upload CS)");
 
-        info!("DSP: uploading {} bytes over SPI (using SPI_IOC_MESSAGE)...", fw.len());
+        info!(
+            "DSP: uploading {} bytes over SPI (using SPI_IOC_MESSAGE)...",
+            fw.len()
+        );
         let mut blocks_sent = 0u32;
         // Stock embeds speed_hz in each SPI_IOC_MESSAGE transfer struct.
         // Boot kernel block (first 1536 bytes) at 1 MHz, rest at 58824 Hz.
@@ -244,7 +273,7 @@ impl Dsp {
             self.spi_xfer(&chunk[..len], cur_speed)?;
 
             let bytes_sent = offset + CHUNK_SIZE;
-            if bytes_sent % BLOCK_SIZE == 0 {
+            if bytes_sent.is_multiple_of(BLOCK_SIZE) {
                 blocks_sent += 1;
                 // Stock drops from 1 MHz to messaging speed after the first
                 // 1536-byte block (the DSP boot kernel).
@@ -268,7 +297,10 @@ impl Dsp {
         let clk_post = devmem_read(AUDIO_CLK_REG)?;
         let clk_normal = (clk_post | AUDIO_CLK_PLL_BIT) & !AUDIO_CLK_UPLOAD_BIT;
         devmem_write(AUDIO_CLK_REG, clk_normal)?;
-        info!("DSP: AUDIO_CLK 0x{:08X} → 0x{:08X} (normal mode)", clk_post, clk_normal);
+        info!(
+            "DSP: AUDIO_CLK 0x{:08X} → 0x{:08X} (normal mode)",
+            clk_post, clk_normal
+        );
 
         self.set_speed(MESSAGE_SPEED)?;
         info!("DSP: SPI speed set to {} Hz for messaging", MESSAGE_SPEED);
@@ -281,7 +313,9 @@ impl Dsp {
     // ── SPI primitives ────────────────────────────────────────────
 
     fn set_speed(&self, speed: u32) -> Result<()> {
-        unsafe { spi_wr_speed(self.spi_fd.as_raw_fd(), &speed).context("SPI set speed")?; }
+        unsafe {
+            spi_wr_speed(self.spi_fd.as_raw_fd(), &speed).context("SPI set speed")?;
+        }
         Ok(())
     }
 
@@ -474,7 +508,11 @@ impl Dsp {
     /// Dump a single memory page. Returns raw response (~2KB).
     pub fn dump_memory_page(&mut self, page: u16) -> Result<Vec<u8>> {
         if page >= DSP_MEMORY_PAGES {
-            bail!("page 0x{:04X} out of range (max 0x{:04X})", page, DSP_MEMORY_PAGES - 1);
+            bail!(
+                "page 0x{:04X} out of range (max 0x{:04X})",
+                page,
+                DSP_MEMORY_PAGES - 1
+            );
         }
         let page_hi = (page >> 8) as u8;
         let page_lo = (page & 0xFF) as u8;
@@ -501,8 +539,8 @@ impl Dsp {
     /// Dump all 320 pages to a file. Non-blocking when called via spawn_blocking.
     pub fn dump_all_to_file(&mut self, path: &str) -> Result<usize> {
         use std::io::Write as _;
-        let mut file = std::fs::File::create(path)
-            .with_context(|| format!("cannot create {}", path))?;
+        let mut file =
+            std::fs::File::create(path).with_context(|| format!("cannot create {}", path))?;
 
         info!("DSP: dumping {} pages to {}", DSP_MEMORY_PAGES, path);
         let mut total = 0usize;
@@ -537,7 +575,11 @@ impl Dsp {
         let code = data[2];
         let payload = if data.len() > 3 { &data[3..] } else { &[] };
         // Trim trailing zeros
-        let end = payload.iter().rposition(|&b| b != 0).map(|p| p + 1).unwrap_or(0);
+        let end = payload
+            .iter()
+            .rposition(|&b| b != 0)
+            .map(|p| p + 1)
+            .unwrap_or(0);
         let payload = &payload[..end];
 
         Some(match (category, code) {
@@ -548,13 +590,20 @@ impl Dsp {
             (0, 0x09) => DspEvent::MicMute(payload.first().copied().unwrap_or(0) != 0),
             (0, 0x0C) if payload.len() >= 2 => {
                 let page = ((payload[0] as u16) << 8) | payload[1] as u16;
-                DspEvent::MemoryDump { page, data: payload[2..].to_vec() }
+                DspEvent::MemoryDump {
+                    page,
+                    data: payload[2..].to_vec(),
+                }
             }
             (1, 0x00) => DspEvent::TriggerFound,
             (1, 0x01) => DspEvent::PayloadBegin,
             (1, 0x02) => DspEvent::PayloadEnd,
             (1, 0x04) => DspEvent::Bootup,
-            _ => DspEvent::Unknown { category, code, data: payload.to_vec() },
+            _ => DspEvent::Unknown {
+                category,
+                code,
+                data: payload.to_vec(),
+            },
         })
     }
 }
@@ -598,11 +647,14 @@ fn devmem_read(addr: usize) -> Result<u32> {
     let map_len = NonZeroUsize::new(page_size).unwrap();
     let ptr = unsafe {
         mmap(
-            None, map_len,
+            None,
+            map_len,
             ProtFlags::PROT_READ,
             MapFlags::MAP_SHARED,
-            &fd, page_base as i64,
-        ).context("mmap /dev/mem failed")?
+            &fd,
+            page_base as i64,
+        )
+        .context("mmap /dev/mem failed")?
     };
 
     let value = unsafe {
@@ -610,7 +662,9 @@ fn devmem_read(addr: usize) -> Result<u32> {
         std::ptr::read_volatile(reg)
     };
 
-    unsafe { munmap(ptr, page_size).ok(); }
+    unsafe {
+        munmap(ptr, page_size).ok();
+    }
     Ok(value)
 }
 
@@ -631,11 +685,14 @@ fn devmem_write(addr: usize, value: u32) -> Result<()> {
     let map_len = NonZeroUsize::new(page_size).unwrap();
     let ptr = unsafe {
         mmap(
-            None, map_len,
+            None,
+            map_len,
             ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
             MapFlags::MAP_SHARED,
-            &fd, page_base as i64,
-        ).context("mmap /dev/mem failed")?
+            &fd,
+            page_base as i64,
+        )
+        .context("mmap /dev/mem failed")?
     };
 
     unsafe {
@@ -643,7 +700,9 @@ fn devmem_write(addr: usize, value: u32) -> Result<()> {
         std::ptr::write_volatile(reg, value);
     }
 
-    unsafe { munmap(ptr, page_size).ok(); }
+    unsafe {
+        munmap(ptr, page_size).ok();
+    }
     debug!("devmem: 0x{:08X} = 0x{:08X}", addr, value);
     Ok(())
 }

@@ -16,8 +16,11 @@ pub fn render(container: &web_sys::Element) {
     dom::set_class(&spacer, "connect-logo-spacer");
     dom::append(&wrap, &spacer);
 
-    let subtitle = dom::el("div", "connect-subtitle",
-        Some("Enter the IP or hostname of your Invoke"));
+    let subtitle = dom::el(
+        "div",
+        "connect-subtitle",
+        Some("Enter the IP or hostname of your Invoke"),
+    );
     dom::append(&wrap, &subtitle);
 
     // Input row
@@ -45,14 +48,16 @@ pub fn render(container: &web_sys::Element) {
                 do_connect_from_input();
             }
         }) as Box<dyn FnMut(_)>);
-        input.add_event_listener_with_callback("keydown", cb.as_ref().unchecked_ref()).ok();
+        input
+            .add_event_listener_with_callback("keydown", cb.as_ref().unchecked_ref())
+            .ok();
         cb.forget();
     }
     dom::append(&input_row, &input);
 
     let connect_btn = dom::el("button", "btn btn-primary", Some("Connect"));
     connect_btn.set_id("connect-btn");
-    dom::on_click(&connect_btn, || do_connect_from_input());
+    dom::on_click(&connect_btn, do_connect_from_input);
     dom::append(&input_row, &connect_btn);
 
     dom::append(&wrap, &input_row);
@@ -72,7 +77,7 @@ pub fn render(container: &web_sys::Element) {
 
     let scan_btn = dom::el("button", "btn connect-scan-btn", Some("Scan Network"));
     scan_btn.set_id("connect-scan-btn");
-    dom::on_click(&scan_btn, || scan_for_speakers());
+    dom::on_click(&scan_btn, scan_for_speakers);
     dom::append(&discovery, &scan_btn);
 
     let results = dom::create_div();
@@ -157,9 +162,8 @@ async fn verify_connection(host: String) {
 
     let mut elapsed = 0;
     loop {
-        let (config, system) = crate::state::with(|s| {
-            (s.boot_config_received, s.boot_system_received)
-        });
+        let (config, system) =
+            crate::state::with(|s| (s.boot_config_received, s.boot_system_received));
         if config && system {
             break;
         }
@@ -272,11 +276,17 @@ fn scan_for_speakers() {
 
 /// Display discovered speakers as clickable items.
 fn show_discovered_speakers(speakers: Vec<(String, String)>) {
-    let Some(results) = dom::get_el("connect-results") else { return };
+    let Some(results) = dom::get_el("connect-results") else {
+        return;
+    };
     dom::clear(&results);
 
     if speakers.is_empty() {
-        let msg = dom::el("div", "text-muted", Some("No speakers found. Make sure you're on the same network."));
+        let msg = dom::el(
+            "div",
+            "text-muted",
+            Some("No speakers found. Make sure you're on the same network."),
+        );
         dom::append(&results, &msg);
         return;
     }

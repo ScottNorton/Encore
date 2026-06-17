@@ -26,18 +26,21 @@ pub async fn setup_handler() -> Json<Value> {
 
 /// POST /api/setup/complete — finalize first-boot setup.
 /// Creates the config file with device name and AP keep-alive preference.
-pub async fn setup_complete_handler(
-    Json(body): Json<Value>,
-) -> (StatusCode, Json<Value>) {
-    let device_name = body.get("device_name")
+pub async fn setup_complete_handler(Json(body): Json<Value>) -> (StatusCode, Json<Value>) {
+    let device_name = body
+        .get("device_name")
         .and_then(|v| v.as_str())
         .unwrap_or("Encore")
         .to_string();
-    let ap_keep_alive = body.get("ap_keep_alive")
+    let ap_keep_alive = body
+        .get("ap_keep_alive")
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
 
-    info!("Setup: completing (name={}, ap_keep_alive={})", device_name, ap_keep_alive);
+    info!(
+        "Setup: completing (name={}, ap_keep_alive={})",
+        device_name, ap_keep_alive
+    );
 
     // Load existing config (may have WiFi creds from SetWifi during setup)
     let path = std::path::Path::new(CONFIG_PATH);
@@ -76,12 +79,10 @@ pub async fn system_handler() -> Json<Value> {
 pub async fn config_handler() -> Json<Value> {
     debug!("API: /api/config");
     match std::fs::read_to_string(CONFIG_PATH) {
-        Ok(content) => {
-            match toml::from_str::<toml::Value>(&content) {
-                Ok(val) => Json(json!({ "config": val })),
-                Err(e) => Json(json!({ "error": format!("parse error: {}", e) })),
-            }
-        }
+        Ok(content) => match toml::from_str::<toml::Value>(&content) {
+            Ok(val) => Json(json!({ "config": val })),
+            Err(e) => Json(json!({ "error": format!("parse error: {}", e) })),
+        },
         Err(_) => {
             // No config file yet — return defaults
             Json(json!({ "config": {} }))
@@ -376,6 +377,10 @@ pub fn read_disk_usage() -> Vec<DiskUsage> {
             unsafe {
                 let mut stat: libc::statvfs = std::mem::zeroed();
                 if libc::statvfs(c_path.as_ptr(), &mut stat) == 0 {
+                    // f_frsize is u32 on 32-bit targets (ARM) and u64 on 64-bit
+                    // hosts; normalize to u64. The cast is redundant when linting
+                    // on a 64-bit host, hence the allow.
+                    #[allow(clippy::unnecessary_cast)]
                     let block_size = stat.f_frsize as u64;
                     let total_kb = (stat.f_blocks * block_size) / 1024;
                     let free_kb = (stat.f_bfree * block_size) / 1024;
@@ -411,7 +416,10 @@ pub fn read_net_interfaces() -> Vec<NetInterfaceSnapshot> {
         if !wanted.contains(&name) {
             continue;
         }
-        let vals: Vec<u64> = rest.split_whitespace().filter_map(|s| s.parse().ok()).collect();
+        let vals: Vec<u64> = rest
+            .split_whitespace()
+            .filter_map(|s| s.parse().ok())
+            .collect();
         if vals.len() >= 9 {
             interfaces.push(NetInterfaceSnapshot {
                 name: name.to_string(),
@@ -496,10 +504,12 @@ pub async fn wifi_scan_handler() -> impl axum::response::IntoResponse {
     use std::process::Command;
 
     // Ensure wpa_supplicant is running (blocking)
-    let ensure_result = tokio::task::spawn_blocking(|| {
-        crate::network::wpa::ensure_running()
-    }).await;
-    if let Err(e) = ensure_result.as_ref().map_err(|e| e.to_string()).and_then(|r| r.as_ref().map_err(|e| e.to_string())) {
+    let ensure_result = tokio::task::spawn_blocking(crate::network::wpa::ensure_running).await;
+    if let Err(e) = ensure_result
+        .as_ref()
+        .map_err(|e| e.to_string())
+        .and_then(|r| r.as_ref().map_err(|e| e.to_string()))
+    {
         tracing::warn!("wifi_scan: failed to ensure wpa_supplicant: {}", e);
     }
 
@@ -566,12 +576,45 @@ pub async fn reboot_handler() -> impl axum::response::IntoResponse {
 
 // ── OTA update ──
 
+/// Validate that `bytes` is a 32-bit little-endian ARM ELF executable.
+///
+/// The device runs armv7 (musl). Checking the full e_ident + e_type + e_machine
+/// rejects truncated, wrong-architecture, or garbage uploads that a 4-byte magic
+/// check would wave through (and which would then fail to exec on the device).
+/// Pure function so it is unit-tested on the host.
+fn validate_arm_elf(b: &[u8]) -> Result<(), &'static str> {
+    // ELF32 header: magic[0..4], EI_CLASS[4], EI_DATA[5], e_type@16, e_machine@18.
+    if b.len() < 20 {
+        return Err("file too small to be an ELF binary");
+    }
+    if &b[0..4] != b"\x7fELF" {
+        return Err("not an ELF binary (bad magic)");
+    }
+    if b[4] != 1 {
+        return Err("not a 32-bit ELF (this device is armv7)");
+    }
+    if b[5] != 1 {
+        return Err("not a little-endian ELF");
+    }
+    let e_type = u16::from_le_bytes([b[16], b[17]]);
+    if e_type != 2 && e_type != 3 {
+        // ET_EXEC (2) or ET_DYN (3, PIE) — anything else is not a program.
+        return Err("ELF is not an executable");
+    }
+    let e_machine = u16::from_le_bytes([b[18], b[19]]);
+    if e_machine != 40 {
+        // EM_ARM = 40.
+        return Err("ELF is not built for ARM");
+    }
+    Ok(())
+}
+
 /// POST /api/update — upload a new Encore binary, stage for next boot, reboot.
 ///
 /// Accepts the raw binary as the request body. Stages to
 /// /lsync/encore/encore_next (writable yaffs2 partition). The boot script
-/// (mount_partition.sh) detects this file on next boot and bind-mounts
-/// it over /usr/bin/encore, since the rootfs is read-only SquashFS.
+/// (mount_partition.sh) promotes it to /lsync/encore/encore on the next boot,
+/// which the supervisor runs in preference to the rootfs-baked /usr/bin/encore.
 pub async fn update_handler(body: Bytes) -> (StatusCode, Json<Value>) {
     let size = body.len();
     info!("OTA: received {} bytes", size);
@@ -589,12 +632,12 @@ pub async fn update_handler(body: Bytes) -> (StatusCode, Json<Value>) {
         );
     }
 
-    // Verify ELF magic
-    if body.len() < 4 || &body[..4] != b"\x7fELF" {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "not a valid ELF binary"})),
-        );
+    // Validate the full ELF header, not just the 4-byte magic. A flaky upload or
+    // a wrong-arch file can pass a magic-only check and then crash on exec; the
+    // supervisor would recover, but rejecting it here is cheaper and clearer.
+    if let Err(reason) = validate_arm_elf(&body) {
+        warn!("OTA: rejected upload: {}", reason);
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": reason})));
     }
 
     // Ensure staging directory exists on writable partition
@@ -625,7 +668,10 @@ pub async fn update_handler(body: Bytes) -> (StatusCode, Json<Value>) {
         }
     }
 
-    info!("OTA: staged {} bytes to {}, rebooting in 3s", size, OTA_NEXT_PATH);
+    info!(
+        "OTA: staged {} bytes to {}, rebooting in 3s",
+        size, OTA_NEXT_PATH
+    );
 
     // Reboot after a delay so the response can be sent
     tokio::spawn(async {
@@ -638,7 +684,9 @@ pub async fn update_handler(body: Bytes) -> (StatusCode, Json<Value>) {
 
     (
         StatusCode::OK,
-        Json(json!({"status": "staged", "size": size, "message": "Update staged. Rebooting in 3 seconds..."})),
+        Json(
+            json!({"status": "staged", "size": size, "message": "Update staged. Rebooting in 3 seconds..."}),
+        ),
     )
 }
 
@@ -749,7 +797,10 @@ pub async fn firmware_flash_handler(body: axum::body::Body) -> (StatusCode, Json
         );
     }
 
-    info!("Firmware: {} bytes written to staging, flashing rootfs", total);
+    info!(
+        "Firmware: {} bytes written to staging, flashing rootfs",
+        total
+    );
 
     // Flash to NAND via stock flash_image utility
     let output = tokio::task::spawn_blocking(|| {
@@ -811,4 +862,52 @@ pub async fn firmware_flash_handler(body: axum::body::Body) -> (StatusCode, Json
             "message": "Rootfs flashed to NAND. Rebooting in 3 seconds..."
         })),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_arm_elf;
+
+    fn arm_elf_header() -> Vec<u8> {
+        let mut h = vec![0u8; 64];
+        h[0..4].copy_from_slice(b"\x7fELF");
+        h[4] = 1; // ELFCLASS32
+        h[5] = 1; // ELFDATA2LSB (little-endian)
+        h[6] = 1; // EV_CURRENT
+        h[16..18].copy_from_slice(&2u16.to_le_bytes()); // ET_EXEC
+        h[18..20].copy_from_slice(&40u16.to_le_bytes()); // EM_ARM
+        h
+    }
+
+    #[test]
+    fn accepts_arm_elf_exec_and_pie() {
+        assert!(validate_arm_elf(&arm_elf_header()).is_ok());
+        let mut pie = arm_elf_header();
+        pie[16..18].copy_from_slice(&3u16.to_le_bytes()); // ET_DYN (PIE)
+        assert!(validate_arm_elf(&pie).is_ok());
+    }
+
+    #[test]
+    fn rejects_bad_magic_and_truncation() {
+        assert!(validate_arm_elf(b"not an elf at all!!!!").is_err());
+        assert!(validate_arm_elf(&[0u8; 8]).is_err()); // too small
+        let mut h = arm_elf_header();
+        h.truncate(10);
+        assert!(validate_arm_elf(&h).is_err());
+    }
+
+    #[test]
+    fn rejects_wrong_arch_class_and_endianness() {
+        let mut x86 = arm_elf_header();
+        x86[18..20].copy_from_slice(&62u16.to_le_bytes()); // EM_X86_64
+        assert!(validate_arm_elf(&x86).is_err());
+
+        let mut elf64 = arm_elf_header();
+        elf64[4] = 2; // ELFCLASS64
+        assert!(validate_arm_elf(&elf64).is_err());
+
+        let mut be = arm_elf_header();
+        be[5] = 2; // big-endian
+        assert!(validate_arm_elf(&be).is_err());
+    }
 }

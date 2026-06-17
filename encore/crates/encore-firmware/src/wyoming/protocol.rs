@@ -62,8 +62,7 @@ pub async fn read_event(reader: &mut BufReader<OwnedReadHalf>) -> Result<Option<
         return Ok(None); // connection closed
     }
 
-    let header: Header =
-        serde_json::from_str(header_line.trim()).context("parse header JSON")?;
+    let header: Header = serde_json::from_str(header_line.trim()).context("parse header JSON")?;
 
     // Read data JSON
     let data = if header.data_length > 0 {
@@ -138,10 +137,7 @@ pub async fn write_event(writer: &mut OwnedWriteHalf, event: &WyomingEvent) -> R
     writer.write_all(b"\n").await.context("write newline")?;
 
     if !data_bytes.is_empty() {
-        writer
-            .write_all(&data_bytes)
-            .await
-            .context("write data")?;
+        writer.write_all(&data_bytes).await.context("write data")?;
     }
 
     if !event.payload.is_empty() {
@@ -209,11 +205,8 @@ mod tests {
     #[test]
     fn serialize_event_with_payload_includes_binary() {
         let payload = vec![0xDE, 0xAD, 0xBE, 0xEF];
-        let event = WyomingEvent::with_payload(
-            "audio-chunk",
-            json!({"rate": 16000}),
-            payload.clone(),
-        );
+        let event =
+            WyomingEvent::with_payload("audio-chunk", json!({"rate": 16000}), payload.clone());
         let bytes = serialize_event(&event).unwrap();
 
         // Last 4 bytes should be our payload

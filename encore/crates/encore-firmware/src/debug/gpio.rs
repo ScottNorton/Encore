@@ -30,12 +30,15 @@ pub struct GpioStateResponse {
 
 /// Export all DSP flow control pins (4, 12, 13, 15).
 pub async fn init_all(state: Arc<Mutex<Option<DspGpio>>>) -> Result<()> {
-    tokio::time::timeout(OP_TIMEOUT, tokio::task::spawn_blocking(move || {
-        let dsp_gpio = DspGpio::init()?;
-        let mut guard = state.lock().map_err(|_| anyhow::anyhow!("lock poisoned"))?;
-        *guard = Some(dsp_gpio);
-        Ok(())
-    }))
+    tokio::time::timeout(
+        OP_TIMEOUT,
+        tokio::task::spawn_blocking(move || {
+            let dsp_gpio = DspGpio::init()?;
+            let mut guard = state.lock().map_err(|_| anyhow::anyhow!("lock poisoned"))?;
+            *guard = Some(dsp_gpio);
+            Ok(())
+        }),
+    )
     .await
     .context("GPIO init timed out (possible CPU peg — pin export may be stuck)")?
     .context("GPIO init task panicked")?
@@ -43,13 +46,16 @@ pub async fn init_all(state: Arc<Mutex<Option<DspGpio>>>) -> Result<()> {
 
 /// Unexport all DSP flow control pins.
 pub async fn deinit_all(state: Arc<Mutex<Option<DspGpio>>>) -> Result<()> {
-    tokio::time::timeout(OP_TIMEOUT, tokio::task::spawn_blocking(move || {
-        let mut guard = state.lock().map_err(|_| anyhow::anyhow!("lock poisoned"))?;
-        if let Some(mut g) = guard.take() {
-            g.deinit();
-        }
-        Ok(())
-    }))
+    tokio::time::timeout(
+        OP_TIMEOUT,
+        tokio::task::spawn_blocking(move || {
+            let mut guard = state.lock().map_err(|_| anyhow::anyhow!("lock poisoned"))?;
+            if let Some(mut g) = guard.take() {
+                g.deinit();
+            }
+            Ok(())
+        }),
+    )
     .await
     .context("GPIO deinit timed out")?
     .context("GPIO deinit task panicked")?
@@ -57,27 +63,50 @@ pub async fn deinit_all(state: Arc<Mutex<Option<DspGpio>>>) -> Result<()> {
 
 /// Read state of all DSP flow control pins.
 pub async fn read_state(state: Arc<Mutex<Option<DspGpio>>>) -> Result<GpioStateResponse> {
-    tokio::time::timeout(OP_TIMEOUT, tokio::task::spawn_blocking(move || {
-        let guard = state.lock().map_err(|_| anyhow::anyhow!("lock poisoned"))?;
-        match guard.as_ref() {
-            Some(g) => {
-                let s = g.read_state();
-                Ok(GpioStateResponse {
-                    initialized: true,
-                    pins: vec![
-                        PinInfo { pin: 4, exported: true, direction: Some("out".into()), value: Some(s.cs) },
-                        PinInfo { pin: 12, exported: true, direction: Some("in".into()), value: Some(s.data_ready) },
-                        PinInfo { pin: 13, exported: true, direction: Some("out".into()), value: Some(s.arm_ready) },
-                        PinInfo { pin: 15, exported: true, direction: Some("in".into()), value: Some(s.dsp_ready) },
-                    ],
-                })
+    tokio::time::timeout(
+        OP_TIMEOUT,
+        tokio::task::spawn_blocking(move || {
+            let guard = state.lock().map_err(|_| anyhow::anyhow!("lock poisoned"))?;
+            match guard.as_ref() {
+                Some(g) => {
+                    let s = g.read_state();
+                    Ok(GpioStateResponse {
+                        initialized: true,
+                        pins: vec![
+                            PinInfo {
+                                pin: 4,
+                                exported: true,
+                                direction: Some("out".into()),
+                                value: Some(s.cs),
+                            },
+                            PinInfo {
+                                pin: 12,
+                                exported: true,
+                                direction: Some("in".into()),
+                                value: Some(s.data_ready),
+                            },
+                            PinInfo {
+                                pin: 13,
+                                exported: true,
+                                direction: Some("out".into()),
+                                value: Some(s.arm_ready),
+                            },
+                            PinInfo {
+                                pin: 15,
+                                exported: true,
+                                direction: Some("in".into()),
+                                value: Some(s.dsp_ready),
+                            },
+                        ],
+                    })
+                }
+                None => Ok(GpioStateResponse {
+                    initialized: false,
+                    pins: vec![],
+                }),
             }
-            None => Ok(GpioStateResponse {
-                initialized: false,
-                pins: vec![],
-            }),
-        }
-    }))
+        }),
+    )
     .await
     .context("GPIO state read timed out")?
     .context("GPIO state read task panicked")?
@@ -86,9 +115,10 @@ pub async fn read_state(state: Arc<Mutex<Option<DspGpio>>>) -> Result<GpioStateR
 /// Export a single GPIO pin.
 pub async fn export_pin(pin: u32) -> Result<()> {
     validate_pin(pin)?;
-    tokio::time::timeout(OP_TIMEOUT, tokio::task::spawn_blocking(move || {
-        gpio::export(pin)
-    }))
+    tokio::time::timeout(
+        OP_TIMEOUT,
+        tokio::task::spawn_blocking(move || gpio::export(pin)),
+    )
     .await
     .context("GPIO export timed out (possible CPU peg)")?
     .context("GPIO export task panicked")?
@@ -97,10 +127,13 @@ pub async fn export_pin(pin: u32) -> Result<()> {
 /// Unexport a single GPIO pin.
 pub async fn unexport_pin(pin: u32) -> Result<()> {
     validate_pin(pin)?;
-    tokio::time::timeout(OP_TIMEOUT, tokio::task::spawn_blocking(move || {
-        gpio::unexport(pin);
-        Ok(())
-    }))
+    tokio::time::timeout(
+        OP_TIMEOUT,
+        tokio::task::spawn_blocking(move || {
+            gpio::unexport(pin);
+            Ok(())
+        }),
+    )
     .await
     .context("GPIO unexport timed out")?
     .context("GPIO unexport task panicked")?
@@ -109,17 +142,31 @@ pub async fn unexport_pin(pin: u32) -> Result<()> {
 /// Read a single GPIO pin value.
 pub async fn read_pin(pin: u32) -> Result<PinInfo> {
     validate_pin(pin)?;
-    tokio::time::timeout(OP_TIMEOUT, tokio::task::spawn_blocking(move || {
-        let exported = std::path::Path::new(&format!("/sys/class/gpio/gpio{}", pin)).exists();
-        if !exported {
-            return Ok(PinInfo { pin, exported: false, direction: None, value: None });
-        }
-        let direction = std::fs::read_to_string(format!("/sys/class/gpio/gpio{}/direction", pin))
-            .ok()
-            .map(|s| s.trim().to_string());
-        let value = gpio::read_value(pin).ok();
-        Ok(PinInfo { pin, exported: true, direction, value })
-    }))
+    tokio::time::timeout(
+        OP_TIMEOUT,
+        tokio::task::spawn_blocking(move || {
+            let exported = std::path::Path::new(&format!("/sys/class/gpio/gpio{}", pin)).exists();
+            if !exported {
+                return Ok(PinInfo {
+                    pin,
+                    exported: false,
+                    direction: None,
+                    value: None,
+                });
+            }
+            let direction =
+                std::fs::read_to_string(format!("/sys/class/gpio/gpio{}/direction", pin))
+                    .ok()
+                    .map(|s| s.trim().to_string());
+            let value = gpio::read_value(pin).ok();
+            Ok(PinInfo {
+                pin,
+                exported: true,
+                direction,
+                value,
+            })
+        }),
+    )
     .await
     .context("GPIO read timed out")?
     .context("GPIO read task panicked")?

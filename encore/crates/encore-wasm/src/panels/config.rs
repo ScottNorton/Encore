@@ -12,64 +12,147 @@ pub fn render(container: &web_sys::Element) {
     form.set_id("config-form");
 
     // Build sections from current config (or defaults)
-    let cfg = crate::state::with(|s| {
-        s.config.clone().unwrap_or_default()
-    });
+    let cfg = crate::state::with(|s| s.config.clone().unwrap_or_default());
 
     // Device section
-    section(&form, "Device", &[
-        TextField::create("cfg-name", "Device Name", &cfg.device_name, ""),
-    ]);
+    section(
+        &form,
+        "Device",
+        &[TextField::create(
+            "cfg-name",
+            "Device Name",
+            &cfg.device_name,
+            "",
+        )],
+    );
 
     // Audio section
-    section(&form, "Audio", &[
-        field_range("cfg-master-vol", "Master Volume", cfg.master_volume),
-        field_range("cfg-spotify-vol", "Spotify Volume", cfg.spotify_volume),
-        field_range("cfg-bt-vol", "Bluetooth Volume", cfg.bluetooth_volume),
-        field_range("cfg-tts-duck", "TTS Duck %", cfg.tts_duck_percent),
-    ]);
+    section(
+        &form,
+        "Audio",
+        &[
+            field_range("cfg-master-vol", "Master Volume", cfg.master_volume),
+            field_range("cfg-spotify-vol", "Spotify Volume", cfg.spotify_volume),
+            field_range("cfg-bt-vol", "Bluetooth Volume", cfg.bluetooth_volume),
+            field_range("cfg-tts-duck", "TTS Duck %", cfg.tts_duck_percent),
+        ],
+    );
 
     // Spotify section
-    section(&form, "Spotify", &[
-        field_toggle("cfg-spotify-en", "Enabled", cfg.spotify_enabled),
-    ]);
+    section(
+        &form,
+        "Spotify",
+        &[field_toggle(
+            "cfg-spotify-en",
+            "Enabled",
+            cfg.spotify_enabled,
+        )],
+    );
 
     // Bluetooth section
-    section(&form, "Bluetooth", &[
-        field_toggle("cfg-bt-en", "Enabled", cfg.bluetooth_enabled),
-        field_toggle("cfg-bt-disc", "Discoverable", cfg.bluetooth_discoverable),
-    ]);
+    section(
+        &form,
+        "Bluetooth",
+        &[
+            field_toggle("cfg-bt-en", "Enabled", cfg.bluetooth_enabled),
+            field_toggle("cfg-bt-disc", "Discoverable", cfg.bluetooth_discoverable),
+        ],
+    );
 
     // Network section
-    section(&form, "Network", &[
-        TextField::create("cfg-wifi-ssid", "WiFi SSID", cfg.wifi_ssid.as_deref().unwrap_or(""), ""),
-        TextField::create("cfg-wifi-pass", "WiFi Password", cfg.wifi_password.as_deref().unwrap_or(""), ""),
-        field_toggle("cfg-ap-keep-alive", "Keep AP Alive", cfg.ap_keep_alive),
-    ]);
+    section(
+        &form,
+        "Network",
+        &[
+            TextField::create(
+                "cfg-wifi-ssid",
+                "WiFi SSID",
+                cfg.wifi_ssid.as_deref().unwrap_or(""),
+                "",
+            ),
+            TextField::create(
+                "cfg-wifi-pass",
+                "WiFi Password",
+                cfg.wifi_password.as_deref().unwrap_or(""),
+                "",
+            ),
+            field_toggle("cfg-ap-keep-alive", "Keep AP Alive", cfg.ap_keep_alive),
+        ],
+    );
 
     // VPN section
-    section(&form, "VPN (WireGuard)", &[
-        field_toggle("cfg-vpn-en", "Enabled", cfg.vpn_enabled),
-        TextField::create("cfg-vpn-key", "Private Key", cfg.vpn_private_key.as_deref().unwrap_or(""), ""),
-        TextField::create("cfg-vpn-addr", "Address", cfg.vpn_address.as_deref().unwrap_or(""), ""),
-        TextField::create("cfg-vpn-peer-pub", "Peer Public Key", cfg.vpn_peer_public_key.as_deref().unwrap_or(""), ""),
-        TextField::create("cfg-vpn-peer-psk", "Peer Preshared Key", cfg.vpn_peer_preshared_key.as_deref().unwrap_or(""), ""),
-        TextField::create("cfg-vpn-endpoint", "Peer Endpoint", cfg.vpn_peer_endpoint.as_deref().unwrap_or(""), ""),
-        TextField::create("cfg-vpn-allowed", "Allowed IPs", cfg.vpn_peer_allowed_ips.as_deref().unwrap_or(""), ""),
-        TextField::create("cfg-vpn-keepalive", "Keepalive (s)", &cfg.vpn_persistent_keepalive.to_string(), ""),
-    ]);
+    section(
+        &form,
+        "VPN (WireGuard)",
+        &[
+            field_toggle("cfg-vpn-en", "Enabled", cfg.vpn_enabled),
+            TextField::create(
+                "cfg-vpn-key",
+                "Private Key",
+                cfg.vpn_private_key.as_deref().unwrap_or(""),
+                "",
+            ),
+            TextField::create(
+                "cfg-vpn-addr",
+                "Address",
+                cfg.vpn_address.as_deref().unwrap_or(""),
+                "",
+            ),
+            TextField::create(
+                "cfg-vpn-peer-pub",
+                "Peer Public Key",
+                cfg.vpn_peer_public_key.as_deref().unwrap_or(""),
+                "",
+            ),
+            TextField::create(
+                "cfg-vpn-peer-psk",
+                "Peer Preshared Key",
+                cfg.vpn_peer_preshared_key.as_deref().unwrap_or(""),
+                "",
+            ),
+            TextField::create(
+                "cfg-vpn-endpoint",
+                "Peer Endpoint",
+                cfg.vpn_peer_endpoint.as_deref().unwrap_or(""),
+                "",
+            ),
+            TextField::create(
+                "cfg-vpn-allowed",
+                "Allowed IPs",
+                cfg.vpn_peer_allowed_ips.as_deref().unwrap_or(""),
+                "",
+            ),
+            TextField::create(
+                "cfg-vpn-keepalive",
+                "Keepalive (s)",
+                &cfg.vpn_persistent_keepalive.to_string(),
+                "",
+            ),
+        ],
+    );
 
     // Debug section
-    section(&form, "Debug", &[
-        TextField::create("cfg-debug-mode", "Mode", &cfg.debug_mode, ""),
-    ]);
+    section(
+        &form,
+        "Debug",
+        &[TextField::create(
+            "cfg-debug-mode",
+            "Mode",
+            &cfg.debug_mode,
+            "",
+        )],
+    );
 
     dom::append(container, &form);
 
     // Save button
     let save_wrap = dom::create_div();
     dom::set_class(&save_wrap, "mt-16");
-    let save_btn = dom::el("button", "btn btn-primary w-full", Some("Save Configuration"));
+    let save_btn = dom::el(
+        "button",
+        "btn btn-primary w-full",
+        Some("Save Configuration"),
+    );
     dom::on_click(&save_btn, || {
         save_config();
     });
@@ -114,13 +197,18 @@ fn field_range(id: &str, label: &str, value: u8) -> web_sys::Element {
     // Live-update display value on drag
     let val_id = format!("{}-val", id);
     let cb = Closure::wrap(Box::new(move |e: web_sys::Event| {
-        if let Some(input) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok()) {
+        if let Some(input) = e
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+        {
             if let Some(el) = dom::get_el(&val_id) {
                 dom::set_text(&el, &format!("{}%", input.value()));
             }
         }
     }) as Box<dyn FnMut(_)>);
-    input.add_event_listener_with_callback("input", cb.as_ref().unchecked_ref()).ok();
+    input
+        .add_event_listener_with_callback("input", cb.as_ref().unchecked_ref())
+        .ok();
     cb.forget();
     dom::append(&wrap, &input);
     wrap
@@ -161,7 +249,10 @@ fn get_input_value(id: &str) -> String {
 fn get_checkbox(id: &str) -> bool {
     use wasm_bindgen::JsCast;
     dom::get_el(id)
-        .and_then(|el| el.dyn_ref::<web_sys::HtmlInputElement>().map(|i| i.checked()))
+        .and_then(|el| {
+            el.dyn_ref::<web_sys::HtmlInputElement>()
+                .map(|i| i.checked())
+        })
         .unwrap_or(false)
 }
 
@@ -177,37 +268,71 @@ fn save_config() {
         }),
         spotify_enabled: get_checkbox("cfg-spotify-en"),
         spotify_bitrate: crate::state::with(|s| {
-            s.config.as_ref().map(|c| c.spotify_bitrate.clone()).unwrap_or_else(|| "320".into())
+            s.config
+                .as_ref()
+                .map(|c| c.spotify_bitrate.clone())
+                .unwrap_or_else(|| "320".into())
         }),
         spotify_gapless: crate::state::with(|s| {
             s.config.as_ref().map(|c| c.spotify_gapless).unwrap_or(true)
         }),
         spotify_normalisation: crate::state::with(|s| {
-            s.config.as_ref().map(|c| c.spotify_normalisation).unwrap_or(false)
+            s.config
+                .as_ref()
+                .map(|c| c.spotify_normalisation)
+                .unwrap_or(false)
         }),
         spotify_normalisation_type: crate::state::with(|s| {
-            s.config.as_ref().map(|c| c.spotify_normalisation_type.clone()).unwrap_or_else(|| "auto".into())
+            s.config
+                .as_ref()
+                .map(|c| c.spotify_normalisation_type.clone())
+                .unwrap_or_else(|| "auto".into())
         }),
         spotify_normalisation_pregain_db: crate::state::with(|s| {
-            s.config.as_ref().map(|c| c.spotify_normalisation_pregain_db).unwrap_or(0.0)
+            s.config
+                .as_ref()
+                .map(|c| c.spotify_normalisation_pregain_db)
+                .unwrap_or(0.0)
         }),
         bluetooth_enabled: get_checkbox("cfg-bt-en"),
         bluetooth_discoverable: get_checkbox("cfg-bt-disc"),
-        homeassistant_enabled: crate::state::with(|s| s.config.as_ref().map(|c| c.homeassistant_enabled).unwrap_or(false)),
+        homeassistant_enabled: crate::state::with(|s| {
+            s.config
+                .as_ref()
+                .map(|c| c.homeassistant_enabled)
+                .unwrap_or(false)
+        }),
         mqtt_host: crate::state::with(|s| s.config.as_ref().and_then(|c| c.mqtt_host.clone())),
         mqtt_port: crate::state::with(|s| s.config.as_ref().and_then(|c| c.mqtt_port)),
         mqtt_user: crate::state::with(|s| s.config.as_ref().and_then(|c| c.mqtt_user.clone())),
-        mqtt_password: crate::state::with(|s| s.config.as_ref().and_then(|c| c.mqtt_password.clone())),
-        wyoming_enabled: crate::state::with(|s| s.config.as_ref().map(|c| c.wyoming_enabled).unwrap_or(false)),
-        wyoming_host: crate::state::with(|s| s.config.as_ref().and_then(|c| c.wyoming_host.clone())),
+        mqtt_password: crate::state::with(|s| {
+            s.config.as_ref().and_then(|c| c.mqtt_password.clone())
+        }),
+        wyoming_enabled: crate::state::with(|s| {
+            s.config
+                .as_ref()
+                .map(|c| c.wyoming_enabled)
+                .unwrap_or(false)
+        }),
+        wyoming_host: crate::state::with(|s| {
+            s.config.as_ref().and_then(|c| c.wyoming_host.clone())
+        }),
         wyoming_port: crate::state::with(|s| s.config.as_ref().and_then(|c| c.wyoming_port)),
         wifi_ssid: {
             let v = get_input_value("cfg-wifi-ssid");
-            if v.is_empty() { None } else { Some(v) }
+            if v.is_empty() {
+                None
+            } else {
+                Some(v)
+            }
         },
         wifi_password: {
             let v = get_input_value("cfg-wifi-pass");
-            if v.is_empty() { None } else { Some(v) }
+            if v.is_empty() {
+                None
+            } else {
+                Some(v)
+            }
         },
         ap_keep_alive: get_checkbox("cfg-ap-keep-alive"),
         ap_ssid: crate::state::with(|s| s.config.as_ref().and_then(|c| c.ap_ssid.clone())),
@@ -215,43 +340,76 @@ fn save_config() {
         vpn_enabled: get_checkbox("cfg-vpn-en"),
         vpn_private_key: {
             let v = get_input_value("cfg-vpn-key");
-            if v.is_empty() { None } else { Some(v) }
+            if v.is_empty() {
+                None
+            } else {
+                Some(v)
+            }
         },
         vpn_address: {
             let v = get_input_value("cfg-vpn-addr");
-            if v.is_empty() { None } else { Some(v) }
+            if v.is_empty() {
+                None
+            } else {
+                Some(v)
+            }
         },
         vpn_peer_public_key: {
             let v = get_input_value("cfg-vpn-peer-pub");
-            if v.is_empty() { None } else { Some(v) }
+            if v.is_empty() {
+                None
+            } else {
+                Some(v)
+            }
         },
         vpn_peer_preshared_key: {
             let v = get_input_value("cfg-vpn-peer-psk");
-            if v.is_empty() { None } else { Some(v) }
+            if v.is_empty() {
+                None
+            } else {
+                Some(v)
+            }
         },
         vpn_peer_endpoint: {
             let v = get_input_value("cfg-vpn-endpoint");
-            if v.is_empty() { None } else { Some(v) }
+            if v.is_empty() {
+                None
+            } else {
+                Some(v)
+            }
         },
         vpn_peer_allowed_ips: {
             let v = get_input_value("cfg-vpn-allowed");
-            if v.is_empty() { None } else { Some(v) }
+            if v.is_empty() {
+                None
+            } else {
+                Some(v)
+            }
         },
         vpn_persistent_keepalive: get_input_value("cfg-vpn-keepalive").parse().unwrap_or(25),
         group_enabled: crate::state::with(|s| {
             s.config.as_ref().map(|c| c.group_enabled).unwrap_or(false)
         }),
         group_name: crate::state::with(|s| {
-            s.config.as_ref().map(|c| c.group_name.clone()).unwrap_or_else(|| "Living Room".into())
+            s.config
+                .as_ref()
+                .map(|c| c.group_name.clone())
+                .unwrap_or_else(|| "Living Room".into())
         }),
         group_channel: crate::state::with(|s| {
-            s.config.as_ref().map(|c| c.group_channel.clone()).unwrap_or_else(|| "stereo".into())
+            s.config
+                .as_ref()
+                .map(|c| c.group_channel.clone())
+                .unwrap_or_else(|| "stereo".into())
         }),
         group_buffer_ms: crate::state::with(|s| {
             s.config.as_ref().map(|c| c.group_buffer_ms).unwrap_or(80)
         }),
         group_peers: crate::state::with(|s| {
-            s.config.as_ref().map(|c| c.group_peers.clone()).unwrap_or_default()
+            s.config
+                .as_ref()
+                .map(|c| c.group_peers.clone())
+                .unwrap_or_default()
         }),
         debug_mode: get_input_value("cfg-debug-mode"),
     };

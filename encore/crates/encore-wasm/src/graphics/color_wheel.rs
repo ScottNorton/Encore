@@ -34,7 +34,8 @@ pub fn draw(ctx: &CanvasRenderingContext2d) {
     // Inner dark circle
     ctx.set_fill_style_str("var(--bg, #0d1117)");
     ctx.begin_path();
-    ctx.arc(cx, cy, INNER_R - 1.0, 0.0, std::f64::consts::TAU).ok();
+    ctx.arc(cx, cy, INNER_R - 1.0, 0.0, std::f64::consts::TAU)
+        .ok();
     ctx.fill();
 
     // Center label
@@ -53,7 +54,7 @@ fn xy_to_hue(x: f64, y: f64) -> Option<f64> {
     let dy = y - cy;
     let dist = (dx * dx + dy * dy).sqrt();
 
-    if dist < INNER_R - 8.0 || dist > OUTER_R + 8.0 {
+    if !(INNER_R - 8.0..=OUTER_R + 8.0).contains(&dist) {
         return None;
     }
 
@@ -84,7 +85,10 @@ pub fn make_interactive(
             let rect = canvas.get_bounding_client_rect();
             let scale_x = SIZE / rect.width();
             let scale_y = SIZE / rect.height();
-            ((client_x - rect.left()) * scale_x, (client_y - rect.top()) * scale_y)
+            (
+                (client_x - rect.left()) * scale_x,
+                (client_y - rect.top()) * scale_y,
+            )
         }
     };
 
@@ -101,7 +105,9 @@ pub fn make_interactive(
                 on_color(r, g, b);
             }
         }) as Box<dyn FnMut(_)>);
-        canvas.add_event_listener_with_callback("mousedown", cb.as_ref().unchecked_ref()).ok();
+        canvas
+            .add_event_listener_with_callback("mousedown", cb.as_ref().unchecked_ref())
+            .ok();
         cb.forget();
     }
 
@@ -121,7 +127,9 @@ pub fn make_interactive(
                 dragging.set(false);
             }
         }) as Box<dyn FnMut(_)>);
-        canvas.add_event_listener_with_callback("mousemove", cb.as_ref().unchecked_ref()).ok();
+        canvas
+            .add_event_listener_with_callback("mousemove", cb.as_ref().unchecked_ref())
+            .ok();
         cb.forget();
     }
 
@@ -131,7 +139,9 @@ pub fn make_interactive(
         let cb = Closure::wrap(Box::new(move |_: web_sys::MouseEvent| {
             dragging_up.set(false);
         }) as Box<dyn FnMut(_)>);
-        canvas.add_event_listener_with_callback("mouseup", cb.as_ref().unchecked_ref()).ok();
+        canvas
+            .add_event_listener_with_callback("mouseup", cb.as_ref().unchecked_ref())
+            .ok();
         cb.forget();
     }
 
@@ -153,8 +163,12 @@ pub fn make_interactive(
                 }
             }
         }) as Box<dyn FnMut(_)>);
-        canvas.add_event_listener_with_callback("touchstart", touchmove.as_ref().unchecked_ref()).ok();
-        canvas.add_event_listener_with_callback("touchmove", touchmove.as_ref().unchecked_ref()).ok();
+        canvas
+            .add_event_listener_with_callback("touchstart", touchmove.as_ref().unchecked_ref())
+            .ok();
+        canvas
+            .add_event_listener_with_callback("touchmove", touchmove.as_ref().unchecked_ref())
+            .ok();
         touchmove.forget();
     }
 }
@@ -162,4 +176,57 @@ pub fn make_interactive(
 /// Get the canvas size.
 pub fn size() -> u32 {
     SIZE as u32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CENTER: f64 = SIZE / 2.0; // 80.0
+                                    // A radius safely inside the ring band [INNER_R-8, OUTER_R+8] = [46, 82].
+    const ON_RING: f64 = 64.0;
+
+    #[test]
+    fn size_matches_const() {
+        assert_eq!(size(), 160);
+    }
+
+    #[test]
+    fn xy_to_hue_right_is_zero() {
+        // Point to the right of center: angle 0 deg => hue 0.
+        let hue = xy_to_hue(CENTER + ON_RING, CENTER).expect("on ring");
+        assert!((hue - 0.0).abs() < 1e-6, "hue was {hue}");
+    }
+
+    #[test]
+    fn xy_to_hue_down_is_ninety() {
+        // Canvas y grows downward, so +dy is "down" => atan2 gives +90 deg.
+        let hue = xy_to_hue(CENTER, CENTER + ON_RING).expect("on ring");
+        assert!((hue - 90.0).abs() < 1e-6, "hue was {hue}");
+    }
+
+    #[test]
+    fn xy_to_hue_left_is_one_eighty() {
+        let hue = xy_to_hue(CENTER - ON_RING, CENTER).expect("on ring");
+        assert!((hue - 180.0).abs() < 1e-6, "hue was {hue}");
+    }
+
+    #[test]
+    fn xy_to_hue_up_is_two_seventy() {
+        // -dy ("up") gives -90 deg, wrapped into [0,360) => 270.
+        let hue = xy_to_hue(CENTER, CENTER - ON_RING).expect("on ring");
+        assert!((hue - 270.0).abs() < 1e-6, "hue was {hue}");
+    }
+
+    #[test]
+    fn xy_to_hue_center_is_off_ring() {
+        // The dead center is inside INNER_R, so it returns None.
+        assert!(xy_to_hue(CENTER, CENTER).is_none());
+    }
+
+    #[test]
+    fn xy_to_hue_far_outside_is_off_ring() {
+        // Far beyond OUTER_R+8 returns None.
+        assert!(xy_to_hue(CENTER + 100.0, CENTER).is_none());
+    }
 }

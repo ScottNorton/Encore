@@ -23,10 +23,14 @@ pub fn render(container: &web_sys::Element) {
     dom::set_style(&banner_title, "color", "#FFA030");
     dom::append(&banner, &banner_title);
 
-    let banner_body = dom::el("div", "", Some(
-        "A firmware update failed to start. Running last stable firmware. \
-         Upload a new version via Update, or restart to clear safe mode."
-    ));
+    let banner_body = dom::el(
+        "div",
+        "",
+        Some(
+            "A firmware update failed to start. Running last stable firmware. \
+         Upload a new version via Update, or restart to clear safe mode.",
+        ),
+    );
     dom::set_style(&banner_body, "line-height", "1.5");
     dom::append(&banner, &banner_body);
 
@@ -44,9 +48,7 @@ pub fn render(container: &web_sys::Element) {
             let opts = web_sys::RequestInit::new();
             opts.set_method("POST");
             if let Ok(req) = web_sys::Request::new_with_str_and_init(&url, &opts) {
-                let _ = wasm_bindgen_futures::JsFuture::from(
-                    window.fetch_with_request(&req)
-                ).await;
+                let _ = wasm_bindgen_futures::JsFuture::from(window.fetch_with_request(&req)).await;
             }
             if let Some(el) = dom::get_el("safe-mode-banner") {
                 dom::clear(&el);
@@ -290,7 +292,12 @@ fn render_sys_skeleton(parent: &web_sys::Element) {
     stat_row_with_id(parent, "Uptime", "--", "dash-sys-uptime");
     stat_row_with_id(parent, "Temperature", "--", "dash-sys-temp");
     stat_row_with_id(parent, "Processes", "--", "dash-sys-procs");
-    stat_row_with_id(parent, "Firmware", &format!("v{}", encore_common::VERSION), "dash-sys-fw");
+    stat_row_with_id(
+        parent,
+        "Firmware",
+        &format!("v{}", encore_common::VERSION),
+        "dash-sys-fw",
+    );
 }
 
 // ── Surgical update functions ──
@@ -341,7 +348,13 @@ fn update_cpu(sys: &encore_common::protocol::SystemSnapshot) {
         if s.prev_cores.len() == sys.cores.len() && !sys.cores.is_empty() {
             for (i, (cur, prev)) in sys.cores.iter().zip(s.prev_cores.iter()).enumerate() {
                 let pct = compute_core_pct(prev, cur);
-                let color = if pct > 80 { "var(--red)" } else if pct > 50 { "var(--orange)" } else { "var(--green)" };
+                let color = if pct > 80 {
+                    "var(--red)"
+                } else if pct > 50 {
+                    "var(--orange)"
+                } else {
+                    "var(--green)"
+                };
 
                 if let Some(fill) = dom::get_el(&format!("dash-cpu-fill-{}", i)) {
                     dom::set_style(&fill, "width", &format!("{}%", pct));
@@ -351,22 +364,29 @@ fn update_cpu(sys: &encore_common::protocol::SystemSnapshot) {
 
                 if cur.freq_khz > 0 {
                     let freq_mhz = cur.freq_khz / 1000;
-                    set_text_if_changed(&format!("dash-cpu-freq-{}", i), &format!("{} MHz", freq_mhz));
+                    set_text_if_changed(
+                        &format!("dash-cpu-freq-{}", i),
+                        &format!("{} MHz", freq_mhz),
+                    );
                 }
             }
         }
     });
 
     // Load averages
-    set_text_if_changed("dash-cpu-load", &format!(
-        "{:.2} / {:.2} / {:.2}",
-        sys.load_avg[0], sys.load_avg[1], sys.load_avg[2]
-    ));
+    set_text_if_changed(
+        "dash-cpu-load",
+        &format!(
+            "{:.2} / {:.2} / {:.2}",
+            sys.load_avg[0], sys.load_avg[1], sys.load_avg[2]
+        ),
+    );
 }
 
 fn update_memory_storage(sys: &encore_common::protocol::SystemSnapshot) {
     let total = sys.ram_total_kb as f64 / 1024.0;
-    let used = (sys.ram_total_kb - sys.ram_free_kb - sys.ram_buffers_kb - sys.ram_cached_kb) as f64 / 1024.0;
+    let used = (sys.ram_total_kb - sys.ram_free_kb - sys.ram_buffers_kb - sys.ram_cached_kb) as f64
+        / 1024.0;
     let buffers = sys.ram_buffers_kb as f64 / 1024.0;
     let cached = sys.ram_cached_kb as f64 / 1024.0;
     let free = sys.ram_free_kb as f64 / 1024.0;
@@ -392,9 +412,7 @@ fn update_memory_storage(sys: &encore_common::protocol::SystemSnapshot) {
 
     // Storage section (dynamic disk list — rebuild only this subsection)
     if let Some(area) = dom::get_el("dash-storage-area") {
-        let writable_disks: Vec<_> = sys.disks.iter()
-            .filter(|d| d.mount != "/")
-            .collect();
+        let writable_disks: Vec<_> = sys.disks.iter().filter(|d| d.mount != "/").collect();
         if writable_disks.is_empty() {
             // No writable disks — hide storage section
             if area.child_element_count() > 0 {
@@ -420,10 +438,11 @@ fn update_memory_storage(sys: &encore_common::protocol::SystemSnapshot) {
                 dom::set_class(&header, "flex justify-between mb-4");
                 let mount = dom::el("span", "text-muted text-sm", Some(&disk.mount));
                 let free_kb = disk.total_kb.saturating_sub(disk.used_kb);
-                let usage = dom::el("span", "text-muted text-sm", Some(&format!(
-                    "{:.1} MB free",
-                    free_kb as f64 / 1024.0,
-                )));
+                let usage = dom::el(
+                    "span",
+                    "text-muted text-sm",
+                    Some(&format!("{:.1} MB free", free_kb as f64 / 1024.0,)),
+                );
                 dom::append(&header, &mount);
                 dom::append(&header, &usage);
                 dom::append(&row, &header);
@@ -433,9 +452,19 @@ fn update_memory_storage(sys: &encore_common::protocol::SystemSnapshot) {
                 dom::set_style(&track, "height", "6px");
                 let fill = dom::create_div();
                 dom::set_class(&fill, "bar-fill");
-                let pct = if disk.total_kb > 0 { disk.used_kb * 100 / disk.total_kb } else { 0 };
+                let pct = if disk.total_kb > 0 {
+                    disk.used_kb * 100 / disk.total_kb
+                } else {
+                    0
+                };
                 dom::set_style(&fill, "width", &format!("{}%", pct));
-                let color = if pct > 90 { "var(--red)" } else if pct > 70 { "var(--orange)" } else { "var(--accent)" };
+                let color = if pct > 90 {
+                    "var(--red)"
+                } else if pct > 70 {
+                    "var(--orange)"
+                } else {
+                    "var(--accent)"
+                };
                 dom::set_style(&fill, "background", color);
                 dom::append(&track, &fill);
                 dom::append(&row, &track);
@@ -451,7 +480,8 @@ fn update_network(sys: &encore_common::protocol::SystemSnapshot) {
     let history: Vec<u64> = state::with(|s| s.net_rx_history.iter().copied().collect());
     if history.len() > 1 {
         let max_val = history.iter().copied().max().unwrap_or(1).max(1);
-        let scaled: Vec<u8> = history.iter()
+        let scaled: Vec<u8> = history
+            .iter()
             .map(|&v| (v * 100 / max_val).min(100) as u8)
             .collect();
         redraw_sparkline("dash-net-spark", &scaled, 280.0, 40.0);
@@ -464,9 +494,15 @@ fn update_network(sys: &encore_common::protocol::SystemSnapshot) {
                 if let Some(row) = dom::get_el("dash-net-ap") {
                     dom::set_style(&row, "display", "flex");
                 }
-                set_text_if_changed("dash-net-ap-val", &format!(
-                    "{} ({} client{})", ssid, clients, if *clients != 1 { "s" } else { "" }
-                ));
+                set_text_if_changed(
+                    "dash-net-ap-val",
+                    &format!(
+                        "{} ({} client{})",
+                        ssid,
+                        clients,
+                        if *clients != 1 { "s" } else { "" }
+                    ),
+                );
             } else if let Some(row) = dom::get_el("dash-net-ap") {
                 dom::set_style(&row, "display", "none");
             }
@@ -486,7 +522,8 @@ fn update_network(sys: &encore_common::protocol::SystemSnapshot) {
                 let rates = dom::create_div();
                 dom::set_class(&rates, "flex gap-12 text-sm");
 
-                let (rx_rate, tx_rate) = s.prev_net
+                let (rx_rate, tx_rate) = s
+                    .prev_net
                     .get(&iface.name)
                     .map(|(prev_rx, prev_tx)| {
                         let rx = iface.rx_bytes.saturating_sub(*prev_rx);
@@ -509,10 +546,13 @@ fn update_network(sys: &encore_common::protocol::SystemSnapshot) {
 
 fn update_system(sys: &encore_common::protocol::SystemSnapshot) {
     set_text_if_changed("dash-sys-uptime", &format_uptime(sys.uptime_secs));
-    set_text_if_changed("dash-sys-temp", &match sys.temperature_mc {
-        Some(mc) => format!("{:.1}\u{00B0}C", mc as f64 / 1000.0),
-        None => "N/A".into(),
-    });
+    set_text_if_changed(
+        "dash-sys-temp",
+        &match sys.temperature_mc {
+            Some(mc) => format!("{:.1}\u{00B0}C", mc as f64 / 1000.0),
+            None => "N/A".into(),
+        },
+    );
     set_text_if_changed("dash-sys-procs", &format!("{}", sys.process_count));
 }
 
@@ -537,9 +577,14 @@ fn redraw_sparkline(canvas_id: &str, data: &[u8], w: f64, h: f64) {
     }
 }
 
-fn compute_core_pct(prev: &encore_common::protocol::CpuCoreSnapshot, cur: &encore_common::protocol::CpuCoreSnapshot) -> u8 {
-    let prev_total = prev.user + prev.nice + prev.system + prev.idle + prev.iowait + prev.irq + prev.softirq;
-    let cur_total = cur.user + cur.nice + cur.system + cur.idle + cur.iowait + cur.irq + cur.softirq;
+fn compute_core_pct(
+    prev: &encore_common::protocol::CpuCoreSnapshot,
+    cur: &encore_common::protocol::CpuCoreSnapshot,
+) -> u8 {
+    let prev_total =
+        prev.user + prev.nice + prev.system + prev.idle + prev.iowait + prev.irq + prev.softirq;
+    let cur_total =
+        cur.user + cur.nice + cur.system + cur.idle + cur.iowait + cur.irq + cur.softirq;
     let total_delta = cur_total.saturating_sub(prev_total);
     let idle_delta = cur.idle.saturating_sub(prev.idle);
     if total_delta == 0 {
@@ -568,5 +613,108 @@ fn format_bytes_rate(bytes: u64) -> String {
         format!("{:.1} KB/s", bytes as f64 / 1024.0)
     } else {
         format!("{} B/s", bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use encore_common::protocol::CpuCoreSnapshot;
+
+    /// Build a core snapshot from user/idle jiffies (other fields zero).
+    fn core(user: u64, idle: u64) -> CpuCoreSnapshot {
+        CpuCoreSnapshot {
+            user,
+            nice: 0,
+            system: 0,
+            idle,
+            iowait: 0,
+            irq: 0,
+            softirq: 0,
+            freq_khz: 0,
+        }
+    }
+
+    #[test]
+    fn format_uptime_minutes_only() {
+        // Below one hour: just "<m>m". 0s and 59s both floor to 0 minutes.
+        assert_eq!(format_uptime(0), "0m");
+        assert_eq!(format_uptime(59), "0m");
+        // 60s is exactly one minute.
+        assert_eq!(format_uptime(60), "1m");
+        // One second short of an hour is still 59 minutes.
+        assert_eq!(format_uptime(3599), "59m");
+    }
+
+    #[test]
+    fn format_uptime_hours_boundary() {
+        // Exactly one hour switches to the "<h>h <m>m" form.
+        assert_eq!(format_uptime(3600), "1h 0m");
+        // One second short of a day: 23h 59m.
+        assert_eq!(format_uptime(86399), "23h 59m");
+    }
+
+    #[test]
+    fn format_uptime_days_boundary() {
+        // Exactly one day switches to the "<d>d <h>h <m>m" form.
+        assert_eq!(format_uptime(86400), "1d 0h 0m");
+        // 1 day + 1 hour + 1 minute + 1 second.
+        assert_eq!(format_uptime(90061), "1d 1h 1m");
+    }
+
+    #[test]
+    fn format_bytes_rate_bytes_branch() {
+        // Below 1 KiB shows raw bytes per second.
+        assert_eq!(format_bytes_rate(0), "0 B/s");
+        assert_eq!(format_bytes_rate(1023), "1023 B/s");
+    }
+
+    #[test]
+    fn format_bytes_rate_kilobytes_branch() {
+        // 1024 B is exactly 1.0 KB/s.
+        assert_eq!(format_bytes_rate(1024), "1.0 KB/s");
+        // 1536 B = 1.5 KiB.
+        assert_eq!(format_bytes_rate(1536), "1.5 KB/s");
+        // One byte short of a MiB stays in the KB branch (rounds to 1024.0).
+        assert_eq!(format_bytes_rate(1_048_575), "1024.0 KB/s");
+    }
+
+    #[test]
+    fn format_bytes_rate_megabytes_branch() {
+        // Exactly 1 MiB is 1.0 MB/s.
+        assert_eq!(format_bytes_rate(1_048_576), "1.0 MB/s");
+        // 1.5 MiB.
+        assert_eq!(format_bytes_rate(1_572_864), "1.5 MB/s");
+    }
+
+    #[test]
+    fn compute_core_pct_half_busy() {
+        // 50 user + 50 idle jiffies of delta => 50% busy.
+        let prev = core(0, 0);
+        let cur = core(50, 50);
+        assert_eq!(compute_core_pct(&prev, &cur), 50);
+    }
+
+    #[test]
+    fn compute_core_pct_fully_busy() {
+        // All delta in user, none in idle => 100%.
+        let prev = core(0, 0);
+        let cur = core(100, 0);
+        assert_eq!(compute_core_pct(&prev, &cur), 100);
+    }
+
+    #[test]
+    fn compute_core_pct_fully_idle() {
+        // All delta in idle => 0%.
+        let prev = core(0, 0);
+        let cur = core(0, 100);
+        assert_eq!(compute_core_pct(&prev, &cur), 0);
+    }
+
+    #[test]
+    fn compute_core_pct_no_delta_returns_zero() {
+        // Identical snapshots => total_delta == 0 => guarded to 0.
+        let snap = core(10, 20);
+        assert_eq!(compute_core_pct(&snap, &snap), 0);
     }
 }

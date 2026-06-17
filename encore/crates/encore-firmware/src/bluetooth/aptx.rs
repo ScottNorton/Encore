@@ -62,7 +62,11 @@ impl AptxDecoder {
     /// Each group = 24 bytes output (4 samples × 2 channels × 3 bytes).
     ///
     /// Returns `(bytes_consumed_from_input, stereo_i32_samples_written)`.
-    pub fn decode(&mut self, input: &[u8], pcm_out: &mut [i32]) -> Result<(usize, usize), AptxError> {
+    pub fn decode(
+        &mut self,
+        input: &[u8],
+        pcm_out: &mut [i32],
+    ) -> Result<(usize, usize), AptxError> {
         if input.is_empty() {
             return Ok((0, 0));
         }

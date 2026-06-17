@@ -62,14 +62,22 @@ async fn gpio_pin_read(Path(pin): Path<u32>) -> impl IntoResponse {
 
 async fn gpio_pin_export(Path(pin): Path<u32>) -> impl IntoResponse {
     match super::gpio::export_pin(pin).await {
-        Ok(()) => (StatusCode::OK, Json(serde_json::json!({"ok": true, "pin": pin}))).into_response(),
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"ok": true, "pin": pin})),
+        )
+            .into_response(),
         Err(e) => error_response(e),
     }
 }
 
 async fn gpio_pin_unexport(Path(pin): Path<u32>) -> impl IntoResponse {
     match super::gpio::unexport_pin(pin).await {
-        Ok(()) => (StatusCode::OK, Json(serde_json::json!({"ok": true, "pin": pin}))).into_response(),
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"ok": true, "pin": pin})),
+        )
+            .into_response(),
         Err(e) => error_response(e),
     }
 }

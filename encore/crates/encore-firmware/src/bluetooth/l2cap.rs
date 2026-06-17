@@ -5,7 +5,7 @@
 //! The kernel's bt8xxx.ko provides these interfaces — no BlueZ daemon needed.
 
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{FromRawFd, OwnedFd, RawFd};
 
 // ── Bluetooth socket constants ──
 
@@ -277,6 +277,10 @@ mod tests {
     fn sockaddr_l2_size() {
         // Kernel expects 14 bytes (13 fields + 1 padding from repr(C))
         let size = std::mem::size_of::<SockaddrL2>();
-        assert!(size >= 13 && size <= 16, "unexpected SockaddrL2 size: {}", size);
+        assert!(
+            (13..=16).contains(&size),
+            "unexpected SockaddrL2 size: {}",
+            size
+        );
     }
 }

@@ -16,10 +16,10 @@ use crate::dom;
 use encore_common::protocol::{ClientMsg, SpotifyAction};
 
 thread_local! {
-    static POSITION_TIMER: RefCell<Option<i32>> = RefCell::new(None);
-    static SETTINGS_LOADED: RefCell<bool> = RefCell::new(false);
-    static LAST_COVER_URL: RefCell<String> = RefCell::new(String::new());
-    static VOL_DRAGGING: RefCell<bool> = RefCell::new(false);
+    static POSITION_TIMER: RefCell<Option<i32>> = const { RefCell::new(None) };
+    static SETTINGS_LOADED: RefCell<bool> = const { RefCell::new(false) };
+    static LAST_COVER_URL: RefCell<String> = const { RefCell::new(String::new()) };
+    static VOL_DRAGGING: RefCell<bool> = const { RefCell::new(false) };
 }
 
 fn format_time(ms: u32) -> String {
@@ -29,21 +29,24 @@ fn format_time(ms: u32) -> String {
 
 fn start_position_timer() {
     stop_position_timer();
-    let id = dom::set_interval(|| {
-        // Only increment if server says we're playing
-        let should_update = crate::state::with_mut(|s| {
-            if let Some(ref mut st) = s.spotify_status {
-                if st.is_playing && st.position_ms < st.duration_ms {
-                    st.position_ms = (st.position_ms + 1000).min(st.duration_ms);
-                    return true;
+    let id = dom::set_interval(
+        || {
+            // Only increment if server says we're playing
+            let should_update = crate::state::with_mut(|s| {
+                if let Some(ref mut st) = s.spotify_status {
+                    if st.is_playing && st.position_ms < st.duration_ms {
+                        st.position_ms = (st.position_ms + 1000).min(st.duration_ms);
+                        return true;
+                    }
                 }
+                false
+            });
+            if should_update {
+                update_progress_only();
             }
-            false
-        });
-        if should_update {
-            update_progress_only();
-        }
-    }, 1000);
+        },
+        1000,
+    );
     POSITION_TIMER.with(|t| *t.borrow_mut() = Some(id));
 }
 
@@ -131,7 +134,11 @@ pub fn render(container: &web_sys::Element) {
     dom::set_style(&art_wrap, "overflow", "hidden");
     dom::set_style(&art_wrap, "position", "relative");
     // Gradient fallback
-    dom::set_style(&art_wrap, "background", "linear-gradient(135deg, #1db954 0%, #191414 100%)");
+    dom::set_style(
+        &art_wrap,
+        "background",
+        "linear-gradient(135deg, #1db954 0%, #191414 100%)",
+    );
 
     // <img> element for album art (no crossorigin!)
     let art_img = dom::create_el("img");
@@ -245,11 +252,16 @@ pub fn render(container: &web_sys::Element) {
                 let rect = bar.get_bounding_client_rect();
                 let pct = ((e.client_x() as f64 - rect.left()) / rect.width()).clamp(0.0, 1.0);
                 let duration = crate::state::with(|s| {
-                    s.spotify_status.as_ref().map(|st| st.duration_ms).unwrap_or(0)
+                    s.spotify_status
+                        .as_ref()
+                        .map(|st| st.duration_ms)
+                        .unwrap_or(0)
                 });
                 if duration > 0 {
                     let pos = (pct * duration as f64) as u32;
-                    crate::ws::send_msg(&ClientMsg::SpotifyControl(SpotifyAction::Seek { position_ms: pos }));
+                    crate::ws::send_msg(&ClientMsg::SpotifyControl(SpotifyAction::Seek {
+                        position_ms: pos,
+                    }));
                 }
             }
         }) as Box<dyn FnMut(_)>);
@@ -282,9 +294,14 @@ pub fn render(container: &web_sys::Element) {
     shuffle_btn.set_id("sp-shuffle");
     dom::on_click(&shuffle_btn, || {
         let current = crate::state::with(|s| {
-            s.spotify_status.as_ref().map(|st| st.shuffle).unwrap_or(false)
+            s.spotify_status
+                .as_ref()
+                .map(|st| st.shuffle)
+                .unwrap_or(false)
         });
-        crate::ws::send_msg(&ClientMsg::SpotifyControl(SpotifyAction::Shuffle { enabled: !current }));
+        crate::ws::send_msg(&ClientMsg::SpotifyControl(SpotifyAction::Shuffle {
+            enabled: !current,
+        }));
     });
     dom::append(&controls, &shuffle_btn);
 
@@ -300,9 +317,16 @@ pub fn render(container: &web_sys::Element) {
     play_btn.set_id("sp-playpause");
     dom::on_click(&play_btn, || {
         let is_playing = crate::state::with(|s| {
-            s.spotify_status.as_ref().map(|st| st.is_playing).unwrap_or(false)
+            s.spotify_status
+                .as_ref()
+                .map(|st| st.is_playing)
+                .unwrap_or(false)
         });
-        let action = if is_playing { SpotifyAction::Pause } else { SpotifyAction::Play };
+        let action = if is_playing {
+            SpotifyAction::Pause
+        } else {
+            SpotifyAction::Play
+        };
         crate::ws::send_msg(&ClientMsg::SpotifyControl(action));
     });
     dom::append(&controls, &play_btn);
@@ -319,18 +343,29 @@ pub fn render(container: &web_sys::Element) {
     repeat_btn.set_id("sp-repeat");
     dom::on_click(&repeat_btn, || {
         let (rc, rt) = crate::state::with(|s| {
-            s.spotify_status.as_ref()
+            s.spotify_status
+                .as_ref()
                 .map(|st| (st.repeat_context, st.repeat_track))
                 .unwrap_or((false, false))
         });
         if !rc && !rt {
-            crate::ws::send_msg(&ClientMsg::SpotifyControl(SpotifyAction::Repeat { enabled: true }));
+            crate::ws::send_msg(&ClientMsg::SpotifyControl(SpotifyAction::Repeat {
+                enabled: true,
+            }));
         } else if rc && !rt {
-            crate::ws::send_msg(&ClientMsg::SpotifyControl(SpotifyAction::Repeat { enabled: false }));
-            crate::ws::send_msg(&ClientMsg::SpotifyControl(SpotifyAction::RepeatTrack { enabled: true }));
+            crate::ws::send_msg(&ClientMsg::SpotifyControl(SpotifyAction::Repeat {
+                enabled: false,
+            }));
+            crate::ws::send_msg(&ClientMsg::SpotifyControl(SpotifyAction::RepeatTrack {
+                enabled: true,
+            }));
         } else {
-            crate::ws::send_msg(&ClientMsg::SpotifyControl(SpotifyAction::RepeatTrack { enabled: false }));
-            crate::ws::send_msg(&ClientMsg::SpotifyControl(SpotifyAction::Repeat { enabled: false }));
+            crate::ws::send_msg(&ClientMsg::SpotifyControl(SpotifyAction::RepeatTrack {
+                enabled: false,
+            }));
+            crate::ws::send_msg(&ClientMsg::SpotifyControl(SpotifyAction::Repeat {
+                enabled: false,
+            }));
         }
     });
     dom::append(&controls, &repeat_btn);
@@ -360,38 +395,57 @@ pub fn render(container: &web_sys::Element) {
         let down = Closure::wrap(Box::new(|_: web_sys::Event| {
             VOL_DRAGGING.with(|d| *d.borrow_mut() = true);
         }) as Box<dyn FnMut(_)>);
-        vol_slider.add_event_listener_with_callback("mousedown", down.as_ref().unchecked_ref()).ok();
-        vol_slider.add_event_listener_with_callback("touchstart", down.as_ref().unchecked_ref()).ok();
+        vol_slider
+            .add_event_listener_with_callback("mousedown", down.as_ref().unchecked_ref())
+            .ok();
+        vol_slider
+            .add_event_listener_with_callback("touchstart", down.as_ref().unchecked_ref())
+            .ok();
         down.forget();
     }
     {
         let up = Closure::wrap(Box::new(|_: web_sys::Event| {
             VOL_DRAGGING.with(|d| *d.borrow_mut() = false);
         }) as Box<dyn FnMut(_)>);
-        vol_slider.add_event_listener_with_callback("mouseup", up.as_ref().unchecked_ref()).ok();
-        vol_slider.add_event_listener_with_callback("touchend", up.as_ref().unchecked_ref()).ok();
+        vol_slider
+            .add_event_listener_with_callback("mouseup", up.as_ref().unchecked_ref())
+            .ok();
+        vol_slider
+            .add_event_listener_with_callback("touchend", up.as_ref().unchecked_ref())
+            .ok();
         up.forget();
     }
 
     // Input event: update label + send volume command
     {
         let cb = Closure::wrap(Box::new(move |e: web_sys::Event| {
-            if let Some(input) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok()) {
+            if let Some(input) = e
+                .target()
+                .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+            {
                 let val = input.value_as_number() as u8;
                 if let Some(el) = dom::get_el("sp-vol-label") {
                     dom::set_text(&el, &format!("{}%", val));
                 }
                 // Update icon based on level
                 if let Some(icon) = dom::get_el("sp-vol-icon") {
-                    let emoji = if val == 0 { "\u{1F507}" } else if val < 50 { "\u{1F509}" } else { "\u{1F50A}" };
+                    let emoji = if val == 0 {
+                        "\u{1F507}"
+                    } else if val < 50 {
+                        "\u{1F509}"
+                    } else {
+                        "\u{1F50A}"
+                    };
                     dom::set_text(&icon, emoji);
                 }
-                crate::ws::send_msg(&ClientMsg::SpotifyControl(
-                    SpotifyAction::SetVolume { level: val },
-                ));
+                crate::ws::send_msg(&ClientMsg::SpotifyControl(SpotifyAction::SetVolume {
+                    level: val,
+                }));
             }
         }) as Box<dyn FnMut(_)>);
-        vol_slider.add_event_listener_with_callback("input", cb.as_ref().unchecked_ref()).ok();
+        vol_slider
+            .add_event_listener_with_callback("input", cb.as_ref().unchecked_ref())
+            .ok();
         cb.forget();
     }
 
@@ -543,7 +597,10 @@ pub fn render(container: &web_sys::Element) {
 
     let empty_desc = dom::create_div();
     dom::set_class(&empty_desc, "text-sm");
-    dom::set_text(&empty_desc, "Open Spotify and select \"Invoke\" as playback device");
+    dom::set_text(
+        &empty_desc,
+        "Open Spotify and select \"Invoke\" as playback device",
+    );
     dom::append(&empty, &empty_desc);
 
     dom::append(container, &empty);
@@ -583,7 +640,11 @@ pub fn update() {
 
                 // Explicit badge
                 if let Some(el) = dom::get_el("sp-explicit") {
-                    dom::set_style(&el, "display", if track.is_explicit { "block" } else { "none" });
+                    dom::set_style(
+                        &el,
+                        "display",
+                        if track.is_explicit { "block" } else { "none" },
+                    );
                 }
             }
 
@@ -602,12 +663,23 @@ pub fn update() {
             set_text_if_changed("sp-time-dur", &format_time(duration));
 
             // Play/Pause icon — driven by server state only
-            let play_icon = if st.is_playing { "\u{23F8}" } else { "\u{25B6}" };
+            let play_icon = if st.is_playing {
+                "\u{23F8}"
+            } else {
+                "\u{25B6}"
+            };
             set_text_if_changed("sp-playpause", play_icon);
 
             // Shuffle highlight — toggle .active class for green color
             if let Some(el) = dom::get_el("sp-shuffle") {
-                dom::set_class(&el, if st.shuffle { "sp-btn active" } else { "sp-btn" });
+                dom::set_class(
+                    &el,
+                    if st.shuffle {
+                        "sp-btn active"
+                    } else {
+                        "sp-btn"
+                    },
+                );
             }
 
             // Repeat highlight + icon — toggle .active class
@@ -629,14 +701,16 @@ pub fn update() {
             if !dragging {
                 let vol_pct = (st.volume as u32 * 100 / 65535u32).min(100) as u8;
                 if let Some(el) = dom::get_el("sp-vol-slider") {
-                    let _ = js_sys::Reflect::set(
-                        &el,
-                        &"value".into(),
-                        &vol_pct.to_string().into(),
-                    );
+                    let _ = js_sys::Reflect::set(&el, &"value".into(), &vol_pct.to_string().into());
                 }
                 set_text_if_changed("sp-vol-label", &format!("{}%", vol_pct));
-                let emoji = if vol_pct == 0 { "\u{1F507}" } else if vol_pct < 50 { "\u{1F509}" } else { "\u{1F50A}" };
+                let emoji = if vol_pct == 0 {
+                    "\u{1F507}"
+                } else if vol_pct < 50 {
+                    "\u{1F509}"
+                } else {
+                    "\u{1F50A}"
+                };
                 set_text_if_changed("sp-vol-icon", emoji);
             }
 
@@ -664,7 +738,10 @@ pub fn update() {
                     );
                 }
                 if let Some(el) = dom::get_el("sp-cfg-pregain-label") {
-                    dom::set_text(&el, &format!("{} dB", config.spotify_normalisation_pregain_db));
+                    dom::set_text(
+                        &el,
+                        &format!("{} dB", config.spotify_normalisation_pregain_db),
+                    );
                 }
                 SETTINGS_LOADED.with(|s| *s.borrow_mut() = true);
             }

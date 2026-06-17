@@ -1,5 +1,5 @@
 // Service Worker — cache-first for static assets, bypass for API/WebSocket.
-const CACHE_VERSION = '1776857159';
+const CACHE_VERSION = '0';
 const CACHE_NAME = `encore-v${CACHE_VERSION}`;
 
 const STATIC_ASSETS = [

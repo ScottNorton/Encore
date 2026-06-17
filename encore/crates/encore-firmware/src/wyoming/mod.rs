@@ -104,8 +104,7 @@ impl Subsystem for WyomingSubsystem {
     async fn run(&mut self, mut ctx: SubsystemContext) -> Result<()> {
         ctx.health.set_state(SubsystemState::Running);
 
-        let socket = tokio::net::TcpSocket::new_v4()
-            .context("create Wyoming socket")?;
+        let socket = tokio::net::TcpSocket::new_v4().context("create Wyoming socket")?;
         socket.set_reuseaddr(true).ok();
         socket
             .bind(std::net::SocketAddr::from(([0, 0, 0, 0], self.port)))
@@ -411,7 +410,9 @@ impl Session {
 
         match event.event_type.as_str() {
             "detection" => {
-                let name = event.data.get("name")
+                let name = event
+                    .data
+                    .get("name")
                     .and_then(|v| v.as_str())
                     .unwrap_or("?");
                 info!("Wyoming: wake word '{}' detected", name);
@@ -437,24 +438,37 @@ impl Session {
             }
 
             "transcript" => {
-                let text = event.data.get("text")
+                let text = event
+                    .data
+                    .get("text")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 info!("Wyoming: STT \"{}\"", text);
             }
 
             "audio-start" => {
-                let rate = event.data.get("rate")
+                let rate = event
+                    .data
+                    .get("rate")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(22050) as u32;
-                let width = event.data.get("width")
+                let width = event
+                    .data
+                    .get("width")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(2) as u16;
-                let channels = event.data.get("channels")
+                let channels = event
+                    .data
+                    .get("channels")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(1) as u16;
 
-                info!("Wyoming: TTS start {}Hz {}bit {}ch", rate, width * 8, channels);
+                info!(
+                    "Wyoming: TTS start {}Hz {}bit {}ch",
+                    rate,
+                    width * 8,
+                    channels
+                );
                 self.muted = true;
                 self.start_playback(rate);
                 self.send_voice_cmd(VoiceCmd::TtsStarted);
@@ -475,17 +489,23 @@ impl Session {
                 self.stop_playback();
                 self.muted = false;
                 self.send_voice_cmd(VoiceCmd::TtsDone);
-                write_event(writer, &WyomingEvent::new("played", json!({}))).await.ok();
+                write_event(writer, &WyomingEvent::new("played", json!({})))
+                    .await
+                    .ok();
                 self.send_led(crate::led::LedCmd::Animate(
                     encore_common::protocol::LedAnimation::Off,
                 ));
             }
 
             "run-pipeline" => {
-                let start = event.data.get("start_stage")
+                let start = event
+                    .data
+                    .get("start_stage")
                     .and_then(|v| v.as_str())
                     .unwrap_or("?");
-                let end = event.data.get("end_stage")
+                let end = event
+                    .data
+                    .get("end_stage")
                     .and_then(|v| v.as_str())
                     .unwrap_or("?");
                 debug!("Wyoming: pipeline {} -> {}", start, end);
@@ -509,7 +529,9 @@ impl Session {
             }
 
             "error" => {
-                let text = event.data.get("text")
+                let text = event
+                    .data
+                    .get("text")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 warn!("Wyoming: HA error: {}", text);
@@ -535,7 +557,10 @@ impl Session {
         self.tts_rate = rate;
         self.slot.clear();
         self.slot.set_active(true);
-        debug!("Wyoming: playback started ({}Hz → {}Hz via MixerSlot)", rate, MIXER_RATE);
+        debug!(
+            "Wyoming: playback started ({}Hz → {}Hz via MixerSlot)",
+            rate, MIXER_RATE
+        );
     }
 
     /// Write TTS PCM data to MixerSlot. Mono S16_LE input is resampled to
@@ -560,7 +585,10 @@ impl Session {
 
         let written = self.slot.push(&stereo);
         if written < stereo.len() {
-            debug!("Wyoming: ring full, dropped {} samples", stereo.len() - written);
+            debug!(
+                "Wyoming: ring full, dropped {} samples",
+                stereo.len() - written
+            );
         }
     }
 

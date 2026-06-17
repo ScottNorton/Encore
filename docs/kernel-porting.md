@@ -137,7 +137,7 @@ could brick the device (recovery only via USB boot mode, if the bootloader itsel
 | **SoC** | Marvell BG2CDP 88DE3006 (silicon revision B0, per `berlin_config_hw.xml`) |
 | **CPU** | Dual-core ARM Cortex-A7 @ 1.3 GHz |
 | **RAM** | 512 MB DDR3 |
-| **NAND** | 512 MB Toshiba (single chip, flash ID da98). Page 2048, OOB 64. Driver creates two MTD views: single-plane (128KB erase) and SLC-mode (64KB erase) |
+| **NAND** | 512 MB Toshiba (single chip, flash ID da98). Page 2048, OOB 64, 128KB erase blocks (single-plane) |
 | **WiFi/BT** | Marvell 88W8887 (SDIO), dual-band 802.11ac + BT 4.1 |
 | **Audio DSP** | AD91210Z (Analog Devices ADSP-21489 SHARC), SPI upload |
 | **Audio DAC** | TAS5756M (I2C 0x4C) → Class-D amp → 3x speakers |

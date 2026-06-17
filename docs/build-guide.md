@@ -60,9 +60,9 @@ The stock 83_IMAGE is required as a base. It contains the encrypted, signature-v
 make download
 ```
 
-This will show instructions for obtaining the stock image. Place it at `firmware/83_IMAGE_stock`.
-
-**Verification**: The original Harman stock firmware is approximately 69MB (69,481,562 bytes).
+This downloads Harman's final public OTA2 package from archive.org, extracts the stock
+83_IMAGE, and writes it to `firmware/83_IMAGE_stock`. The download is verified by size
+(69,481,562 bytes) and SHA256, and the step is skipped if a valid image is already present.
 
 ## Step 2: Build Encore
 
@@ -128,8 +128,8 @@ This runs in WSL and:
 5. Packages it into 83_IMAGE with correct CRC32
 
 Output:
-- `firmware/83_IMAGE` — full image for USB boot flashing
-- `firmware/rootfs.squashfs` — raw SquashFS for web UI OTA updates
+- `build/firmware/83_IMAGE` — full image for USB boot flashing
+- `build/firmware/rootfs.squashfs` — raw SquashFS for web UI OTA updates
 
 ## Step 4: Flash
 
@@ -164,7 +164,7 @@ staging + reboot and let the supervisor manage the process.
 ### Run Tests
 
 ```bash
-cd encore && cargo test --all
+make test
 ```
 
 ### Verify No Credential Leaks
@@ -202,6 +202,23 @@ Edit files under `rootfs/`. The build script copies the entire overlay tree onto
 ### Boot Sequence
 
 `mount_partition.sh` is the main entry point called by stock init. It launches Encore via the supervisor. See [architecture.md](architecture.md) for details.
+
+### Building the USB Gadget Kernel Modules
+
+The USB network gadget (RNDIS over the Mini-B port, the device at 10.55.55.1) needs patched `g_ether`/RNDIS kernel modules. These are built separately from Encore and baked into the rootfs.
+
+```bash
+wsl.exe -d Ubuntu -u root -- bash scripts/device/build_usb_gadget_modules.sh
+```
+
+The built `.ko` files land in `rootfs/usr/lib/usbgadget/`, where the firmware build picks them up as part of the rootfs overlay. `rootfs/sbin/usb_gadget.sh` loads them at boot and `usb_gadget_monitor.sh` reloads them if the link drops.
+
+Two things matter here:
+
+- **Use the period Linaro 4.9.4 cross-compiler.** The device kernel is 3.8.13. A modern gcc produces modules that `insmod` accepts but that fault the kernel once traffic flows. The 4.9.4 toolchain matches the era of the vendor kernel and produces stable modules. The build script downloads and caches this toolchain.
+- **The source changes are tracked as diffs, not vendored trees.** They live in `scripts/device/usb-gadget-patches/`. The build script fetches the matching kernel source, applies these patches, and compiles only the gadget modules against it. Edit the patches there if you need to change the gadget behavior, then rebuild.
+
+The MTU is fixed at 400 bytes in the gadget configuration so each frame is a single USB packet. The `mv_udc` controller stalls multi-packet bulk transfers, so raising the MTU brings the stall back. See [usb-access.md](usb-access.md) for the runtime side of this.
 
 ## Important Rules
 

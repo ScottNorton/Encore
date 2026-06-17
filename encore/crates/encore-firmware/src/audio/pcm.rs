@@ -34,8 +34,8 @@ pub(crate) const FORMAT_S16_LE: u32 = 2;
 pub(crate) const FORMAT_S32_LE: u32 = 10;
 
 // HW param indices (for intervals array, offset by FIRST_INTERVAL=8)
-pub(crate) const INTERVAL_CHANNELS: usize = 2;    // param 10 - 8
-pub(crate) const INTERVAL_RATE: usize = 3;        // param 11 - 8
+pub(crate) const INTERVAL_CHANNELS: usize = 2; // param 10 - 8
+pub(crate) const INTERVAL_RATE: usize = 3; // param 11 - 8
 pub(crate) const INTERVAL_PERIOD_SIZE: usize = 5; // param 13 - 8
 pub(crate) const INTERVAL_BUFFER_SIZE: usize = 9; // param 17 - 8
 
@@ -87,10 +87,10 @@ impl SndInterval {
 #[repr(C)]
 pub(crate) struct SndPcmHwParams {
     pub(crate) flags: u32,
-    pub(crate) masks: [SndMask; 3],        // ACCESS, FORMAT, SUBFORMAT
-    pub(crate) mres: [SndMask; 5],         // reserved masks
+    pub(crate) masks: [SndMask; 3], // ACCESS, FORMAT, SUBFORMAT
+    pub(crate) mres: [SndMask; 5],  // reserved masks
     pub(crate) intervals: [SndInterval; 12], // SAMPLE_BITS..TICK_TIME
-    pub(crate) ires: [SndInterval; 9],     // reserved intervals
+    pub(crate) ires: [SndInterval; 9], // reserved intervals
     pub(crate) rmask: u32,
     pub(crate) cmask: u32,
     pub(crate) info: u32,
@@ -137,14 +137,6 @@ pub(crate) struct SndPcmSwParams {
     pub(crate) reserved: [u8; 64],
 }
 
-/// Transfer struct for READI/WRITEI ioctls.
-#[repr(C)]
-pub(crate) struct SndXferi {
-    pub(crate) result: i32,
-    pub(crate) buf: *mut u8,
-    pub(crate) frames: u32,
-}
-
 // ── nix ioctl declarations ──────────────────────────────────────────
 
 nix::ioctl_none!(pcm_prepare, ALSA_MAGIC, 0x40);
@@ -154,10 +146,9 @@ nix::ioctl_none!(pcm_drain, ALSA_MAGIC, 0x44);
 
 nix::ioctl_readwrite!(pcm_hw_params, ALSA_MAGIC, 0x11, SndPcmHwParams);
 nix::ioctl_readwrite!(pcm_sw_params, ALSA_MAGIC, 0x13, SndPcmSwParams);
-// Note: WRITEI_FRAMES ioctl (0x50) returns ENOTTY on BG2CDP kernel 3.8.
-// Use write() syscall instead. READI_FRAMES (0x51) also returns ENOTTY —
-// capture will need read() syscall too.
-nix::ioctl_readwrite!(pcm_readi_frames, ALSA_MAGIC, 0x51, SndXferi);
+// Note: WRITEI_FRAMES (0x50) and READI_FRAMES (0x51) ioctls both return ENOTTY
+// on the BG2CDP kernel 3.8. Playback uses the write() syscall and capture uses
+// read() instead — see AlsaPcm::write_frames and capture::capture_thread.
 
 // ── Public API ──────────────────────────────────────────────────────
 
@@ -222,8 +213,7 @@ impl AlsaPcm {
         hw.intervals[INTERVAL_BUFFER_SIZE].set_exact(buffer_size);
 
         unsafe {
-            pcm_hw_params(fd, &mut hw)
-                .context("SNDRV_PCM_IOCTL_HW_PARAMS failed")?;
+            pcm_hw_params(fd, &mut hw).context("SNDRV_PCM_IOCTL_HW_PARAMS failed")?;
         }
 
         let actual_period = hw.intervals[INTERVAL_PERIOD_SIZE].min;
@@ -290,9 +280,7 @@ impl AlsaPcm {
     /// Blocks until all frames are written or an unrecoverable error occurs.
     pub fn write_frames(&mut self, data: &[i32]) -> Result<u32> {
         let total_bytes = data.len() * 4; // i32 = 4 bytes
-        let buf = unsafe {
-            std::slice::from_raw_parts(data.as_ptr() as *const u8, total_bytes)
-        };
+        let buf = unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, total_bytes) };
         let mut offset = 0usize;
 
         while offset < total_bytes {
@@ -373,5 +361,170 @@ impl Drop for AlsaPcm {
         unsafe {
             let _ = pcm_drop(fd);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── SndMask ─────────────────────────────────────────────────────
+
+    #[test]
+    fn mask_new_all_sets_every_bit() {
+        let m = SndMask::new_all();
+        for word in m.bits.iter() {
+            assert_eq!(*word, !0u32);
+        }
+    }
+
+    #[test]
+    fn set_single_clears_all_other_bits() {
+        // Start from an all-ones mask to prove set_single zeroes everything first.
+        let mut m = SndMask::new_all();
+        m.set_single(0);
+        assert_eq!(m.bits[0], 1);
+        for word in m.bits.iter().skip(1) {
+            assert_eq!(*word, 0);
+        }
+    }
+
+    #[test]
+    fn set_single_bit_zero_in_word_zero() {
+        let mut m = SndMask::new_all();
+        m.set_single(0);
+        assert_eq!(m.bits[0], 1 << 0);
+    }
+
+    #[test]
+    fn set_single_format_s32_le_position() {
+        // FORMAT_S32_LE = 10 lands in word 0, bit 10.
+        let mut m = SndMask::new_all();
+        m.set_single(FORMAT_S32_LE);
+        assert_eq!(m.bits[0], 1 << 10);
+        for word in m.bits.iter().skip(1) {
+            assert_eq!(*word, 0);
+        }
+    }
+
+    #[test]
+    fn set_single_access_rw_interleaved_position() {
+        // ACCESS_RW_INTERLEAVED = 3 lands in word 0, bit 3.
+        let mut m = SndMask::new_all();
+        m.set_single(ACCESS_RW_INTERLEAVED);
+        assert_eq!(m.bits[0], 1 << 3);
+    }
+
+    #[test]
+    fn set_single_word_boundary_bit_31_and_32() {
+        // bit 31 is the high bit of word 0.
+        let mut m = SndMask::new_all();
+        m.set_single(31);
+        assert_eq!(m.bits[0], 0x8000_0000);
+        assert_eq!(m.bits[1], 0);
+
+        // bit 32 is the low bit of word 1.
+        let mut m2 = SndMask::new_all();
+        m2.set_single(32);
+        assert_eq!(m2.bits[0], 0);
+        assert_eq!(m2.bits[1], 1);
+    }
+
+    #[test]
+    fn set_single_last_word_high_bit() {
+        // bit 255 is the high bit of the final (8th) word, index 7.
+        let mut m = SndMask::new_all();
+        m.set_single(255);
+        assert_eq!(m.bits[7], 0x8000_0000);
+        for word in m.bits.iter().take(7) {
+            assert_eq!(*word, 0);
+        }
+    }
+
+    #[test]
+    fn set_single_is_idempotent() {
+        // Calling twice with the same bit leaves exactly one bit set.
+        let mut m = SndMask::new_all();
+        m.set_single(45);
+        m.set_single(45);
+        assert_eq!(m.bits[1], 1 << 13); // 45 = word 1, bit 13
+        assert_eq!(m.bits[0], 0);
+    }
+
+    // ── SndInterval ─────────────────────────────────────────────────
+
+    #[test]
+    fn interval_new_any_is_full_range() {
+        let iv = SndInterval::new_any();
+        assert_eq!(iv.min, 0);
+        assert_eq!(iv.max, !0u32);
+        assert_eq!(iv.flags, 0);
+    }
+
+    #[test]
+    fn set_exact_pins_min_and_max() {
+        let mut iv = SndInterval::new_any();
+        iv.set_exact(48000);
+        assert_eq!(iv.min, 48000);
+        assert_eq!(iv.max, 48000);
+        assert_eq!(iv.min, iv.max);
+    }
+
+    #[test]
+    fn set_exact_sets_integer_flag() {
+        let mut iv = SndInterval::new_any();
+        iv.set_exact(256);
+        assert_eq!(iv.flags, 0x4);
+    }
+
+    #[test]
+    fn set_exact_zero_boundary() {
+        let mut iv = SndInterval::new_any();
+        iv.set_exact(0);
+        assert_eq!(iv.min, 0);
+        assert_eq!(iv.max, 0);
+        assert_eq!(iv.flags, 0x4);
+    }
+
+    #[test]
+    fn set_exact_max_value_boundary() {
+        let mut iv = SndInterval::new_any();
+        iv.set_exact(u32::MAX);
+        assert_eq!(iv.min, u32::MAX);
+        assert_eq!(iv.max, u32::MAX);
+        assert_eq!(iv.flags, 0x4);
+    }
+
+    // ── SndPcmHwParams::new ─────────────────────────────────────────
+
+    #[test]
+    fn hw_params_new_initializes_masks_and_intervals() {
+        let p = SndPcmHwParams::new();
+
+        // All three real masks start all-ones.
+        for mask in p.masks.iter() {
+            assert_eq!(mask.bits[0], !0u32);
+            assert_eq!(mask.bits[7], !0u32);
+        }
+        // Reserved masks also all-ones.
+        for mask in p.mres.iter() {
+            assert_eq!(mask.bits[0], !0u32);
+        }
+        // Intervals start as full "any" ranges.
+        for iv in p.intervals.iter() {
+            assert_eq!(iv.min, 0);
+            assert_eq!(iv.max, !0u32);
+            assert_eq!(iv.flags, 0);
+        }
+        for iv in p.ires.iter() {
+            assert_eq!(iv.min, 0);
+            assert_eq!(iv.max, !0u32);
+        }
+
+        // Scalar fields set by new().
+        assert_eq!(p.rmask, !0u32);
+        assert_eq!(p.info, !0u32);
+        // cmask was left zeroed by mem::zeroed and not touched by new().
+        assert_eq!(p.cmask, 0);
     }
 }

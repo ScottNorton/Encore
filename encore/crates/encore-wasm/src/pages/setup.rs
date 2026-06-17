@@ -30,7 +30,11 @@ fn render_welcome(container: &web_sys::Element) {
     dom::set_style(&heading, "margin-bottom", "16px");
     dom::append(&card, &heading);
 
-    let desc = dom::el("div", "text-muted", Some("Let's get your speaker connected to WiFi."));
+    let desc = dom::el(
+        "div",
+        "text-muted",
+        Some("Let's get your speaker connected to WiFi."),
+    );
     dom::set_style(&desc, "margin-bottom", "24px");
     dom::append(&card, &desc);
 
@@ -84,7 +88,7 @@ fn render_wifi(container: &web_sys::Element) {
     let scan_btn = dom::el("button", "btn", Some("Rescan"));
     scan_btn.set_id("setup-scan-btn");
     dom::set_style(&scan_btn, "margin-top", "12px");
-    dom::on_click(&scan_btn, || scan_wifi_setup());
+    dom::on_click(&scan_btn, scan_wifi_setup);
     dom::append(&card, &scan_btn);
 
     dom::append(container, &card);
@@ -111,7 +115,11 @@ fn scan_wifi_setup() {
                         serde_json::from_str::<Vec<encore_common::protocol::WifiNetwork>>(&text)
                     {
                         if networks.is_empty() {
-                            let empty = dom::el("div", "text-muted text-center", Some("No networks found. Try again."));
+                            let empty = dom::el(
+                                "div",
+                                "text-muted text-center",
+                                Some("No networks found. Try again."),
+                            );
                             dom::append(&list_el, &empty);
                         } else {
                             for net in &networks {
@@ -139,8 +147,13 @@ fn scan_wifi_setup() {
                                 let ssid_clone = net.ssid.clone();
                                 let cb = Closure::wrap(Box::new(move |_: web_sys::MouseEvent| {
                                     show_password_input(&ssid_clone);
-                                }) as Box<dyn FnMut(_)>);
-                                row.add_event_listener_with_callback("click", cb.as_ref().unchecked_ref()).ok();
+                                })
+                                    as Box<dyn FnMut(_)>);
+                                row.add_event_listener_with_callback(
+                                    "click",
+                                    cb.as_ref().unchecked_ref(),
+                                )
+                                .ok();
                                 cb.forget();
 
                                 dom::append(&list_el, &row);
@@ -152,7 +165,11 @@ fn scan_wifi_setup() {
             Err(e) => {
                 if let Some(list_el) = dom::get_el("setup-wifi-networks") {
                     dom::clear(&list_el);
-                    let err = dom::el("div", "text-muted text-center", Some(&format!("Scan failed: {}", e)));
+                    let err = dom::el(
+                        "div",
+                        "text-muted text-center",
+                        Some(&format!("Scan failed: {}", e)),
+                    );
                     dom::append(&list_el, &err);
                 }
             }
@@ -183,7 +200,11 @@ fn show_password_input(ssid: &str) {
         let input = dom::create_el("input");
         input.set_id("setup-wifi-password");
         dom::set_attr(&input, "type", "password");
-        dom::set_attr(&input, "placeholder", "Password (leave empty for open networks)");
+        dom::set_attr(
+            &input,
+            "placeholder",
+            "Password (leave empty for open networks)",
+        );
         dom::set_class(&input, "input");
         dom::set_style(&input, "width", "100%");
         dom::set_style(&input, "margin-bottom", "12px");
@@ -249,7 +270,11 @@ fn render_name(container: &web_sys::Element) {
     let heading = dom::el("div", "card-title", Some("Step 2: Name Your Speaker"));
     dom::append(&card, &heading);
 
-    let desc = dom::el("div", "text-muted", Some("This name appears on your network as {name}.local"));
+    let desc = dom::el(
+        "div",
+        "text-muted",
+        Some("This name appears on your network as {name}.local"),
+    );
     dom::set_style(&desc, "margin-bottom", "16px");
     dom::append(&card, &desc);
 
@@ -327,8 +352,11 @@ fn render_trust_cert(container: &web_sys::Element) {
         "Settings \u{2192} Security \u{2192} Encryption & Credentials \u{2192} Install a certificate \u{2192} CA certificate");
     cert_instruction(&instr, "iOS",
         "Settings \u{2192} Profile Downloaded \u{2192} Install, then Settings \u{2192} General \u{2192} About \u{2192} Certificate Trust Settings \u{2192} enable");
-    cert_instruction(&instr, "Linux (Chrome)",
-        "chrome://settings/certificates \u{2192} Authorities \u{2192} Import");
+    cert_instruction(
+        &instr,
+        "Linux (Chrome)",
+        "chrome://settings/certificates \u{2192} Authorities \u{2192} Import",
+    );
 
     dom::append(&card, &instr);
 
@@ -398,17 +426,19 @@ fn render_success(container: &web_sys::Element) {
     dom::set_style(&info, "margin-bottom", "24px");
 
     crate::state::with(|s| {
-        if let Some(ref net) = s.network {
-            match net {
-                NetworkState::Connected { ssid, ip, hostname, .. } |
-                NetworkState::ConnectedWithAp { ssid, ip, hostname, .. } => {
-                    setup_info_row(&info, "WiFi", ssid);
-                    setup_info_row(&info, "IP Address", ip);
-                    if !hostname.is_empty() {
-                        setup_info_row(&info, "Hostname", hostname);
-                    }
-                }
-                _ => {}
+        if let Some(
+            NetworkState::Connected {
+                ssid, ip, hostname, ..
+            }
+            | NetworkState::ConnectedWithAp {
+                ssid, ip, hostname, ..
+            },
+        ) = &s.network
+        {
+            setup_info_row(&info, "WiFi", ssid);
+            setup_info_row(&info, "IP Address", ip);
+            if !hostname.is_empty() {
+                setup_info_row(&info, "Hostname", hostname);
             }
         }
     });
@@ -457,7 +487,11 @@ fn setup_info_row(parent: &web_sys::Element, label: &str, value: &str) {
 
 fn finish_setup() {
     let device_name = get_input_value("setup-device-name");
-    let device_name = if device_name.is_empty() { "Encore".to_string() } else { device_name };
+    let device_name = if device_name.is_empty() {
+        "Encore".to_string()
+    } else {
+        device_name
+    };
     let ap_keep_alive = get_checkbox("setup-ap-keep-alive");
 
     // POST /api/setup/complete
@@ -542,7 +576,11 @@ pub fn on_wifi_result(success: bool) {
         // Show error in status area
         if let Some(status) = dom::get_el("setup-connect-status") {
             dom::clear(&status);
-            let err = dom::el("div", "", Some("Connection failed. Try again or select another network."));
+            let err = dom::el(
+                "div",
+                "",
+                Some("Connection failed. Try again or select another network."),
+            );
             dom::set_style(&err, "color", "var(--red)");
             dom::set_style(&err, "margin-top", "12px");
             dom::append(&status, &err);

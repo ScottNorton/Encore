@@ -28,14 +28,14 @@ The NAND rootfs partition supports up to 84.8MB (84,824,064 bytes). The stock pa
 
 The `79_IMAGE` file and all `.sh` scripts must have LF (Unix) line endings. Windows CRLF causes U-Boot to fail parsing commands. The `.gitattributes` file enforces this, but verify after editing on Windows:
 ```bash
-file flash/79_IMAGE  # Should say "ASCII text", NOT "ASCII text, with CRLF line terminators"
+file uboot/79_IMAGE  # Should say "ASCII text", NOT "ASCII text, with CRLF line terminators"
 ```
 
 ### Windows encoding issues with 79_IMAGE
 
 Always write/edit `79_IMAGE` from WSL or use an editor that saves with LF endings. If you edit it on Windows and it gets CRLF, convert it:
 ```bash
-wsl.exe -d Ubuntu -- bash -c "sed -i 's/\r$//' /mnt/g/HKInvoke/flash/79_IMAGE"
+wsl.exe -d Ubuntu -- bash -c "sed -i 's/\r$//' /mnt/g/HKInvoke/uboot/79_IMAGE"
 ```
 
 ### `tftp2nand` fails when automated
@@ -87,6 +87,13 @@ The Invoke uses a Marvell 88W8887 single-radio combo chip. Common issues:
 3. **AP band conflict**: The Invoke cannot operate its internal AP and STA (WiFi client) on different frequency bands. If your router is on 5 GHz and the AP is on 2.4 GHz, the driver kills the AP after ~35 seconds. Encore handles this by restarting the AP on the same band as the STA connection.
 
 4. **5 GHz DFS channels**: Some 5 GHz channels require Dynamic Frequency Selection (DFS) radar avoidance. The Invoke may have issues with DFS channels. Try switching your router to a non-DFS channel (36, 40, 44, 48, 149, 153, 157, 161, 165).
+
+5. **Scanning for an unreachable saved network**: With the single radio, the AP (`p2p0`) and station (`wlan0`) share one channel. If a saved STA network is out of range, `wpa_supplicant` rescans every channel repeatedly looking for it, and each scan pulls the radio off the AP channel, dropping every AP client (SSH and the dashboard) for the scan window (often about once a minute). The station never associates, so this is not a signal or band-conflict problem. Confirm:
+   ```bash
+   wpa_cli -i wlan0 status          # wpa_state=SCANNING, no bssid
+   wpa_cli -i wlan0 list_networks   # a saved network that is not in range
+   ```
+   Fix: bring the saved network into range, or remove it so the station stops scanning (`wpa_cli -i wlan0 remove_network <id>` then `save_config`).
 
 ### DNS not resolving after WiFi reconnect
 
@@ -169,6 +176,9 @@ wpa_cli -i wlan0 scan && sleep 3 && wpa_cli -i wlan0 scan_results
   ssh -o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedKeyTypes=+ssh-rsa root@encore.local
   ```
 - If IP changed (DHCP), check your router's client list or connect via the AP
+- **If WiFi and the AP are both unavailable**, reach the device over USB instead. Plug
+  a USB cable from the speaker into your computer and SSH to `root@10.55.55.1`. See
+  [Reaching the device over USB](#reaching-the-device-over-usb) below.
 - **Alternative — ADB**: The stock `init.rc` activates ADB (`/sbin/adbd-root` respawns).
   Connect via USB and use `adb shell` for root access. The kernel's Android composite gadget
   also has a CDC ACM function (`/dev/ttyGS0`) — the ramdisk `inittab` runs a getty on it,
@@ -254,6 +264,31 @@ reboot
 
 ## Recovery
 
+### Reaching the device over USB
+
+When WiFi or the access point is unavailable, you can still reach the device over USB. The
+firmware brings up a USB network gadget (RNDIS) at boot, so the speaker appears as a USB
+network adapter when you plug its USB Mini-B port into a computer. No WiFi is required.
+
+1. Connect a USB cable from the speaker to your computer. On Windows the built-in RNDIS
+   driver binds automatically (no install). The speaker runs a small DHCP server on the
+   link, so your computer gets an address on its own (pool `10.55.55.10`-`10.55.55.50`).
+   The link advertises no gateway and no DNS, so it does not disturb your normal internet
+   (for example a phone tether).
+2. The speaker is at `10.55.55.1`. Open the dashboard at `http://10.55.55.1/`, or SSH in:
+   ```bash
+   ssh -o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedKeyTypes=+ssh-rsa root@10.55.55.1
+   ```
+   The same HTTP/WebSocket API and OTA upload that the apps use are available on this link.
+
+The gadget starts automatically at boot and a monitor restarts it if the link drops, so it
+works as a recovery channel even when the network is down. If a large transfer (such as an
+OTA upload) seems slow, that is expected: the link MTU is fixed at 400 bytes to keep the
+controller stable, which caps throughput (measured around 7 MB/s) but is fine for the
+dashboard, SSH, and OTA.
+
+See [usb-access.md](usb-access.md) for the full setup and the gadget build details.
+
 ### Device won't boot
 
 The device can always be recovered via USB boot mode:
@@ -261,7 +296,7 @@ The device can always be recovered via USB boot mode:
 1. Unplug the device
 2. Hold reset (pinhole on bottom) while plugging in USB
 3. Release reset, press mic-mute 4 times
-4. Flash stock firmware via `flash/run.bat`
+4. Flash stock firmware via `uboot/run.bat`
 
 See [flashing.md](flashing.md) for the full procedure.
 
@@ -339,13 +374,19 @@ See [architecture.md](architecture.md) for the full REST API reference.
 
 ## Logs
 
-Encore logs to `/lsync/encore/encore.log` (truncated each boot, persistent across crashes within a single boot cycle).
+Encore writes `/lsync/encore/encore.log` for the current boot. At startup the previous
+run's log is rotated to `/lsync/encore/encore.log.prev` (rather than truncated), so the log
+of a run that crashed or was rebooted by the watchdog survives into the next boot.
 
-Additional system logs:
+If a run dies from an uncaught panic, a one-line record with the file and line is appended
+to `/lsync/encore/panic.log` and flushed to NAND immediately — this is the place to look
+when a binary starts and then disappears, since it survives even a watchdog reboot.
 
 | File | Purpose |
 |------|---------|
-| `/lsync/encore/encore.log` | Encore runtime log |
+| `/lsync/encore/encore.log` | Encore runtime log (current boot) |
+| `/lsync/encore/encore.log.prev` | Previous boot's log (rotated at startup) |
+| `/lsync/encore/panic.log` | Appended panic records (file:line), flushed to disk |
 | `/tmp/supervisor.log` | Supervisor startup/crash log |
 | `/tmp/auto_wifi_firewall.log` | WiFi connection |
 | `/tmp/start_ap.log` | Access point |

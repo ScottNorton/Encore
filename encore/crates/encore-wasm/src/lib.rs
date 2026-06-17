@@ -7,16 +7,16 @@
 
 mod app;
 mod boot;
+pub mod brand;
+mod components;
 mod dom;
+mod graphics;
+mod haptic;
+mod pages;
+mod panels;
 mod state;
 mod style;
 mod ws;
-mod pages;
-mod panels;
-mod graphics;
-mod components;
-mod haptic;
-pub mod brand;
 
 use wasm_bindgen::prelude::*;
 

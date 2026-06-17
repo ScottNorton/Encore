@@ -20,7 +20,7 @@ See the [Build Guide](docs/build-guide.md) for prerequisites and instructions.
 1. Fork the repository
 2. Create a feature branch from `main`
 3. Make your changes
-4. Run tests: `cd encore && cargo test --all`
+4. Run tests: `make test`
 5. Run verification: `make verify`
 6. Submit a pull request with a clear description of the change
 
@@ -67,7 +67,10 @@ When filing a bug report, include:
 
 - What you were doing when the issue occurred
 - Device log output (`/lsync/encore/encore.log` or the web dashboard Logs tab)
-- Your network setup (WiFi, AP mode, Ethernet-over-USB)
+- Your network setup (WiFi, AP mode, USB RNDIS). USB RNDIS is a reliable
+  WiFi-independent channel: plug a cable into the speaker's USB port and it
+  comes up as a network adapter at 10.55.55.1, giving you SSH and the web
+  dashboard without WiFi.
 - Build information (commit hash, `make encore` output)
 
 ## Questions?

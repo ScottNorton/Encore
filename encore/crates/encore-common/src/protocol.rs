@@ -11,8 +11,18 @@ use rkyv::{Archive, Deserialize, Serialize};
 use crate::config::EncoreConfigFile;
 
 /// Identifies an audio source in the mixer
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(
+    Archive,
+    Serialize,
+    Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub enum SourceId {
     Spotify,
     Bluetooth,
@@ -21,8 +31,7 @@ pub enum SourceId {
 }
 
 /// Spotify playback actions
-#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind")]
 pub enum SpotifyAction {
     Play,
@@ -38,8 +47,7 @@ pub enum SpotifyAction {
 }
 
 /// Bluetooth control actions
-#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind")]
 pub enum BtAction {
     StartDiscovery,
@@ -51,16 +59,14 @@ pub enum BtAction {
 }
 
 /// Single LED animation frame (13 LEDs: 12 ring + 1 center).
-#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LedFrame {
     pub colors: [(u8, u8, u8); 13],
     pub duration_ms: u16,
 }
 
 /// LED animation presets
-#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind")]
 pub enum LedAnimation {
     Off,
@@ -75,8 +81,18 @@ pub enum LedAnimation {
 }
 
 /// Biquad filter shape for parametric EQ
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(
+    Archive,
+    Serialize,
+    Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub enum FilterType {
     Peak,
     LowShelf,
@@ -85,8 +101,18 @@ pub enum FilterType {
 }
 
 /// Single parametric EQ band configuration
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(
+    Archive,
+    Serialize,
+    Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct EqBand {
     pub freq_hz: u16,
     pub gain_cb: i16,
@@ -96,13 +122,28 @@ pub struct EqBand {
 
 impl Default for EqBand {
     fn default() -> Self {
-        Self { freq_hz: 1000, gain_cb: 0, q_x10: 10, filter_type: FilterType::Peak }
+        Self {
+            freq_hz: 1000,
+            gain_cb: 0,
+            q_x10: 10,
+            filter_type: FilterType::Peak,
+        }
     }
 }
 
 /// Built-in EQ presets
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(
+    Archive,
+    Serialize,
+    Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub enum EqPreset {
     Flat,
     BassBoost,
@@ -112,8 +153,7 @@ pub enum EqPreset {
 }
 
 /// Full EQ state broadcast to dashboard
-#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EqState {
     pub bands: [EqBand; 10],
     pub preset: Option<EqPreset>,
@@ -131,8 +171,18 @@ impl Default for EqState {
 }
 
 /// DRC frequency band identifier
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(
+    Archive,
+    Serialize,
+    Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub enum DrcBand {
     Low,
     Mid,
@@ -140,8 +190,18 @@ pub enum DrcBand {
 }
 
 /// Single DRC band configuration
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(
+    Archive,
+    Serialize,
+    Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct DrcBandConfig {
     pub threshold_db: i8,
     pub ratio_x10: u8,
@@ -151,13 +211,28 @@ pub struct DrcBandConfig {
 
 impl Default for DrcBandConfig {
     fn default() -> Self {
-        Self { threshold_db: -20, ratio_x10: 10, attack_ms: 10, release_ms: 200 }
+        Self {
+            threshold_db: -20,
+            ratio_x10: 10,
+            attack_ms: 10,
+            release_ms: 200,
+        }
     }
 }
 
 /// Built-in DRC presets
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(
+    Archive,
+    Serialize,
+    Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub enum DrcPreset {
     Off,
     Gentle,
@@ -166,8 +241,7 @@ pub enum DrcPreset {
 }
 
 /// Full DRC state broadcast to dashboard
-#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DrcState {
     pub bands: [DrcBandConfig; 3],
     pub low_mid_hz: u16,
@@ -189,8 +263,7 @@ impl Default for DrcState {
 }
 
 /// DSP engine status broadcast to dashboard
-#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DspInfo {
     pub version: String,
     pub hybridflow: u8,
@@ -199,8 +272,18 @@ pub struct DspInfo {
 }
 
 /// Debug mode per subsystem
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(
+    Archive,
+    Serialize,
+    Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub enum DebugMode {
     Production,
     Hold,
@@ -208,16 +291,14 @@ pub enum DebugMode {
 }
 
 /// WiFi credentials for network configuration
-#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WifiCredentials {
     pub ssid: String,
     pub password: String,
 }
 
 /// Track information from Spotify
-#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TrackInfo {
     pub title: String,
     pub artist: String,
@@ -233,8 +314,7 @@ pub struct TrackInfo {
 }
 
 /// Spotify playback state (broadcast on every state change + 1Hz position updates)
-#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SpotifyStatus {
     pub is_playing: bool,
     pub shuffle: bool,
@@ -249,30 +329,64 @@ pub struct SpotifyStatus {
 }
 
 /// Bluetooth event
-#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind")]
 pub enum BtEvent {
-    DeviceConnected { name: String, addr: String },
-    DeviceDisconnected { addr: String },
-    DiscoveryResult { name: String, addr: String, rssi: i16 },
+    DeviceConnected {
+        name: String,
+        addr: String,
+    },
+    DeviceDisconnected {
+        addr: String,
+    },
+    DiscoveryResult {
+        name: String,
+        addr: String,
+        rssi: i16,
+    },
 }
 
 /// Network state
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(
+    Archive, Serialize, Deserialize, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(tag = "kind")]
 pub enum NetworkState {
     Disconnected,
-    Connecting { ssid: String },
-    Connected { ssid: String, ip: String, signal: i8, #[serde(default)] hostname: String, #[serde(default)] frequency_mhz: u32 },
-    ApMode { ssid: String, clients: u8, #[serde(default)] ap_frequency_mhz: u32 },
-    ConnectedWithAp { ssid: String, ip: String, signal: i8, hostname: String, #[serde(default)] frequency_mhz: u32, ap_ssid: String, ap_clients: u8, #[serde(default)] ap_frequency_mhz: u32 },
+    Connecting {
+        ssid: String,
+    },
+    Connected {
+        ssid: String,
+        ip: String,
+        signal: i8,
+        #[serde(default)]
+        hostname: String,
+        #[serde(default)]
+        frequency_mhz: u32,
+    },
+    ApMode {
+        ssid: String,
+        clients: u8,
+        #[serde(default)]
+        ap_frequency_mhz: u32,
+    },
+    ConnectedWithAp {
+        ssid: String,
+        ip: String,
+        signal: i8,
+        hostname: String,
+        #[serde(default)]
+        frequency_mhz: u32,
+        ap_ssid: String,
+        ap_clients: u8,
+        #[serde(default)]
+        ap_frequency_mhz: u32,
+    },
 }
 
 /// Per-core CPU jiffies snapshot (client computes delta for %)
-#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CpuCoreSnapshot {
     pub user: u64,
     pub nice: u64,
@@ -287,8 +401,7 @@ pub struct CpuCoreSnapshot {
 }
 
 /// Disk usage for a single mount point
-#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DiskUsage {
     pub mount: String,
     pub total_kb: u64,
@@ -296,8 +409,7 @@ pub struct DiskUsage {
 }
 
 /// Network interface traffic snapshot
-#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct NetInterfaceSnapshot {
     pub name: String,
     pub rx_bytes: u64,
@@ -305,8 +417,7 @@ pub struct NetInterfaceSnapshot {
 }
 
 /// System-wide snapshot (1Hz telemetry)
-#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SystemSnapshot {
     pub uptime_secs: u64,
     pub cpu_percent: u8,
@@ -323,11 +434,12 @@ pub struct SystemSnapshot {
     pub process_count: u16,
 }
 
-fn default_health() -> u8 { 100 }
+fn default_health() -> u8 {
+    100
+}
 
 /// Status of a peer in the speaker group.
-#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PeerInfo {
     pub peer_id: String,
     pub name: String,
@@ -351,8 +463,7 @@ pub struct PeerInfo {
 }
 
 /// Status of the multi-speaker group.
-#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GroupStatus {
     pub enabled: bool,
     pub group_name: String,
@@ -367,75 +478,141 @@ pub struct GroupStatus {
 }
 
 /// Firmware -> Dashboard messages
-#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum ServerMsg {
     SystemStatus(SystemSnapshot),
     SubsystemStatus(SubsystemSnapshot),
     TrackChanged(TrackInfo),
     BluetoothEvent(BtEvent),
-    VolumeChanged { source: SourceId, level: u8 },
+    VolumeChanged {
+        source: SourceId,
+        level: u8,
+    },
     NetworkChanged(NetworkState),
     LedStateChanged(LedAnimation),
     CrashReport(CrashSummary),
     ConfigLoaded(Box<EncoreConfig>),
     LogEntries(Vec<LogEntry>),
-    AudioLevels { left_rms: f32, right_rms: f32, left_peak: f32, right_peak: f32 },
+    AudioLevels {
+        left_rms: f32,
+        right_rms: f32,
+        left_peak: f32,
+        right_peak: f32,
+    },
     SpotifyStatus(SpotifyStatus),
     EqState(EqState),
     DrcState(DrcState),
     DspInfo(DspInfo),
-    DacRegValue { page: u8, reg: u8, value: u8 },
-    DspSpiResponse { data: Vec<u8> },
-    DspMemoryDump { start_page: u16, data: Vec<u8> },
-    DspEvent { description: String },
+    DacRegValue {
+        page: u8,
+        reg: u8,
+        value: u8,
+    },
+    DspSpiResponse {
+        data: Vec<u8>,
+    },
+    DspMemoryDump {
+        start_page: u16,
+        data: Vec<u8>,
+    },
+    DspEvent {
+        description: String,
+    },
     WifiConnectResult(WifiConnectResult),
-    TimeSynced { timestamp_secs: u64 },
-    AudioSpectrum { bins: Vec<f32> },
-    AudioWaveform { samples: Vec<f32> },
+    TimeSynced {
+        timestamp_secs: u64,
+    },
+    AudioSpectrum {
+        bins: Vec<f32>,
+    },
+    AudioWaveform {
+        samples: Vec<f32>,
+    },
     GroupStatus(GroupStatus),
-    BootMode { safe_mode: bool, #[serde(default)] boot_source: String },
-    AudioPowerState { state: String },
-    MicLevels { left_rms: f32, right_rms: f32, left_peak: f32, right_peak: f32 },
+    BootMode {
+        safe_mode: bool,
+        #[serde(default)]
+        boot_source: String,
+    },
+    AudioPowerState {
+        state: String,
+    },
+    MicLevels {
+        left_rms: f32,
+        right_rms: f32,
+        left_peak: f32,
+        right_peak: f32,
+    },
 }
 
 /// Dashboard -> Firmware messages
-#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum ClientMsg {
-    SetVolume { source: SourceId, level: u8 },
+    SetVolume {
+        source: SourceId,
+        level: u8,
+    },
     SetMasterVolume(u8),
     SpotifyControl(SpotifyAction),
     BluetoothControl(BtAction),
     SetLed(LedAnimation),
     SetWifi(WifiCredentials),
-    SetDebugMode { subsystem: String, mode: DebugMode },
+    SetDebugMode {
+        subsystem: String,
+        mode: DebugMode,
+    },
     RestartSubsystem(String),
     RequestConfig,
     SaveConfig(Box<EncoreConfig>),
     // EQ controls
-    SetEqBand { band: u8, config: EqBand },
+    SetEqBand {
+        band: u8,
+        config: EqBand,
+    },
     SetEqPreset(EqPreset),
     SetEqEnabled(bool),
     // DRC controls
-    SetDrc { band: DrcBand, config: DrcBandConfig },
-    SetDrcCrossover { low_mid_hz: u16, mid_high_hz: u16 },
+    SetDrc {
+        band: DrcBand,
+        config: DrcBandConfig,
+    },
+    SetDrcCrossover {
+        low_mid_hz: u16,
+        mid_high_hz: u16,
+    },
     SetDrcEnabled(bool),
     SetDrcPreset(DrcPreset),
     // DSP controls
     SetDspVolume(u8),
     SetMicMute(bool),
     // Hardware explorers
-    DacRegRead { page: u8, reg: u8 },
-    DacRegWrite { page: u8, reg: u8, value: u8 },
-    DspSpiSend { msg_type: u16, data: Vec<u8> },
-    DspMemoryDump { start_page: u16, num_pages: u16 },
-    DspDumpToFile { path: String },
+    DacRegRead {
+        page: u8,
+        reg: u8,
+    },
+    DacRegWrite {
+        page: u8,
+        reg: u8,
+        value: u8,
+    },
+    DspSpiSend {
+        msg_type: u16,
+        data: Vec<u8>,
+    },
+    DspMemoryDump {
+        start_page: u16,
+        num_pages: u16,
+    },
+    DspDumpToFile {
+        path: String,
+    },
     DspPollEvents,
     RequestNetworkState,
-    SetCustomAnimation { frames: Vec<LedFrame> },
+    SetCustomAnimation {
+        frames: Vec<LedFrame>,
+    },
     // Group controls
     SetGroupEnabled(bool),
     SetGroupChannel(String),
@@ -450,8 +627,7 @@ pub enum ClientMsg {
 }
 
 /// Full config mirror for dashboard editor
-#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EncoreConfig {
     pub device_name: String,
     pub master_volume: u8,
@@ -564,7 +740,9 @@ impl EncoreConfig {
     pub fn to_file_merge(&self, existing: &EncoreConfigFile) -> EncoreConfigFile {
         use crate::config::*;
         EncoreConfigFile {
-            device: DeviceConfig { name: self.device_name.clone() },
+            device: DeviceConfig {
+                name: self.device_name.clone(),
+            },
             audio: AudioConfig {
                 master_volume: self.master_volume,
                 spotify_volume: self.spotify_volume,
@@ -608,8 +786,14 @@ impl EncoreConfig {
                 // The scan-list WiFi connect path only sends SetWifi (not SaveConfig),
                 // so connect_wifi_inner saves creds directly. A subsequent SaveConfig
                 // from any other panel must not wipe them.
-                wifi_ssid: self.wifi_ssid.clone().or_else(|| existing.network.wifi_ssid.clone()),
-                wifi_password: self.wifi_password.clone().or_else(|| existing.network.wifi_password.clone()),
+                wifi_ssid: self
+                    .wifi_ssid
+                    .clone()
+                    .or_else(|| existing.network.wifi_ssid.clone()),
+                wifi_password: self
+                    .wifi_password
+                    .clone()
+                    .or_else(|| existing.network.wifi_password.clone()),
                 ap_keep_alive: self.ap_keep_alive,
                 ap_ssid: self.ap_ssid.clone(),
                 ap_password: self.ap_password.clone(),
@@ -642,8 +826,7 @@ impl EncoreConfig {
 }
 
 /// Crash summary for dashboard display
-#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CrashSummary {
     pub subsystem: String,
     pub message: String,
@@ -653,8 +836,7 @@ pub struct CrashSummary {
 }
 
 /// Per-subsystem status snapshot
-#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SubsystemSnapshot {
     pub name: String,
     pub state: SubsystemState,
@@ -665,8 +847,18 @@ pub struct SubsystemSnapshot {
 }
 
 /// Subsystem lifecycle state
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(
+    Archive,
+    Serialize,
+    Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub enum SubsystemState {
     Starting,
     Running,
@@ -691,8 +883,7 @@ impl SubsystemState {
 }
 
 /// Log entry for real-time log viewer
-#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LogEntry {
     pub timestamp_ms: u64,
     pub level: String,
@@ -701,8 +892,7 @@ pub struct LogEntry {
 }
 
 /// Result of a WiFi connection attempt
-#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WifiConnectResult {
     pub ssid: String,
     pub success: bool,
@@ -710,8 +900,7 @@ pub struct WifiConnectResult {
 }
 
 /// WiFi network from scan results
-#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WifiNetwork {
     pub ssid: String,
     pub bssid: String,
@@ -744,7 +933,12 @@ mod tests {
 
     #[test]
     fn source_id_round_trip() {
-        for id in [SourceId::Spotify, SourceId::Bluetooth, SourceId::Wyoming, SourceId::System] {
+        for id in [
+            SourceId::Spotify,
+            SourceId::Bluetooth,
+            SourceId::Wyoming,
+            SourceId::System,
+        ] {
             let rt: SourceId = rkyv_rt!(&id, SourceId);
             assert_eq!(rt, id);
             let jrt: SourceId = json_rt!(&id, SourceId);
@@ -803,10 +997,18 @@ mod tests {
         let actions = vec![
             BtAction::StartDiscovery,
             BtAction::StopDiscovery,
-            BtAction::Pair { addr: "AA:BB:CC:DD:EE:FF".into() },
-            BtAction::Connect { addr: "AA:BB:CC:DD:EE:FF".into() },
-            BtAction::Disconnect { addr: "AA:BB:CC:DD:EE:FF".into() },
-            BtAction::Forget { addr: "AA:BB:CC:DD:EE:FF".into() },
+            BtAction::Pair {
+                addr: "AA:BB:CC:DD:EE:FF".into(),
+            },
+            BtAction::Connect {
+                addr: "AA:BB:CC:DD:EE:FF".into(),
+            },
+            BtAction::Disconnect {
+                addr: "AA:BB:CC:DD:EE:FF".into(),
+            },
+            BtAction::Forget {
+                addr: "AA:BB:CC:DD:EE:FF".into(),
+            },
         ];
         for action in &actions {
             let _: BtAction = rkyv_rt!(action, BtAction);
@@ -818,17 +1020,43 @@ mod tests {
     fn led_animation_json_round_trip() {
         let anims = vec![
             LedAnimation::Off,
-            LedAnimation::Solid { r: 255, g: 0, b: 128 },
-            LedAnimation::Breathe { r: 0, g: 255, b: 0, period_ms: 2000 },
-            LedAnimation::Spin { r: 128, g: 128, b: 128, speed: 5 },
-            LedAnimation::Pulse { r: 255, g: 255, b: 255 },
+            LedAnimation::Solid {
+                r: 255,
+                g: 0,
+                b: 128,
+            },
+            LedAnimation::Breathe {
+                r: 0,
+                g: 255,
+                b: 0,
+                period_ms: 2000,
+            },
+            LedAnimation::Spin {
+                r: 128,
+                g: 128,
+                b: 128,
+                speed: 5,
+            },
+            LedAnimation::Pulse {
+                r: 255,
+                g: 255,
+                b: 255,
+            },
             LedAnimation::VolumeArc { level: 80 },
             LedAnimation::BootSurge,
             LedAnimation::SafeMode,
-            LedAnimation::Custom { frames: vec![
-                LedFrame { colors: [(255,0,0); 13], duration_ms: 100 },
-                LedFrame { colors: [(0,255,0); 13], duration_ms: 200 },
-            ]},
+            LedAnimation::Custom {
+                frames: vec![
+                    LedFrame {
+                        colors: [(255, 0, 0); 13],
+                        duration_ms: 100,
+                    },
+                    LedFrame {
+                        colors: [(0, 255, 0); 13],
+                        duration_ms: 200,
+                    },
+                ],
+            },
         ];
         for anim in &anims {
             let _: LedAnimation = rkyv_rt!(anim, LedAnimation);
@@ -925,7 +1153,9 @@ mod tests {
     fn network_state_json_round_trip() {
         let states = vec![
             NetworkState::Disconnected,
-            NetworkState::Connecting { ssid: "MyWifi".into() },
+            NetworkState::Connecting {
+                ssid: "MyWifi".into(),
+            },
             NetworkState::Connected {
                 ssid: "MyWifi".into(),
                 ip: "192.168.1.42".into(),
@@ -1033,7 +1263,7 @@ mod tests {
                 timestamp_secs: 100,
                 restart_count: 1,
             }),
-            ServerMsg::ConfigLoaded(Box::new(EncoreConfig::default())),
+            ServerMsg::ConfigLoaded(Box::default()),
             ServerMsg::SpotifyStatus(SpotifyStatus {
                 is_playing: true,
                 shuffle: false,
@@ -1056,21 +1286,64 @@ mod tests {
             }),
             ServerMsg::EqState(EqState::default()),
             ServerMsg::DrcState(DrcState::default()),
-            ServerMsg::DspInfo(DspInfo { version: "1.0".into(), hybridflow: 6, mic_muted: false, dsp_volume: 80 }),
-            ServerMsg::DacRegValue { page: 0, reg: 0x2B, value: 6 },
-            ServerMsg::DspSpiResponse { data: vec![0x00, 0x08, 0x01, 0x02] },
-            ServerMsg::DspMemoryDump { start_page: 0, data: vec![0xDE, 0xAD] },
-            ServerMsg::DspEvent { description: "TriggerFound".into() },
-            ServerMsg::WifiConnectResult(WifiConnectResult { ssid: "Test".into(), success: true, error: None }),
-            ServerMsg::TimeSynced { timestamp_secs: 1739600000 },
-            ServerMsg::AudioSpectrum { bins: vec![0.0; 32] },
-            ServerMsg::AudioWaveform { samples: vec![0.0; 256] },
-            ServerMsg::BootMode { safe_mode: true, boot_source: "rootfs".into() },
-            ServerMsg::BootMode { safe_mode: false, boot_source: "next".into() },
-            ServerMsg::AudioPowerState { state: "active".into() },
-            ServerMsg::AudioPowerState { state: "idle".into() },
-            ServerMsg::AudioPowerState { state: "standby".into() },
-            ServerMsg::MicLevels { left_rms: 0.15, right_rms: 0.22, left_peak: 0.65, right_peak: 0.71 },
+            ServerMsg::DspInfo(DspInfo {
+                version: "1.0".into(),
+                hybridflow: 6,
+                mic_muted: false,
+                dsp_volume: 80,
+            }),
+            ServerMsg::DacRegValue {
+                page: 0,
+                reg: 0x2B,
+                value: 6,
+            },
+            ServerMsg::DspSpiResponse {
+                data: vec![0x00, 0x08, 0x01, 0x02],
+            },
+            ServerMsg::DspMemoryDump {
+                start_page: 0,
+                data: vec![0xDE, 0xAD],
+            },
+            ServerMsg::DspEvent {
+                description: "TriggerFound".into(),
+            },
+            ServerMsg::WifiConnectResult(WifiConnectResult {
+                ssid: "Test".into(),
+                success: true,
+                error: None,
+            }),
+            ServerMsg::TimeSynced {
+                timestamp_secs: 1739600000,
+            },
+            ServerMsg::AudioSpectrum {
+                bins: vec![0.0; 32],
+            },
+            ServerMsg::AudioWaveform {
+                samples: vec![0.0; 256],
+            },
+            ServerMsg::BootMode {
+                safe_mode: true,
+                boot_source: "rootfs".into(),
+            },
+            ServerMsg::BootMode {
+                safe_mode: false,
+                boot_source: "next".into(),
+            },
+            ServerMsg::AudioPowerState {
+                state: "active".into(),
+            },
+            ServerMsg::AudioPowerState {
+                state: "idle".into(),
+            },
+            ServerMsg::AudioPowerState {
+                state: "standby".into(),
+            },
+            ServerMsg::MicLevels {
+                left_rms: 0.15,
+                right_rms: 0.22,
+                left_peak: 0.65,
+                right_peak: 0.71,
+            },
         ];
         for msg in &msgs {
             let _: ServerMsg = rkyv_rt!(msg, ServerMsg);
@@ -1103,23 +1376,47 @@ mod tests {
             },
             ClientMsg::RestartSubsystem("bluetooth".into()),
             ClientMsg::RequestConfig,
-            ClientMsg::SaveConfig(Box::new(EncoreConfig::default())),
-            ClientMsg::SetEqBand { band: 0, config: EqBand::default() },
+            ClientMsg::SaveConfig(Box::default()),
+            ClientMsg::SetEqBand {
+                band: 0,
+                config: EqBand::default(),
+            },
             ClientMsg::SetEqPreset(EqPreset::Flat),
             ClientMsg::SetEqEnabled(true),
-            ClientMsg::SetDrc { band: DrcBand::Low, config: DrcBandConfig::default() },
-            ClientMsg::SetDrcCrossover { low_mid_hz: 200, mid_high_hz: 2000 },
+            ClientMsg::SetDrc {
+                band: DrcBand::Low,
+                config: DrcBandConfig::default(),
+            },
+            ClientMsg::SetDrcCrossover {
+                low_mid_hz: 200,
+                mid_high_hz: 2000,
+            },
             ClientMsg::SetDrcEnabled(false),
             ClientMsg::SetDrcPreset(DrcPreset::Off),
             ClientMsg::SetDspVolume(80),
             ClientMsg::SetMicMute(true),
             ClientMsg::DacRegRead { page: 0, reg: 0x2B },
-            ClientMsg::DacRegWrite { page: 0, reg: 0x3D, value: 0x30 },
-            ClientMsg::DspSpiSend { msg_type: 0x0000, data: vec![0x08] },
-            ClientMsg::DspMemoryDump { start_page: 0, num_pages: 1 },
+            ClientMsg::DacRegWrite {
+                page: 0,
+                reg: 0x3D,
+                value: 0x30,
+            },
+            ClientMsg::DspSpiSend {
+                msg_type: 0x0000,
+                data: vec![0x08],
+            },
+            ClientMsg::DspMemoryDump {
+                start_page: 0,
+                num_pages: 1,
+            },
             ClientMsg::DspPollEvents,
             ClientMsg::RequestNetworkState,
-            ClientMsg::SetCustomAnimation { frames: vec![LedFrame { colors: [(255,0,0); 13], duration_ms: 100 }] },
+            ClientMsg::SetCustomAnimation {
+                frames: vec![LedFrame {
+                    colors: [(255, 0, 0); 13],
+                    duration_ms: 100,
+                }],
+            },
             ClientMsg::StartMicTest,
             ClientMsg::StopMicTest,
         ];
@@ -1185,7 +1482,9 @@ mod tests {
     #[test]
     fn encore_config_file_conversion_round_trip() {
         let file_cfg = crate::config::EncoreConfigFile {
-            device: crate::config::DeviceConfig { name: "Test".into() },
+            device: crate::config::DeviceConfig {
+                name: "Test".into(),
+            },
             audio: crate::config::AudioConfig {
                 master_volume: 50,
                 spotify_volume: 80,
@@ -1205,7 +1504,10 @@ mod tests {
                 normalisation_pregain_db: -2.5,
                 ..Default::default()
             },
-            bluetooth: crate::config::BluetoothConfig { enabled: true, discoverable: false },
+            bluetooth: crate::config::BluetoothConfig {
+                enabled: true,
+                discoverable: false,
+            },
             homeassistant: crate::config::HomeAssistantConfig {
                 enabled: true,
                 mqtt_host: Some("mqtt.local".into()),
@@ -1301,9 +1603,18 @@ mod tests {
     #[test]
     fn bt_event_json_round_trip() {
         let events = vec![
-            BtEvent::DeviceConnected { name: "Speaker".into(), addr: "AA:BB:CC:DD:EE:FF".into() },
-            BtEvent::DeviceDisconnected { addr: "AA:BB:CC:DD:EE:FF".into() },
-            BtEvent::DiscoveryResult { name: "Phone".into(), addr: "11:22:33:44:55:66".into(), rssi: -60 },
+            BtEvent::DeviceConnected {
+                name: "Speaker".into(),
+                addr: "AA:BB:CC:DD:EE:FF".into(),
+            },
+            BtEvent::DeviceDisconnected {
+                addr: "AA:BB:CC:DD:EE:FF".into(),
+            },
+            BtEvent::DiscoveryResult {
+                name: "Phone".into(),
+                addr: "11:22:33:44:55:66".into(),
+                rssi: -60,
+            },
         ];
         for event in &events {
             let _: BtEvent = rkyv_rt!(event, BtEvent);
@@ -1313,7 +1624,10 @@ mod tests {
 
     #[test]
     fn wifi_credentials_json_round_trip() {
-        let creds = WifiCredentials { ssid: "MyNet".into(), password: "secret".into() };
+        let creds = WifiCredentials {
+            ssid: "MyNet".into(),
+            password: "secret".into(),
+        };
         let _: WifiCredentials = rkyv_rt!(&creds, WifiCredentials);
         let jrt: WifiCredentials = json_rt!(&creds, WifiCredentials);
         assert_eq!(jrt.ssid, "MyNet");
@@ -1328,8 +1642,26 @@ mod tests {
             ram_used_kb: 100000,
             ram_total_kb: 256000,
             cores: vec![
-                CpuCoreSnapshot { user: 1000, nice: 10, system: 500, idle: 8000, iowait: 50, irq: 5, softirq: 3, freq_khz: 1300000 },
-                CpuCoreSnapshot { user: 800, nice: 5, system: 400, idle: 8500, iowait: 30, irq: 2, softirq: 1, freq_khz: 1300000 },
+                CpuCoreSnapshot {
+                    user: 1000,
+                    nice: 10,
+                    system: 500,
+                    idle: 8000,
+                    iowait: 50,
+                    irq: 5,
+                    softirq: 3,
+                    freq_khz: 1300000,
+                },
+                CpuCoreSnapshot {
+                    user: 800,
+                    nice: 5,
+                    system: 400,
+                    idle: 8500,
+                    iowait: 30,
+                    irq: 2,
+                    softirq: 1,
+                    freq_khz: 1300000,
+                },
             ],
             load_avg: [1.23, 0.85, 0.42],
             ram_free_kb: 80000,
@@ -1337,12 +1669,22 @@ mod tests {
             ram_cached_kb: 64000,
             temperature_mc: Some(48200),
             disks: vec![
-                DiskUsage { mount: "/".into(), total_kb: 44000, used_kb: 44000 },
-                DiskUsage { mount: "/lsync".into(), total_kb: 32000, used_kb: 8000 },
+                DiskUsage {
+                    mount: "/".into(),
+                    total_kb: 44000,
+                    used_kb: 44000,
+                },
+                DiskUsage {
+                    mount: "/lsync".into(),
+                    total_kb: 32000,
+                    used_kb: 8000,
+                },
             ],
-            net_interfaces: vec![
-                NetInterfaceSnapshot { name: "wlan0".into(), rx_bytes: 123456, tx_bytes: 78901 },
-            ],
+            net_interfaces: vec![NetInterfaceSnapshot {
+                name: "wlan0".into(),
+                rx_bytes: 123456,
+                tx_bytes: 78901,
+            }],
             process_count: 67,
         };
         let jrt: SystemSnapshot = json_rt!(&snap, SystemSnapshot);
@@ -1389,7 +1731,11 @@ mod tests {
 
     #[test]
     fn wifi_connect_result_round_trip() {
-        let success = WifiConnectResult { ssid: "TestNet".into(), success: true, error: None };
+        let success = WifiConnectResult {
+            ssid: "TestNet".into(),
+            success: true,
+            error: None,
+        };
         let rt: WifiConnectResult = rkyv_rt!(&success, WifiConnectResult);
         assert_eq!(rt.ssid, "TestNet");
         assert!(rt.success);
@@ -1398,7 +1744,11 @@ mod tests {
         assert_eq!(jrt.ssid, "TestNet");
         assert!(jrt.success);
 
-        let fail = WifiConnectResult { ssid: "BadNet".into(), success: false, error: Some("timeout".into()) };
+        let fail = WifiConnectResult {
+            ssid: "BadNet".into(),
+            success: false,
+            error: Some("timeout".into()),
+        };
         let rt2: WifiConnectResult = rkyv_rt!(&fail, WifiConnectResult);
         assert!(!rt2.success);
         assert_eq!(rt2.error.as_deref(), Some("timeout"));
@@ -1475,7 +1825,12 @@ mod tests {
         let val: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(val["type"].as_str(), Some("AudioLevels"));
         match rt {
-            ServerMsg::AudioLevels { left_rms, right_rms, left_peak, right_peak } => {
+            ServerMsg::AudioLevels {
+                left_rms,
+                right_rms,
+                left_peak,
+                right_peak,
+            } => {
                 assert!((left_rms - 0.42).abs() < f32::EPSILON);
                 assert!((right_rms - 0.38).abs() < f32::EPSILON);
                 assert!((left_peak - 0.95).abs() < f32::EPSILON);
@@ -1499,7 +1854,12 @@ mod tests {
         let val: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(val["type"].as_str(), Some("MicLevels"));
         match rt {
-            ServerMsg::MicLevels { left_rms, right_rms, left_peak, right_peak } => {
+            ServerMsg::MicLevels {
+                left_rms,
+                right_rms,
+                left_peak,
+                right_peak,
+            } => {
                 assert!((left_rms - 0.15).abs() < f32::EPSILON);
                 assert!((right_rms - 0.22).abs() < f32::EPSILON);
                 assert!((left_peak - 0.65).abs() < f32::EPSILON);
@@ -1511,7 +1871,12 @@ mod tests {
 
     #[test]
     fn filter_type_round_trip() {
-        for ft in [FilterType::Peak, FilterType::LowShelf, FilterType::HighShelf, FilterType::Notch] {
+        for ft in [
+            FilterType::Peak,
+            FilterType::LowShelf,
+            FilterType::HighShelf,
+            FilterType::Notch,
+        ] {
             let _: FilterType = rkyv_rt!(&ft, FilterType);
             let _: FilterType = json_rt!(&ft, FilterType);
         }
@@ -1519,7 +1884,12 @@ mod tests {
 
     #[test]
     fn eq_band_round_trip() {
-        let band = EqBand { freq_hz: 1000, gain_cb: 60, q_x10: 14, filter_type: FilterType::Peak };
+        let band = EqBand {
+            freq_hz: 1000,
+            gain_cb: 60,
+            q_x10: 14,
+            filter_type: FilterType::Peak,
+        };
         let rt: EqBand = rkyv_rt!(&band, EqBand);
         assert_eq!(rt.freq_hz, 1000);
         assert_eq!(rt.gain_cb, 60);
@@ -1551,11 +1921,130 @@ mod tests {
 
     #[test]
     fn dsp_info_round_trip() {
-        let info = DspInfo { version: "1.2.3".into(), hybridflow: 6, mic_muted: false, dsp_volume: 80 };
+        let info = DspInfo {
+            version: "1.2.3".into(),
+            hybridflow: 6,
+            mic_muted: false,
+            dsp_volume: 80,
+        };
         let rt: DspInfo = rkyv_rt!(&info, DspInfo);
         assert_eq!(rt.version, "1.2.3");
         assert_eq!(rt.hybridflow, 6);
         let jrt: DspInfo = json_rt!(&info, DspInfo);
         assert_eq!(jrt.dsp_volume, 80);
+    }
+
+    #[test]
+    fn subsystem_state_from_u8_known_values() {
+        assert_eq!(SubsystemState::from_u8(0), SubsystemState::Starting);
+        assert_eq!(SubsystemState::from_u8(1), SubsystemState::Running);
+        assert_eq!(SubsystemState::from_u8(2), SubsystemState::Degraded);
+        assert_eq!(SubsystemState::from_u8(3), SubsystemState::Held);
+        assert_eq!(SubsystemState::from_u8(4), SubsystemState::Crashed);
+    }
+
+    #[test]
+    fn subsystem_state_from_u8_out_of_range_is_stopped() {
+        // Anything outside 0..=4 falls through the catch-all to Stopped.
+        assert_eq!(SubsystemState::from_u8(5), SubsystemState::Stopped);
+        assert_eq!(SubsystemState::from_u8(99), SubsystemState::Stopped);
+        assert_eq!(SubsystemState::from_u8(255), SubsystemState::Stopped);
+    }
+
+    #[test]
+    fn to_file_merge_preserves_wifi_when_none() {
+        use crate::config::*;
+        // On-file config carries existing WiFi credentials.
+        let existing = EncoreConfigFile {
+            network: NetworkConfig {
+                wifi_ssid: Some("ExistingNet".into()),
+                wifi_password: Some("existingpass".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // Dashboard config does NOT set WiFi (e.g. a SaveConfig from another panel).
+        let mut proto = EncoreConfig::from_file(&EncoreConfigFile::default());
+        proto.wifi_ssid = None;
+        proto.wifi_password = None;
+
+        let merged = proto.to_file_merge(&existing);
+        // The .or_else path keeps the on-file credentials intact.
+        assert_eq!(merged.network.wifi_ssid.as_deref(), Some("ExistingNet"));
+        assert_eq!(
+            merged.network.wifi_password.as_deref(),
+            Some("existingpass")
+        );
+    }
+
+    #[test]
+    fn to_file_merge_incoming_wifi_overrides_existing() {
+        use crate::config::*;
+        let existing = EncoreConfigFile {
+            network: NetworkConfig {
+                wifi_ssid: Some("OldNet".into()),
+                wifi_password: Some("oldpass".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut proto = EncoreConfig::from_file(&EncoreConfigFile::default());
+        proto.wifi_ssid = Some("NewNet".into());
+        proto.wifi_password = Some("newpass".into());
+
+        let merged = proto.to_file_merge(&existing);
+        // When the dashboard supplies Some, it wins over the on-file value.
+        assert_eq!(merged.network.wifi_ssid.as_deref(), Some("NewNet"));
+        assert_eq!(merged.network.wifi_password.as_deref(), Some("newpass"));
+    }
+
+    #[test]
+    fn to_file_merge_carries_non_edited_fields() {
+        use crate::config::*;
+        // Build an existing file config with non-dashboard-editable fields set
+        // to distinctive values.
+        let existing = EncoreConfigFile {
+            audio: AudioConfig {
+                idle_timeout_secs: 17,
+                standby_timeout_secs: 123,
+                dsp_power_gate: true,
+                ..Default::default()
+            },
+            spotify: SpotifyConfig {
+                cache_path: Some("/lsync/spotify-cache".into()),
+                ..Default::default()
+            },
+            group: GroupConfig {
+                peer_id: Some("uuid-abc-123".into()),
+                party_mode: true,
+                ..Default::default()
+            },
+            debug: DebugConfig {
+                overrides: [("audio".to_string(), "trace".to_string())].into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // The dashboard config does not touch these fields.
+        let proto = EncoreConfig::from_file(&EncoreConfigFile::default());
+
+        let merged = proto.to_file_merge(&existing);
+        // Power-management fields carried over from the on-file config unchanged.
+        assert_eq!(merged.audio.idle_timeout_secs, 17);
+        assert_eq!(merged.audio.standby_timeout_secs, 123);
+        assert!(merged.audio.dsp_power_gate);
+        // Spotify cache_path is not in the protocol, so it must be preserved.
+        assert_eq!(
+            merged.spotify.cache_path.as_deref(),
+            Some("/lsync/spotify-cache")
+        );
+        // Group peer_id and party_mode are preserved from existing.
+        assert_eq!(merged.group.peer_id.as_deref(), Some("uuid-abc-123"));
+        assert!(merged.group.party_mode);
+        // Debug overrides are preserved from existing.
+        assert_eq!(
+            merged.debug.overrides.get("audio").map(|s| s.as_str()),
+            Some("trace")
+        );
     }
 }

@@ -67,12 +67,18 @@ impl Subsystem for WatchdogSubsystem {
         // so this should succeed. If EBUSY (safety net), degrade to MCU-only.
         let watchdog_file = match OpenOptions::new().write(true).open(WATCHDOG_DEVICE) {
             Ok(mut f) => {
-                info!("Watchdog: opened {} (interval={}s, dedicated thread)", WATCHDOG_DEVICE, PET_INTERVAL_SECS);
+                info!(
+                    "Watchdog: opened {} (interval={}s, dedicated thread)",
+                    WATCHDOG_DEVICE, PET_INTERVAL_SECS
+                );
                 let _ = f.write_all(&[0x00]);
                 Some(f)
             }
             Err(e) if e.raw_os_error() == Some(libc::EBUSY) => {
-                warn!("Watchdog: {} held by another process, MCU heartbeat only", WATCHDOG_DEVICE);
+                warn!(
+                    "Watchdog: {} held by another process, MCU heartbeat only",
+                    WATCHDOG_DEVICE
+                );
                 None
             }
             Err(e) => return Err(e).context("failed to open /dev/watchdog"),
@@ -118,7 +124,7 @@ impl Subsystem for WatchdogSubsystem {
                         std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap_or_default()
-                            .as_secs()
+                            .as_secs(),
                     );
                     std::thread::sleep(std::time::Duration::from_secs(PET_INTERVAL_SECS));
                 }

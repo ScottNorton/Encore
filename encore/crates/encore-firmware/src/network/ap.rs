@@ -50,6 +50,50 @@ pub fn set_restarting(v: bool) {
     AP_RESTARTING.store(v, Ordering::SeqCst);
 }
 
+/// RAII guard that holds AP_RESTARTING. While held, every lock-aware AP-up path
+/// (ensure_ap, start_ap_on_band) CAS-bails ("restart already in progress") and
+/// the monitor loop's AP-health gate (`!is_restarting()`) skips its restart — so
+/// the holder owns the radio. Released on Drop, including panic unwind.
+pub struct ApLock {
+    _private: (),
+}
+
+impl Drop for ApLock {
+    fn drop(&mut self) {
+        AP_RESTARTING.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Acquire AP_RESTARTING with a bounded blocking wait, returning a guard that
+/// releases it on Drop. The WiFi connect path uses this to keep the AP down for
+/// the whole association window without any other actor re-upping it.
+///
+/// Blocks (polling) until the CAS succeeds or `timeout` elapses. ensure_ap holds
+/// the lock across its full hostapd→uaputl sequence (~9s worst case), so a 12s
+/// budget waits out an in-flight bring-up. On timeout we proceed anyway (and the
+/// returned guard still clears the flag on Drop) — a stuck flag must never block
+/// association forever, and clearing it on Drop self-heals a previously-stranded
+/// flag.
+pub fn acquire_restart_lock(timeout: std::time::Duration) -> ApLock {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if AP_RESTARTING
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            return ApLock { _private: () };
+        }
+        if std::time::Instant::now() >= deadline {
+            warn!(
+                "AP: restart lock contended for {:?}, proceeding (radio may be contested)",
+                timeout
+            );
+            return ApLock { _private: () };
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 /// Start AP without acquiring the restart lock. Caller must hold it.
 pub fn ensure_ap_unlocked() -> Result<()> {
     if is_ap_running() {
@@ -120,7 +164,10 @@ pub fn ensure_ap() -> Result<()> {
     }
 
     // Acquire restart lock — if another thread is already restarting, bail out.
-    if AP_RESTARTING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+    if AP_RESTARTING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
         info!("AP: restart already in progress, skipping");
         return Ok(());
     }
@@ -326,7 +373,10 @@ fn ensure_dnsmasq() {
 /// then starts hostapd.
 pub fn start_ap_on_band(sta_freq_mhz: u32) -> Result<()> {
     // Acquire restart lock
-    if AP_RESTARTING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+    if AP_RESTARTING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
         info!("AP: restart already in progress, skipping band switch");
         return Ok(());
     }
@@ -346,7 +396,11 @@ fn start_ap_on_band_inner(sta_freq_mhz: u32) -> Result<()> {
     // Read AP credentials from config.toml or use defaults
     let (ap_ssid, ap_pass) = read_ap_credentials();
 
-    let ieee80211ac = if hw_mode == "a" { "ieee80211ac=1\n" } else { "" };
+    let ieee80211ac = if hw_mode == "a" {
+        "ieee80211ac=1\n"
+    } else {
+        ""
+    };
 
     let config = format!(
         "interface={iface}\n\
@@ -414,7 +468,11 @@ fn start_ap_on_band_inner(sta_freq_mhz: u32) -> Result<()> {
         Ok(())
     } else {
         warn!("AP: failed to start on hw_mode={} ch{}", hw_mode, channel);
-        Err(anyhow::anyhow!("AP failed to start on hw_mode={} ch{}", hw_mode, channel))
+        Err(anyhow::anyhow!(
+            "AP failed to start on hw_mode={} ch{}",
+            hw_mode,
+            channel
+        ))
     }
 }
 
@@ -426,7 +484,15 @@ pub fn default_ap_ssid() -> String {
         .unwrap_or_default();
     let mac = mac.trim();
     // MAC format: "aa:bb:cc:dd:ee:ff" — take last 4 hex chars (ee:ff → eeff)
-    let suffix: String = mac.chars().rev().take(5).filter(|c| *c != ':').collect::<String>().chars().rev().collect();
+    let suffix: String = mac
+        .chars()
+        .rev()
+        .take(5)
+        .filter(|c| *c != ':')
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
     if suffix.len() == 4 {
         format!("Invoke-{}", suffix.to_ascii_uppercase())
     } else {
@@ -438,9 +504,9 @@ pub fn default_ap_ssid() -> String {
 fn read_ap_credentials() -> (String, String) {
     let mut ssid = default_ap_ssid();
     let mut pass = "ridiculous".to_string();
-    if let Ok(cfg) = encore_common::config::EncoreConfigFile::load(
-        std::path::Path::new(super::CONFIG_PATH),
-    ) {
+    if let Ok(cfg) =
+        encore_common::config::EncoreConfigFile::load(std::path::Path::new(super::CONFIG_PATH))
+    {
         if let Some(s) = &cfg.network.ap_ssid {
             if !s.is_empty() {
                 ssid = s.clone();
@@ -477,12 +543,7 @@ pub fn stop_ap() -> Result<()> {
 /// Count connected AP clients from the DHCP lease file.
 pub fn client_count() -> u8 {
     std::fs::read_to_string(LEASE_FILE)
-        .map(|content| {
-            content
-                .lines()
-                .filter(|l| !l.trim().is_empty())
-                .count() as u8
-        })
+        .map(|content| content.lines().filter(|l| !l.trim().is_empty()).count() as u8)
         .unwrap_or(0)
 }
 
@@ -514,6 +575,17 @@ pub fn has_tx_errors() -> bool {
         .and_then(|s| s.trim().parse::<u64>().ok())
         .unwrap_or(0);
     parse_tx_health(tx_errors, tx_packets)
+}
+
+/// Free the single radio for the STA: stop the AP daemons AND bring the AP
+/// interface down. Killing hostapd / `uaputl bss_stop` alone does not reliably
+/// release the channel on the Marvell firmware uAP — the interface must go down.
+/// `ensure_ap()` brings it back up afterward (ensure_ap_inner re-ups p2p0 with
+/// an explicit ifconfig even if hostapd doesn't).
+pub fn release_radio() {
+    info!("AP: releasing radio for STA (stop AP + p2p0 down)");
+    let _ = stop_ap();
+    let _ = Command::new("ifconfig").args([AP_IFACE, "down"]).status();
 }
 
 /// Reset p2p0 interface (down/up cycle) to clear stale driver state.

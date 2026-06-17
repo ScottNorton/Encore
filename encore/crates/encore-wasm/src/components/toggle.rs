@@ -2,7 +2,7 @@
 
 use crate::dom;
 use wasm_bindgen::JsCast;
-use web_sys::{HtmlInputElement, Element};
+use web_sys::{Element, HtmlInputElement};
 
 pub struct Toggle {
     pub element: Element,
@@ -11,7 +11,12 @@ pub struct Toggle {
 impl Toggle {
     /// Create a toggle switch and return just the wrapper element.
     /// `on_change` is called with the new checked state on each click.
-    pub fn create(id: &str, label: &str, is_on: bool, on_change: impl Fn(bool) + 'static) -> Element {
+    pub fn create(
+        id: &str,
+        label: &str,
+        is_on: bool,
+        on_change: impl Fn(bool) + 'static,
+    ) -> Element {
         Self::new(id, label, is_on, on_change).element
     }
 
@@ -60,10 +65,5 @@ impl Toggle {
         });
 
         Toggle { element: wrap }
-    }
-
-    /// Get the wrapper element.
-    pub fn el(&self) -> &Element {
-        &self.element
     }
 }

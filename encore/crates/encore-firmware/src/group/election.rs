@@ -62,7 +62,11 @@ pub enum ElectionAction {
     /// Cast our vote: broadcast ElectionVote.
     CastVote { election_id: u32, score: u64 },
     /// Election complete: this peer_id is the winner.
-    Winner { election_id: u32, winner_id: String, source: String },
+    Winner {
+        election_id: u32,
+        winner_id: String,
+        source: String,
+    },
 }
 
 impl ElectionState {
@@ -83,9 +87,8 @@ impl ElectionState {
 
     /// Start the cooldown timer.
     fn start_cooldown(&mut self) {
-        self.cooldown_until = Some(
-            Instant::now() + std::time::Duration::from_secs(ELECTION_COOLDOWN_SECS),
-        );
+        self.cooldown_until =
+            Some(Instant::now() + std::time::Duration::from_secs(ELECTION_COOLDOWN_SECS));
     }
 
     /// Trigger a new election. Returns StartElection action if allowed.
@@ -171,7 +174,7 @@ impl ElectionState {
         active.votes.insert(peer_id.to_string(), score);
 
         // Check if all votes are in (peer_count + 1 for ourselves)
-        if active.votes.len() >= active.peer_count + 1 {
+        if active.votes.len() > active.peer_count {
             return self.resolve_election(our_id);
         }
 
@@ -219,11 +222,7 @@ impl ElectionState {
         let active = self.active.take().unwrap();
         self.start_cooldown();
 
-        let (winner_id, _) = active
-            .votes
-            .iter()
-            .min_by_key(|(_, &score)| score)
-            .unwrap();
+        let (winner_id, _) = active.votes.iter().min_by_key(|(_, &score)| score).unwrap();
 
         // Only the winner broadcasts ElectionResult (prevents duplicates)
         if winner_id == our_id {
@@ -291,9 +290,18 @@ mod tests {
         // Speaker with audio should always beat speaker without, regardless of RTT/uptime
         let with_audio = election_score(50000, 10, "peer-z", true); // worst RTT, low uptime, late alphabet
         let no_audio = election_score(100, 10000, "peer-a", false); // best RTT, high uptime, early alphabet
-        assert!(with_audio < no_audio, "with_audio={} no_audio={}", with_audio, no_audio);
+        assert!(
+            with_audio < no_audio,
+            "with_audio={} no_audio={}",
+            with_audio,
+            no_audio
+        );
         // The no-audio penalty should be overwhelming
-        assert!(no_audio > u64::MAX / 8, "penalty should be huge, got {}", no_audio);
+        assert!(
+            no_audio > u64::MAX / 8,
+            "penalty should be huge, got {}",
+            no_audio
+        );
     }
 
     #[test]
@@ -314,7 +322,10 @@ mod tests {
     fn election_resolves_with_all_votes() {
         let mut es = ElectionState::new();
         let action = es.trigger("audio", "peer-a", 5000, 2);
-        assert!(matches!(action, ElectionAction::StartElection { election_id: 1, .. }));
+        assert!(matches!(
+            action,
+            ElectionAction::StartElection { election_id: 1, .. }
+        ));
 
         let action2 = es.handle_vote(1, "peer-b", 3000, "peer-a");
         assert!(matches!(action2, ElectionAction::None)); // still waiting

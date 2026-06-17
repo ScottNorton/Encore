@@ -24,6 +24,7 @@ Power on
       → wpa_supplicant_setup.sh (stock WiFi init)
       → start_ap.sh &             (backgrounded — always-on AP: Invoke-XXXX)
       → auto_wifi_firewall.sh &   (backgrounded — connect WiFi + activate firewall)
+      → usb_gadget.sh &           (backgrounded — USB RNDIS gadget: usb0 at 10.55.55.1)
       → encore_supervisor.sh      (foreground — watchdog + crash monitor + Encore launch)
 ```
 
@@ -61,6 +62,14 @@ The Marvell 88W8887 wireless module (inside a Libre Wireless LS9AD combo module)
 - **Auto band matching**: The AP startup script (`start_ap.sh`) detects which band the STA is connected on and starts the AP on the same frequency range. If WiFi is on 5 GHz, the AP also uses 5 GHz (same channel range), avoiding the cross-band conflict.
 - **AP-only mode**: When no WiFi STA is connected (first boot or no saved credentials), the AP runs on 2.4 GHz by default for maximum client compatibility.
 - **Practical impact**: Clients that only support 2.4 GHz cannot reach the AP while the speaker is connected to a 5 GHz WiFi network. Use a 2.4 GHz WiFi network if you need the AP accessible from all devices.
+
+### USB Network Gadget
+
+Alongside WiFi and the AP, the device brings up a USB RNDIS network gadget at boot. `mount_partition.sh` backgrounds `rootfs/sbin/usb_gadget.sh`, which creates the `usb0` interface at 10.55.55.1 and runs a small DHCP server on that link (pool 10.55.55.10-50). Plugging a USB cable from the speaker's USB Mini-B port into a computer makes the speaker appear as a USB network adapter; on Windows it binds the built-in RNDIS driver automatically. The gadget advertises no gateway and no DNS, so plugging in does not disturb the computer's existing internet connection.
+
+Because it does not depend on the WiFi radio and comes up automatically, the gadget gives WiFi-independent access to SSH (`root@10.55.55.1`) and the dashboard (`http://10.55.55.1/`), and doubles as a recovery channel when WiFi or the AP is unavailable. `usb_gadget.sh` spawns `usb_gadget_monitor.sh`, which restarts the gadget if the link drops.
+
+This relies on patched `g_ether`/RNDIS kernel modules (baked into the rootfs at `/usr/lib/usbgadget/`). The Marvell `mv_udc` controller stalls multi-packet bulk transfers, so the gadget MTU is fixed at 400 bytes to keep every frame in a single USB packet. This caps throughput (measured around 7 MB/s, enough for the dashboard, SSH, and OTA uploads) but keeps the link reliable.
 
 ### Crash Recovery
 

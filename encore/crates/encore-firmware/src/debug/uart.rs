@@ -33,12 +33,15 @@ pub struct UartStatus {
 
 /// Auto-detect MCU UART baud rate and open the port.
 pub async fn probe(state: Arc<Mutex<Option<McuUart>>>) -> Result<ProbeResult> {
-    tokio::time::timeout(PROBE_TIMEOUT, tokio::task::spawn_blocking(move || {
-        let (uart, baud) = McuUart::probe_baud()?;
-        let mut guard = state.lock().map_err(|_| anyhow::anyhow!("lock poisoned"))?;
-        *guard = Some(uart);
-        Ok(ProbeResult { baud })
-    }))
+    tokio::time::timeout(
+        PROBE_TIMEOUT,
+        tokio::task::spawn_blocking(move || {
+            let (uart, baud) = McuUart::probe_baud()?;
+            let mut guard = state.lock().map_err(|_| anyhow::anyhow!("lock poisoned"))?;
+            *guard = Some(uart);
+            Ok(ProbeResult { baud })
+        }),
+    )
     .await
     .context("UART probe timed out")?
     .context("UART probe task panicked")?
@@ -46,16 +49,19 @@ pub async fn probe(state: Arc<Mutex<Option<McuUart>>>) -> Result<ProbeResult> {
 
 /// Send a command to the MCU and return the response.
 pub async fn send(state: Arc<Mutex<Option<McuUart>>>, command: String) -> Result<SendResult> {
-    tokio::time::timeout(SEND_TIMEOUT, tokio::task::spawn_blocking(move || {
-        let mut guard = state.lock().map_err(|_| anyhow::anyhow!("lock poisoned"))?;
-        match guard.as_mut() {
-            Some(uart) => {
-                let response = uart.send_recv(&command)?;
-                Ok(SendResult { response })
+    tokio::time::timeout(
+        SEND_TIMEOUT,
+        tokio::task::spawn_blocking(move || {
+            let mut guard = state.lock().map_err(|_| anyhow::anyhow!("lock poisoned"))?;
+            match guard.as_mut() {
+                Some(uart) => {
+                    let response = uart.send_recv(&command)?;
+                    Ok(SendResult { response })
+                }
+                None => anyhow::bail!("UART not open (run probe first)"),
             }
-            None => anyhow::bail!("UART not open (run probe first)"),
-        }
-    }))
+        }),
+    )
     .await
     .context("UART send timed out")?
     .context("UART send task panicked")?
@@ -72,7 +78,13 @@ pub async fn close(state: Arc<Mutex<Option<McuUart>>>) -> Result<()> {
 pub async fn status(state: Arc<Mutex<Option<McuUart>>>) -> UartStatus {
     let guard = state.lock().unwrap_or_else(|e| e.into_inner());
     match guard.as_ref() {
-        Some(uart) => UartStatus { open: true, baud: Some(uart.baud()) },
-        None => UartStatus { open: false, baud: None },
+        Some(uart) => UartStatus {
+            open: true,
+            baud: Some(uart.baud()),
+        },
+        None => UartStatus {
+            open: false,
+            baud: None,
+        },
     }
 }

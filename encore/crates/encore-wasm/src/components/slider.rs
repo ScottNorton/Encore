@@ -21,7 +21,11 @@ impl Slider {
         let header = dom::create_div();
         dom::set_class(&header, "flex justify-between mb-8");
         let lbl = dom::el("label", "", Some(label));
-        let val = dom::el("span", "stat-value text-sm", Some(&format!("{}{}", value, suffix)));
+        let val = dom::el(
+            "span",
+            "stat-value text-sm",
+            Some(&format!("{}{}", value, suffix)),
+        );
         val.set_id(&format!("{}-val", id));
         dom::append(&header, &lbl);
         dom::append(&header, &val);

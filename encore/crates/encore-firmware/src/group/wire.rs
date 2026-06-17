@@ -69,8 +69,9 @@ impl PacketType {
 }
 
 /// Channel assignment for a speaker in the group.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 pub enum ChannelAssignment {
+    #[default]
     Stereo = 0,
     Left = 1,
     Right = 2,
@@ -83,12 +84,6 @@ impl ChannelAssignment {
             2 => Self::Right,
             _ => Self::Stereo,
         }
-    }
-}
-
-impl Default for ChannelAssignment {
-    fn default() -> Self {
-        Self::Stereo
     }
 }
 
@@ -174,9 +169,10 @@ pub enum GroupPacket {
 /// Encode a GroupPacket into wire format (header + payload).
 pub fn encode(packet: &GroupPacket, seq: u32) -> Vec<u8> {
     let (ptype, payload) = match packet {
-        GroupPacket::ClockSyncReq { originate_us } => {
-            (PacketType::ClockSyncReq, originate_us.to_le_bytes().to_vec())
-        }
+        GroupPacket::ClockSyncReq { originate_us } => (
+            PacketType::ClockSyncReq,
+            originate_us.to_le_bytes().to_vec(),
+        ),
         GroupPacket::ClockSyncResp {
             originate_us,
             receive_us,
@@ -249,7 +245,10 @@ pub fn encode(packet: &GroupPacket, seq: u32) -> Vec<u8> {
             }
             (PacketType::PeerGossip, p)
         }
-        GroupPacket::ElectionStart { election_id, trigger } => {
+        GroupPacket::ElectionStart {
+            election_id,
+            trigger,
+        } => {
             let trig_bytes = trigger.as_bytes();
             let mut p = Vec::with_capacity(6 + trig_bytes.len());
             p.extend_from_slice(&election_id.to_le_bytes());
@@ -257,7 +256,11 @@ pub fn encode(packet: &GroupPacket, seq: u32) -> Vec<u8> {
             p.extend_from_slice(trig_bytes);
             (PacketType::ElectionStart, p)
         }
-        GroupPacket::ElectionVote { election_id, score, peer_id } => {
+        GroupPacket::ElectionVote {
+            election_id,
+            score,
+            peer_id,
+        } => {
             let id_bytes = peer_id.as_bytes();
             let mut p = Vec::with_capacity(14 + id_bytes.len());
             p.extend_from_slice(&election_id.to_le_bytes());
@@ -266,7 +269,11 @@ pub fn encode(packet: &GroupPacket, seq: u32) -> Vec<u8> {
             p.extend_from_slice(id_bytes);
             (PacketType::ElectionVote, p)
         }
-        GroupPacket::ElectionResult { election_id, winner_id, source } => {
+        GroupPacket::ElectionResult {
+            election_id,
+            winner_id,
+            source,
+        } => {
             let winner_bytes = winner_id.as_bytes();
             let source_bytes = source.as_bytes();
             let mut p = Vec::with_capacity(8 + winner_bytes.len() + source_bytes.len());
@@ -277,7 +284,13 @@ pub fn encode(packet: &GroupPacket, seq: u32) -> Vec<u8> {
             p.extend_from_slice(source_bytes);
             (PacketType::ElectionResult, p)
         }
-        GroupPacket::HealthPing { avg_rtt_us, uptime_secs, active_sources, buffer_health, packet_loss_pct } => {
+        GroupPacket::HealthPing {
+            avg_rtt_us,
+            uptime_secs,
+            active_sources,
+            buffer_health,
+            packet_loss_pct,
+        } => {
             let mut p = Vec::with_capacity(19);
             p.extend_from_slice(&avg_rtt_us.to_le_bytes());
             p.extend_from_slice(&uptime_secs.to_le_bytes());
@@ -286,7 +299,10 @@ pub fn encode(packet: &GroupPacket, seq: u32) -> Vec<u8> {
             p.push(*packet_loss_pct);
             (PacketType::HealthPing, p)
         }
-        GroupPacket::RelayAssignment { target_peer_id, relay_peer_id } => {
+        GroupPacket::RelayAssignment {
+            target_peer_id,
+            relay_peer_id,
+        } => {
             let target_bytes = target_peer_id.as_bytes();
             let relay_bytes = relay_peer_id.as_bytes();
             let mut p = Vec::with_capacity(4 + target_bytes.len() + relay_bytes.len());
@@ -296,7 +312,10 @@ pub fn encode(packet: &GroupPacket, seq: u32) -> Vec<u8> {
             p.extend_from_slice(relay_bytes);
             (PacketType::RelayAssignment, p)
         }
-        GroupPacket::VolumeSync { master_volume, originator } => {
+        GroupPacket::VolumeSync {
+            master_volume,
+            originator,
+        } => {
             let orig_bytes = originator.as_bytes();
             let mut p = Vec::with_capacity(3 + orig_bytes.len());
             p.push(*master_volume);
@@ -378,11 +397,9 @@ pub fn decode_payload(ptype: PacketType, payload: &[u8]) -> io::Result<GroupPack
             if payload.len() < 2 + src_len + 8 {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "short payload"));
             }
-            let source =
-                String::from_utf8_lossy(&payload[2..2 + src_len]).into_owned();
-            let claim_time_us = u64::from_le_bytes(
-                payload[2 + src_len..2 + src_len + 8].try_into().unwrap(),
-            );
+            let source = String::from_utf8_lossy(&payload[2..2 + src_len]).into_owned();
+            let claim_time_us =
+                u64::from_le_bytes(payload[2 + src_len..2 + src_len + 8].try_into().unwrap());
             Ok(GroupPacket::LeaderClaim {
                 source,
                 claim_time_us,
@@ -397,7 +414,7 @@ pub fn decode_payload(ptype: PacketType, payload: &[u8]) -> io::Result<GroupPack
             let frame_count = u16::from_le_bytes(payload[8..10].try_into().unwrap());
             let hop_count = payload[10];
             let pcm_bytes = &payload[11..];
-            if pcm_bytes.len() % 4 != 0 {
+            if !pcm_bytes.len().is_multiple_of(4) {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "PCM not aligned",
@@ -444,26 +461,43 @@ pub fn decode_payload(ptype: PacketType, payload: &[u8]) -> io::Result<GroupPack
             let mut pos = 2;
             let mut peers = Vec::with_capacity(count);
             for _ in 0..count {
-                if pos + 2 > payload.len() { break; }
-                let id_len = u16::from_le_bytes(payload[pos..pos+2].try_into().unwrap()) as usize;
+                if pos + 2 > payload.len() {
+                    break;
+                }
+                let id_len = u16::from_le_bytes(payload[pos..pos + 2].try_into().unwrap()) as usize;
                 pos += 2;
-                if pos + id_len + 4 + 2 + 2 > payload.len() { break; }
-                let peer_id = String::from_utf8_lossy(&payload[pos..pos+id_len]).into_owned();
+                if pos + id_len + 4 + 2 + 2 > payload.len() {
+                    break;
+                }
+                let peer_id = String::from_utf8_lossy(&payload[pos..pos + id_len]).into_owned();
                 pos += id_len;
                 let ip = std::net::IpAddr::V4(std::net::Ipv4Addr::new(
-                    payload[pos], payload[pos+1], payload[pos+2], payload[pos+3],
+                    payload[pos],
+                    payload[pos + 1],
+                    payload[pos + 2],
+                    payload[pos + 3],
                 ));
                 pos += 4;
-                let port = u16::from_le_bytes(payload[pos..pos+2].try_into().unwrap());
+                let port = u16::from_le_bytes(payload[pos..pos + 2].try_into().unwrap());
                 pos += 2;
-                let group_len = u16::from_le_bytes(payload[pos..pos+2].try_into().unwrap()) as usize;
+                let group_len =
+                    u16::from_le_bytes(payload[pos..pos + 2].try_into().unwrap()) as usize;
                 pos += 2;
-                if pos + group_len + 1 > payload.len() { break; }
-                let group_name = String::from_utf8_lossy(&payload[pos..pos+group_len]).into_owned();
+                if pos + group_len + 1 > payload.len() {
+                    break;
+                }
+                let group_name =
+                    String::from_utf8_lossy(&payload[pos..pos + group_len]).into_owned();
                 pos += group_len;
                 let channel = ChannelAssignment::from_u8(payload[pos]);
                 pos += 1;
-                peers.push(GossipEntry { peer_id, address: ip, port, group_name, channel });
+                peers.push(GossipEntry {
+                    peer_id,
+                    address: ip,
+                    port,
+                    group_name,
+                    channel,
+                });
             }
             Ok(GroupPacket::PeerGossip { peers })
         }
@@ -476,8 +510,11 @@ pub fn decode_payload(ptype: PacketType, payload: &[u8]) -> io::Result<GroupPack
             if payload.len() < 6 + trig_len {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "short payload"));
             }
-            let trigger = String::from_utf8_lossy(&payload[6..6+trig_len]).into_owned();
-            Ok(GroupPacket::ElectionStart { election_id, trigger })
+            let trigger = String::from_utf8_lossy(&payload[6..6 + trig_len]).into_owned();
+            Ok(GroupPacket::ElectionStart {
+                election_id,
+                trigger,
+            })
         }
         PacketType::ElectionVote => {
             if payload.len() < 14 {
@@ -489,8 +526,12 @@ pub fn decode_payload(ptype: PacketType, payload: &[u8]) -> io::Result<GroupPack
             if payload.len() < 14 + id_len {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "short payload"));
             }
-            let peer_id = String::from_utf8_lossy(&payload[14..14+id_len]).into_owned();
-            Ok(GroupPacket::ElectionVote { election_id, score, peer_id })
+            let peer_id = String::from_utf8_lossy(&payload[14..14 + id_len]).into_owned();
+            Ok(GroupPacket::ElectionVote {
+                election_id,
+                score,
+                peer_id,
+            })
         }
         PacketType::ElectionResult => {
             if payload.len() < 8 {
@@ -501,13 +542,21 @@ pub fn decode_payload(ptype: PacketType, payload: &[u8]) -> io::Result<GroupPack
             if payload.len() < 6 + winner_len + 2 {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "short payload"));
             }
-            let winner_id = String::from_utf8_lossy(&payload[6..6+winner_len]).into_owned();
-            let source_len = u16::from_le_bytes(payload[6+winner_len..8+winner_len].try_into().unwrap()) as usize;
+            let winner_id = String::from_utf8_lossy(&payload[6..6 + winner_len]).into_owned();
+            let source_len =
+                u16::from_le_bytes(payload[6 + winner_len..8 + winner_len].try_into().unwrap())
+                    as usize;
             if payload.len() < 8 + winner_len + source_len {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "short payload"));
             }
-            let source = String::from_utf8_lossy(&payload[8+winner_len..8+winner_len+source_len]).into_owned();
-            Ok(GroupPacket::ElectionResult { election_id, winner_id, source })
+            let source =
+                String::from_utf8_lossy(&payload[8 + winner_len..8 + winner_len + source_len])
+                    .into_owned();
+            Ok(GroupPacket::ElectionResult {
+                election_id,
+                winner_id,
+                source,
+            })
         }
         PacketType::HealthPing => {
             if payload.len() < 19 {
@@ -529,13 +578,20 @@ pub fn decode_payload(ptype: PacketType, payload: &[u8]) -> io::Result<GroupPack
             if payload.len() < 2 + target_len + 2 {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "short payload"));
             }
-            let target_peer_id = String::from_utf8_lossy(&payload[2..2+target_len]).into_owned();
-            let relay_len = u16::from_le_bytes(payload[2+target_len..4+target_len].try_into().unwrap()) as usize;
+            let target_peer_id = String::from_utf8_lossy(&payload[2..2 + target_len]).into_owned();
+            let relay_len =
+                u16::from_le_bytes(payload[2 + target_len..4 + target_len].try_into().unwrap())
+                    as usize;
             if payload.len() < 4 + target_len + relay_len {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "short payload"));
             }
-            let relay_peer_id = String::from_utf8_lossy(&payload[4+target_len..4+target_len+relay_len]).into_owned();
-            Ok(GroupPacket::RelayAssignment { target_peer_id, relay_peer_id })
+            let relay_peer_id =
+                String::from_utf8_lossy(&payload[4 + target_len..4 + target_len + relay_len])
+                    .into_owned();
+            Ok(GroupPacket::RelayAssignment {
+                target_peer_id,
+                relay_peer_id,
+            })
         }
         PacketType::VolumeSync => {
             if payload.len() < 3 {
@@ -546,8 +602,11 @@ pub fn decode_payload(ptype: PacketType, payload: &[u8]) -> io::Result<GroupPack
             if payload.len() < 3 + orig_len {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "short payload"));
             }
-            let originator = String::from_utf8_lossy(&payload[3..3+orig_len]).into_owned();
-            Ok(GroupPacket::VolumeSync { master_volume, originator })
+            let originator = String::from_utf8_lossy(&payload[3..3 + orig_len]).into_owned();
+            Ok(GroupPacket::VolumeSync {
+                master_volume,
+                originator,
+            })
         }
         PacketType::PlayPause => {
             if payload.len() < 4 {
@@ -557,12 +616,14 @@ pub fn decode_payload(ptype: PacketType, payload: &[u8]) -> io::Result<GroupPack
             if payload.len() < 2 + src_len + 2 {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "short payload"));
             }
-            let source = String::from_utf8_lossy(&payload[2..2+src_len]).into_owned();
-            let act_len = u16::from_le_bytes(payload[2+src_len..4+src_len].try_into().unwrap()) as usize;
+            let source = String::from_utf8_lossy(&payload[2..2 + src_len]).into_owned();
+            let act_len =
+                u16::from_le_bytes(payload[2 + src_len..4 + src_len].try_into().unwrap()) as usize;
             if payload.len() < 4 + src_len + act_len {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "short payload"));
             }
-            let action = String::from_utf8_lossy(&payload[4+src_len..4+src_len+act_len]).into_owned();
+            let action =
+                String::from_utf8_lossy(&payload[4 + src_len..4 + src_len + act_len]).into_owned();
             Ok(GroupPacket::PlayPause { source, action })
         }
     }
@@ -833,7 +894,10 @@ mod tests {
             GroupPacket::PeerGossip { peers } => {
                 assert_eq!(peers.len(), 2);
                 assert_eq!(peers[0].peer_id, "abc-123");
-                assert_eq!(peers[0].address, "192.168.1.100".parse::<std::net::IpAddr>().unwrap());
+                assert_eq!(
+                    peers[0].address,
+                    "192.168.1.100".parse::<std::net::IpAddr>().unwrap()
+                );
                 assert_eq!(peers[0].group_name, "Home");
                 assert_eq!(peers[1].peer_id, "def-456");
                 assert_eq!(peers[1].channel, ChannelAssignment::Left);
@@ -856,7 +920,10 @@ mod tests {
         };
         let decoded = decode_payload(pt, &encoded[HEADER_SIZE..]).unwrap();
         match decoded {
-            GroupPacket::ElectionStart { election_id, trigger } => {
+            GroupPacket::ElectionStart {
+                election_id,
+                trigger,
+            } => {
                 assert_eq!(election_id, 42);
                 assert_eq!(trigger, "audio_started");
             }
@@ -879,7 +946,11 @@ mod tests {
         };
         let decoded = decode_payload(pt, &encoded[HEADER_SIZE..]).unwrap();
         match decoded {
-            GroupPacket::ElectionVote { election_id, score, peer_id } => {
+            GroupPacket::ElectionVote {
+                election_id,
+                score,
+                peer_id,
+            } => {
                 assert_eq!(election_id, 42);
                 assert_eq!(score, 12345);
                 assert_eq!(peer_id, "voter-1");
@@ -903,7 +974,11 @@ mod tests {
         };
         let decoded = decode_payload(pt, &encoded[HEADER_SIZE..]).unwrap();
         match decoded {
-            GroupPacket::ElectionResult { election_id, winner_id, source } => {
+            GroupPacket::ElectionResult {
+                election_id,
+                winner_id,
+                source,
+            } => {
                 assert_eq!(election_id, 42);
                 assert_eq!(winner_id, "best-speaker");
                 assert_eq!(source, "audio_started");
@@ -929,7 +1004,13 @@ mod tests {
         };
         let decoded = decode_payload(pt, &encoded[HEADER_SIZE..]).unwrap();
         match decoded {
-            GroupPacket::HealthPing { avg_rtt_us, uptime_secs, active_sources, buffer_health, packet_loss_pct } => {
+            GroupPacket::HealthPing {
+                avg_rtt_us,
+                uptime_secs,
+                active_sources,
+                buffer_health,
+                packet_loss_pct,
+            } => {
                 assert_eq!(avg_rtt_us, 5000);
                 assert_eq!(uptime_secs, 3600);
                 assert_eq!(active_sources, 2);
@@ -954,7 +1035,10 @@ mod tests {
         };
         let decoded = decode_payload(pt, &encoded[HEADER_SIZE..]).unwrap();
         match decoded {
-            GroupPacket::RelayAssignment { target_peer_id, relay_peer_id } => {
+            GroupPacket::RelayAssignment {
+                target_peer_id,
+                relay_peer_id,
+            } => {
                 assert_eq!(target_peer_id, "far-speaker");
                 assert_eq!(relay_peer_id, "relay-speaker");
             }
@@ -976,7 +1060,10 @@ mod tests {
         };
         let decoded = decode_payload(pt, &encoded[HEADER_SIZE..]).unwrap();
         match decoded {
-            GroupPacket::VolumeSync { master_volume, originator } => {
+            GroupPacket::VolumeSync {
+                master_volume,
+                originator,
+            } => {
                 assert_eq!(master_volume, 75);
                 assert_eq!(originator, "speaker-1");
             }

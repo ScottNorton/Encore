@@ -123,6 +123,14 @@ cat build/firmware/rootfs.squashfs | ssh -o HostKeyAlgorithms=+ssh-rsa -o Pubkey
 The device runs Dropbear, an older SSH server, so `scp` does not work; pipe through `cat`
 as shown.
 
+**Over the USB link:** the same two methods work over the USB RNDIS connection instead of
+WiFi. Plug a USB Mini-B cable from the speaker into the PC and the speaker comes up as a
+USB network adapter at `10.55.55.1` (see the [USB access guide](usb-access.md)). Use
+the dashboard Update tab at `http://10.55.55.1/`, or run the SSH command above with
+`root@10.55.55.1` in place of `root@<device-ip>`. This is handy as a recovery path when
+WiFi or the access point is unavailable. Note this is the running firmware's own gadget,
+which is separate from the USB boot mode used for the first flash above.
+
 ## Going Back to Stock
 
 Restore the original files from the OTA2 zip into `uboot/` (in particular the original

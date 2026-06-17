@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 # =================================================================
 # Harman Kardon Invoke Community Firmware — Build Script
@@ -11,7 +11,7 @@ set -e
 #   4. Building a new SquashFS and packaging into 83_IMAGE
 #
 # Prerequisites:
-#   - Stock 83_IMAGE in firmware/ (see flash/README.md for how to obtain)
+#   - Stock 83_IMAGE in firmware/ (USB-boot files live in uboot/)
 #   - Encore binary built (run: make encore)
 #
 # Usage:
@@ -26,13 +26,15 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # ── Configurable paths (override via env or CLI) ──
-WORK="${WORK:-${HOME}/hkinvoke-build}"
+WORK="${WORK:-${HOME:-/root}/hkinvoke-build}"
 STOCK_IMG="${STOCK_IMG:-$REPO_ROOT/firmware/83_IMAGE_stock}"
 
 # ── Parse CLI args ──
 while [ $# -gt 0 ]; do
     case "$1" in
-        --work) WORK="$2"; shift 2 ;;
+        --work)
+            [ -z "${2:-}" ] && echo "ERROR: --work requires a value" >&2 && exit 1
+            WORK="$2"; shift 2 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
@@ -163,8 +165,14 @@ apply_overlay() {
     chmod 755 "$HYBRID/sbin/mount_partition.sh" "$HYBRID/sbin/auto_wifi_firewall.sh" \
               "$HYBRID/sbin/start_ap.sh" "$HYBRID/sbin/encore_supervisor.sh"
 
+    # USB RNDIS gadget scripts (modules ship in usr/lib/usbgadget/)
+    chmod 755 "$HYBRID/sbin/usb_gadget.sh" "$HYBRID/sbin/usb_gadget_monitor.sh" 2>/dev/null || true
+
     # Install Encore binary from build output
     if [ -f "$ENCORE_BIN" ]; then
+        # Cheap ELF magic check: first 4 bytes must be 7f 45 4c 46
+        MAGIC=$(od -An -tx1 -N4 "$ENCORE_BIN" | tr -d ' \n')
+        [ "$MAGIC" != "7f454c46" ] && echo "ERROR: build/encore is not an ELF binary" >&2 && exit 1
         cp "$ENCORE_BIN" "$HYBRID/usr/bin/encore"
         chmod 755 "$HYBRID/usr/bin/encore"
         echo "  Installed Encore binary from build/encore"
@@ -172,7 +180,8 @@ apply_overlay() {
         chmod 755 "$HYBRID/usr/bin/encore"
         echo "  WARNING: Using Encore binary from rootfs overlay (build/encore not found)"
     else
-        echo "  WARNING: No Encore binary found — run 'make encore' first"
+        echo "ERROR: No Encore binary found at $ENCORE_BIN — run 'make encore' first" >&2
+        exit 1
     fi
 
     # Set permissions — binaries
@@ -209,6 +218,8 @@ fix_ownership() {
                     "$HYBRID/sbin/mount_partition.sh" "$HYBRID/sbin/encore_supervisor.sh" 2>/dev/null || true
     chown root:root "$HYBRID/usr/bin/run-podium.sh" "$HYBRID/usr/bin/i2c_mute" 2>/dev/null || true
     chown root:root "$HYBRID/usr/bin/encore" 2>/dev/null || true
+    chown root:root "$HYBRID/sbin/usb_gadget.sh" "$HYBRID/sbin/usb_gadget_monitor.sh" 2>/dev/null || true
+    chown -R root:root "$HYBRID/usr/lib/usbgadget" 2>/dev/null || true
     chown root:root "$HYBRID/system/etc/wpa_supplicant.conf.in" 2>/dev/null || true
     echo '  Ownership fixed'
 }
@@ -219,7 +230,10 @@ build_squashfs() {
     echo '=== Building SquashFS ==='
     du -sh "$HYBRID" | awk '{print "Rootfs size (uncompressed): "$1}'
     rm -f "$OUTPUT_SQFS"
-    mksquashfs "$HYBRID" "$OUTPUT_SQFS" -comp gzip -b 131072 -noappend 2>&1 | tail -10
+    # -all-root: force every file to root:root. This appliance runs everything as
+    # root, and it lets the image build correctly without sudo/fakeroot (WSL builds
+    # as a normal user, so preserved ownership would otherwise bake the build user).
+    mksquashfs "$HYBRID" "$OUTPUT_SQFS" -comp gzip -b 131072 -noappend -all-root 2>&1 | tail -10
 
     echo ''
     python3 -c "

@@ -11,8 +11,8 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 
 thread_local! {
-    static LOG_BUFFER: RefCell<VecDeque<LogLine>> = RefCell::new(VecDeque::new());
-    static HISTORY_LOADED: Cell<bool> = Cell::new(false);
+    static LOG_BUFFER: RefCell<VecDeque<LogLine>> = const { RefCell::new(VecDeque::new()) };
+    static HISTORY_LOADED: Cell<bool> = const { Cell::new(false) };
 }
 
 struct LogLine {
@@ -113,8 +113,7 @@ fn render_log_output() {
         LOG_BUFFER.with(|b| {
             let buf = b.borrow();
             if buf.is_empty() {
-                let placeholder =
-                    dom::el("span", "text-muted", Some("Waiting for log entries..."));
+                let placeholder = dom::el("span", "text-muted", Some("Waiting for log entries..."));
                 dom::append(&el, &placeholder);
                 return;
             }
@@ -206,7 +205,7 @@ fn fetch_log_history() {
                 let oldest_existing = buf.front().map(|l| l.timestamp_ms);
                 let history: Vec<LogLine> = entries
                     .iter()
-                    .filter(|e| oldest_existing.map_or(true, |t| e.timestamp_ms < t))
+                    .filter(|e| oldest_existing.is_none_or(|t| e.timestamp_ms < t))
                     .map(|e| LogLine {
                         level: e.level.clone(),
                         target: e.target.clone(),

@@ -1,7 +1,9 @@
-//! Minimal SDP server for A2DP Sink advertisement.
+//! Minimal SDP server for A2DP Sink + AVRCP Target advertisement.
 //!
-//! Listens on L2CAP PSM 1 and responds to service search queries with a
-//! pre-built A2DP Sink record. This replaces bluetoothd's built-in SDP server.
+//! Listens on L2CAP PSM 1 and answers service search / attribute queries from a
+//! small static table of records. This replaces bluetoothd's built-in SDP
+//! server. Two records: A2DP Sink (so sources stream audio to us) and AVRCP
+//! Target (so a source's volume slider can drive our master volume).
 
 use super::l2cap;
 use std::os::fd::{AsRawFd, OwnedFd};
@@ -16,57 +18,86 @@ const SDP_SVC_SEARCH_ATTR_REQ: u8 = 0x06;
 const SDP_SVC_SEARCH_ATTR_RSP: u8 = 0x07;
 const SDP_ERROR_RSP: u8 = 0x01;
 
-/// Our service record handle.
-const RECORD_HANDLE: u32 = 0x00010001;
+/// A2DP Sink service record handle.
+const HANDLE_A2DP: u32 = 0x00010001;
+/// AVRCP Target service record handle.
+const HANDLE_AVRCP: u32 = 0x00010002;
 
-/// Audio Sink UUID (0x110B).
-const UUID_AUDIO_SINK: u16 = 0x110B;
-/// Public Browse Root (0x1002) — used for SDP browsing.
-const UUID_BROWSE_ROOT: u16 = 0x1002;
-/// L2CAP UUID (0x0100).
-const UUID_L2CAP: u16 = 0x0100;
-
-/// Pre-built A2DP Sink service record as an SDP Attribute List.
-///
-/// Contains: ServiceRecordHandle, ServiceClassIDList, ProtocolDescriptorList,
-/// BluetoothProfileDescriptorList, BrowseGroupList, SupportedFeatures.
-///
-/// Format: Data Element Sequence of (UINT16 attr_id, value) pairs.
+/// Pre-built A2DP Sink service record (a Data Element Sequence of attr pairs):
+/// ServiceRecordHandle, ServiceClassIDList(0x110B), ProtocolDescriptorList
+/// (L2CAP PSM 25 + AVDTP 1.3), BrowseGroupList, ProfileDescriptorList(0x110D
+/// 1.3), SupportedFeatures.
 static A2DP_RECORD: &[u8] = &[
-    // Outer SEQ (length in next byte)
-    0x35, 64, // Attr 0x0000 ServiceRecordHandle = UINT32(0x00010001)
-    0x09, 0x00, 0x00, // UINT16 attr_id
-    0x0A, 0x00, 0x01, 0x00, 0x01, // UINT32 value
+    0x35, 64, // Outer SEQ, 64 bytes
+    // Attr 0x0000 ServiceRecordHandle = UINT32(0x00010001)
+    0x09, 0x00, 0x00, 0x0A, 0x00, 0x01, 0x00, 0x01,
     // Attr 0x0001 ServiceClassIDList = SEQ { UUID16(0x110B) }
     0x09, 0x00, 0x01, 0x35, 0x03, 0x19, 0x11, 0x0B,
-    // Attr 0x0004 ProtocolDescriptorList
-    // = SEQ { SEQ { UUID16(L2CAP), UINT16(25) }, SEQ { UUID16(AVDTP), UINT16(0x0103) } }
-    0x09, 0x00, 0x04, 0x35, 0x10, 0x35, 0x06, 0x19, 0x01, 0x00, 0x09, 0x00,
-    0x19, // L2CAP, PSM=25
-    0x35, 0x06, 0x19, 0x00, 0x19, 0x09, 0x01, 0x03, // AVDTP, v1.3
+    // Attr 0x0004 ProtocolDescriptorList = SEQ { SEQ{L2CAP,PSM25}, SEQ{AVDTP,v1.3} }
+    0x09, 0x00, 0x04, 0x35, 0x10, 0x35, 0x06, 0x19, 0x01, 0x00, 0x09, 0x00, 0x19, 0x35, 0x06, 0x19,
+    0x00, 0x19, 0x09, 0x01, 0x03,
     // Attr 0x0005 BrowseGroupList = SEQ { UUID16(0x1002) }
     0x09, 0x00, 0x05, 0x35, 0x03, 0x19, 0x10, 0x02,
-    // Attr 0x0009 BluetoothProfileDescriptorList
-    // = SEQ { SEQ { UUID16(0x110D), UINT16(0x0103) } }
+    // Attr 0x0009 ProfileDescriptorList = SEQ { SEQ { UUID16(0x110D), UINT16(0x0103) } }
     0x09, 0x00, 0x09, 0x35, 0x08, 0x35, 0x06, 0x19, 0x11, 0x0D, 0x09, 0x01, 0x03,
     // Attr 0x0311 SupportedFeatures = UINT16(0x0001)
     0x09, 0x03, 0x11, 0x09, 0x00, 0x01,
 ];
 
-/// Spawn the SDP server as a background task.
-///
-/// Accepts connections on the given L2CAP PSM 1 listener socket
-/// and handles each client in a separate thread.
+/// Pre-built AVRCP Target service record:
+/// ServiceClassIDList(0x110C), ProtocolDescriptorList (L2CAP PSM 23 / AVCTP 1.4),
+/// BrowseGroupList, ProfileDescriptorList(AV Remote Control 0x110E, 1.4),
+/// SupportedFeatures(0x0002 = Category 2, Monitor/Amplifier — absolute volume).
+static AVRCP_TG_RECORD: &[u8] = &[
+    0x35, 64, // Outer SEQ, 64 bytes
+    // Attr 0x0000 ServiceRecordHandle = UINT32(0x00010002)
+    0x09, 0x00, 0x00, 0x0A, 0x00, 0x01, 0x00, 0x02,
+    // Attr 0x0001 ServiceClassIDList = SEQ { UUID16(0x110C) }
+    0x09, 0x00, 0x01, 0x35, 0x03, 0x19, 0x11, 0x0C,
+    // Attr 0x0004 ProtocolDescriptorList = SEQ { SEQ{L2CAP,PSM23}, SEQ{AVCTP,v1.4} }
+    0x09, 0x00, 0x04, 0x35, 0x10, 0x35, 0x06, 0x19, 0x01, 0x00, 0x09, 0x00, 0x17, 0x35, 0x06, 0x19,
+    0x00, 0x17, 0x09, 0x01, 0x04,
+    // Attr 0x0005 BrowseGroupList = SEQ { UUID16(0x1002) }
+    0x09, 0x00, 0x05, 0x35, 0x03, 0x19, 0x10, 0x02,
+    // Attr 0x0009 ProfileDescriptorList = SEQ { SEQ { UUID16(0x110E), UINT16(0x0104) } }
+    0x09, 0x00, 0x09, 0x35, 0x08, 0x35, 0x06, 0x19, 0x11, 0x0E, 0x09, 0x01, 0x04,
+    // Attr 0x0311 SupportedFeatures = UINT16(0x0002)
+    0x09, 0x03, 0x11, 0x09, 0x00, 0x02,
+];
+
+/// A served SDP record: its handle, the UUID16s it contains (for ServiceSearch
+/// matching), and its pre-built attribute list.
+struct SdpRecord {
+    handle: u32,
+    uuids: &'static [u16],
+    attrs: &'static [u8],
+}
+
+static RECORDS: &[SdpRecord] = &[
+    SdpRecord {
+        handle: HANDLE_A2DP,
+        // AudioSink, L2CAP, AVDTP, AdvancedAudioDistribution, BrowseRoot
+        uuids: &[0x110B, 0x0100, 0x0019, 0x110D, 0x1002],
+        attrs: A2DP_RECORD,
+    },
+    SdpRecord {
+        handle: HANDLE_AVRCP,
+        // AVRemoteControlTarget, AVRemoteControl, L2CAP, AVCTP, BrowseRoot
+        uuids: &[0x110C, 0x110E, 0x0100, 0x0017, 0x1002],
+        attrs: AVRCP_TG_RECORD,
+    },
+];
+
+/// Spawn the SDP server as a background thread.
 pub fn spawn_sdp_server(listener: OwnedFd) {
     std::thread::Builder::new()
         .name("bt-sdp-server".into())
         .spawn(move || {
-            info!("SDP server: listening on PSM 1");
+            info!("SDP server: listening on PSM 1 ({} records)", RECORDS.len());
             loop {
                 match l2cap::l2cap_accept(listener.as_raw_fd()) {
                     Ok((client_fd, addr)) => {
                         debug!("SDP: client from {}", l2cap::bdaddr_to_string(&addr));
-                        // Handle client synchronously (SDP is simple request-response)
                         handle_sdp_client(client_fd);
                     }
                     Err(e) => {
@@ -74,7 +105,6 @@ pub fn spawn_sdp_server(listener: OwnedFd) {
                             continue;
                         }
                         warn!("SDP: accept error: {}", e);
-                        // Brief backoff to avoid tight error loop
                         std::thread::sleep(std::time::Duration::from_millis(100));
                     }
                 }
@@ -83,21 +113,36 @@ pub fn spawn_sdp_server(listener: OwnedFd) {
         .expect("failed to spawn SDP server thread");
 }
 
-/// Handle a single SDP client connection.
+/// Handle a single SDP client connection (simple request-response).
+///
+/// Reads are non-blocking with an idle timeout: a peer that connects but stops
+/// sending (without closing) is abandoned rather than parking the single SDP
+/// accept thread forever — which would block service discovery for everyone
+/// else, gating A2DP.
 fn handle_sdp_client(fd: OwnedFd) {
     let raw = fd.as_raw_fd();
+    l2cap::set_nonblocking(raw).ok();
     let mut buf = [0u8; 512];
+    const IDLE_LIMIT_MS: u64 = 500;
 
-    // Read up to a few PDUs, then close
     for _ in 0..5 {
-        let n = match l2cap::raw_read(raw, &mut buf) {
-            Ok(0) => break,
-            Ok(n) => n,
-            Err(e) => {
-                if e.kind() != std::io::ErrorKind::Interrupted {
-                    debug!("SDP: read error: {}", e);
+        let mut idle = 0u64;
+        let n = loop {
+            match l2cap::raw_read(raw, &mut buf) {
+                Ok(0) => return, // EOF: client closed
+                Ok(n) => break n,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if idle >= IDLE_LIMIT_MS {
+                        return; // idle too long — give the thread back
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    idle += 20;
                 }
-                break;
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => {
+                    debug!("SDP: read error: {}", e);
+                    return;
+                }
             }
         };
 
@@ -107,7 +152,6 @@ fn handle_sdp_client(fd: OwnedFd) {
 
         let pdu_id = buf[0];
         let txn_id = u16::from_be_bytes([buf[1], buf[2]]);
-        // param_len at [3..5], then params
 
         let response = match pdu_id {
             SDP_SVC_SEARCH_REQ => build_search_response(txn_id, &buf[5..n]),
@@ -122,96 +166,87 @@ fn handle_sdp_client(fd: OwnedFd) {
     }
 }
 
-/// Build a ServiceSearchResponse (PDU 0x03).
-///
-/// Returns our record handle if the search pattern contains AudioSink, L2CAP,
-/// or BrowseRoot UUID.
+/// Build a ServiceSearchResponse (PDU 0x03): the handles of all matching records.
 fn build_search_response(txn_id: u16, params: &[u8]) -> Vec<u8> {
-    let matches = uuid_pattern_matches_a2dp(params);
+    let recs = matching_records(params);
+    let count = recs.len() as u16;
 
-    let mut resp = Vec::with_capacity(16);
+    let mut resp = Vec::with_capacity(9 + recs.len() * 4);
     resp.push(SDP_SVC_SEARCH_RSP);
     resp.extend_from_slice(&txn_id.to_be_bytes());
-
-    if matches {
-        // param_len: 2 + 2 + 4 + 1 = 9
-        resp.extend_from_slice(&9u16.to_be_bytes());
-        resp.extend_from_slice(&1u16.to_be_bytes()); // TotalServiceRecordCount
-        resp.extend_from_slice(&1u16.to_be_bytes()); // CurrentServiceRecordCount
-        resp.extend_from_slice(&RECORD_HANDLE.to_be_bytes());
-        resp.push(0x00); // ContinuationState = none
-    } else {
-        // param_len: 2 + 2 + 1 = 5
-        resp.extend_from_slice(&5u16.to_be_bytes());
-        resp.extend_from_slice(&0u16.to_be_bytes()); // Total = 0
-        resp.extend_from_slice(&0u16.to_be_bytes()); // Current = 0
-        resp.push(0x00);
+    let param_len = 2 + 2 + count * 4 + 1;
+    resp.extend_from_slice(&param_len.to_be_bytes());
+    resp.extend_from_slice(&count.to_be_bytes()); // TotalServiceRecordCount
+    resp.extend_from_slice(&count.to_be_bytes()); // CurrentServiceRecordCount
+    for r in &recs {
+        resp.extend_from_slice(&r.handle.to_be_bytes());
     }
+    resp.push(0x00); // ContinuationState = none
     resp
 }
 
-/// Build a ServiceAttributeResponse (PDU 0x05).
+/// Build a ServiceAttributeResponse (PDU 0x05) for a single record handle.
 fn build_attr_response(txn_id: u16, params: &[u8]) -> Vec<u8> {
-    // params: handle(4) + max_bytes(2) + attr_id_list + continuation
     let handle = if params.len() >= 4 {
         u32::from_be_bytes([params[0], params[1], params[2], params[3]])
     } else {
         0
     };
 
-    let mut resp = Vec::with_capacity(A2DP_RECORD.len() + 10);
+    let mut resp = Vec::with_capacity(80);
     resp.push(SDP_SVC_ATTR_RSP);
     resp.extend_from_slice(&txn_id.to_be_bytes());
 
-    if handle == RECORD_HANDLE {
-        let byte_count = A2DP_RECORD.len() as u16;
-        let param_len = 2 + A2DP_RECORD.len() as u16 + 1; // byte_count + data + continuation
+    if let Some(r) = RECORDS.iter().find(|r| r.handle == handle) {
+        let byte_count = r.attrs.len() as u16;
+        let param_len = 2 + byte_count + 1;
         resp.extend_from_slice(&param_len.to_be_bytes());
         resp.extend_from_slice(&byte_count.to_be_bytes());
-        resp.extend_from_slice(A2DP_RECORD);
-        resp.push(0x00); // ContinuationState = none
+        resp.extend_from_slice(r.attrs);
+        resp.push(0x00);
     } else {
-        // Unknown handle — return empty
-        resp.extend_from_slice(&3u16.to_be_bytes()); // param_len
-        resp.extend_from_slice(&0u16.to_be_bytes()); // byte_count = 0
+        resp.extend_from_slice(&3u16.to_be_bytes());
+        resp.extend_from_slice(&0u16.to_be_bytes());
         resp.push(0x00);
     }
     resp
 }
 
-/// Build a ServiceSearchAttributeResponse (PDU 0x07).
+/// Build a ServiceSearchAttributeResponse (PDU 0x07): the attribute lists of all
+/// matching records wrapped in an outer AttributeLists sequence.
 fn build_search_attr_response(txn_id: u16, params: &[u8]) -> Vec<u8> {
-    let matches = uuid_pattern_matches_a2dp(params);
+    let recs = matching_records(params);
 
-    let mut resp = Vec::with_capacity(A2DP_RECORD.len() + 16);
+    let mut resp = Vec::with_capacity(160);
     resp.push(SDP_SVC_SEARCH_ATTR_RSP);
     resp.extend_from_slice(&txn_id.to_be_bytes());
 
-    if matches {
-        // Wrap the record in an outer SEQ (AttributeLists is a SEQ of AttributeList)
-        let inner_len = A2DP_RECORD.len();
-        let outer_header = if inner_len < 256 {
-            vec![0x35, inner_len as u8]
-        } else {
-            vec![0x36, (inner_len >> 8) as u8, (inner_len & 0xFF) as u8]
-        };
-        let total = outer_header.len() + inner_len;
-        let param_len = 2 + total + 1; // byte_count + data + continuation
-
-        resp.extend_from_slice(&(param_len as u16).to_be_bytes());
-        resp.extend_from_slice(&(total as u16).to_be_bytes()); // AttributeListsByteCount
-        resp.extend_from_slice(&outer_header);
-        resp.extend_from_slice(A2DP_RECORD);
-        resp.push(0x00); // ContinuationState = none
-    } else {
-        // No match — empty outer SEQ
-        let param_len: u16 = 2 + 2 + 1; // byte_count(2) + empty_seq(2) + continuation(1)
+    if recs.is_empty() {
+        let param_len: u16 = 2 + 2 + 1;
         resp.extend_from_slice(&param_len.to_be_bytes());
         resp.extend_from_slice(&2u16.to_be_bytes()); // byte_count = 2
         resp.push(0x35);
         resp.push(0x00); // empty SEQ
         resp.push(0x00); // ContinuationState
+        return resp;
     }
+
+    let inner_len: usize = recs.iter().map(|r| r.attrs.len()).sum();
+    let outer_header: Vec<u8> = if inner_len < 256 {
+        vec![0x35, inner_len as u8]
+    } else {
+        vec![0x36, (inner_len >> 8) as u8, (inner_len & 0xFF) as u8]
+    };
+    let total = outer_header.len() + inner_len;
+    let param_len = 2 + total + 1;
+
+    resp.extend_from_slice(&(param_len as u16).to_be_bytes());
+    resp.extend_from_slice(&(total as u16).to_be_bytes()); // AttributeListsByteCount
+    resp.extend_from_slice(&outer_header);
+    for r in &recs {
+        resp.extend_from_slice(r.attrs);
+    }
+    resp.push(0x00); // ContinuationState = none
     resp
 }
 
@@ -220,38 +255,50 @@ fn build_error_response(txn_id: u16, error_code: u16) -> Vec<u8> {
     let mut resp = Vec::with_capacity(7);
     resp.push(SDP_ERROR_RSP);
     resp.extend_from_slice(&txn_id.to_be_bytes());
-    resp.extend_from_slice(&2u16.to_be_bytes()); // param_len
+    resp.extend_from_slice(&2u16.to_be_bytes());
     resp.extend_from_slice(&error_code.to_be_bytes());
     resp
 }
 
-/// Check if an SDP ServiceSearchPattern contains UUIDs relevant to A2DP.
-///
-/// The pattern is a Data Element Sequence of UUIDs. We do a simple scan
-/// for UUID16 values that match AudioSink, BrowseRoot, or L2CAP.
-fn uuid_pattern_matches_a2dp(data: &[u8]) -> bool {
-    // Quick scan: look for UUID16 data elements (type descriptor 0x19)
-    // followed by a matching 2-byte UUID.
+/// Extract the UUID16s from an SDP ServiceSearchPattern (a DES of UUIDs).
+fn parse_pattern_uuids(data: &[u8]) -> Vec<u16> {
+    let mut out = Vec::new();
     let mut pos = 0;
-    // Skip the outer SEQ header if present
-    if data.len() > 2 && (data[0] == 0x35 || data[0] == 0x36) {
+    // Skip the outer SEQ header if present.
+    if data.len() > 1 && (data[0] == 0x35 || data[0] == 0x36) {
         pos = if data[0] == 0x35 { 2 } else { 3 };
     }
-
-    while pos + 2 < data.len() {
-        if data[pos] == 0x19 {
-            // UUID16: next 2 bytes are the UUID
-            let uuid = u16::from_be_bytes([data[pos + 1], data[pos + 2]]);
-            if uuid == UUID_AUDIO_SINK || uuid == UUID_BROWSE_ROOT || uuid == UUID_L2CAP {
-                return true;
+    while pos < data.len() {
+        match data[pos] {
+            0x19 if pos + 2 < data.len() => {
+                out.push(u16::from_be_bytes([data[pos + 1], data[pos + 2]]));
+                pos += 3;
             }
-            pos += 3;
-        } else {
-            // Skip unknown data elements
-            pos += 1;
+            0x1A if pos + 4 < data.len() => {
+                // UUID32: a 16-bit alias has its high half zero.
+                let hi = u16::from_be_bytes([data[pos + 1], data[pos + 2]]);
+                let lo = u16::from_be_bytes([data[pos + 3], data[pos + 4]]);
+                if hi == 0 {
+                    out.push(lo);
+                }
+                pos += 5;
+            }
+            _ => pos += 1,
         }
     }
-    false
+    out
+}
+
+/// Records whose UUID set contains every UUID in the search pattern.
+fn matching_records(params: &[u8]) -> Vec<&'static SdpRecord> {
+    let pattern = parse_pattern_uuids(params);
+    if pattern.is_empty() {
+        return Vec::new();
+    }
+    RECORDS
+        .iter()
+        .filter(|r| pattern.iter().all(|u| r.uuids.contains(u)))
+        .collect()
 }
 
 #[cfg(test)]
@@ -259,62 +306,73 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a2dp_record_is_valid_des() {
-        // First byte should be SEQ descriptor (0x35 for 1-byte length)
-        assert_eq!(A2DP_RECORD[0], 0x35);
-        let declared_len = A2DP_RECORD[1] as usize;
-        assert_eq!(declared_len + 2, A2DP_RECORD.len());
+    fn records_are_valid_des() {
+        for r in RECORDS {
+            assert_eq!(r.attrs[0], 0x35, "record {:08x} must start with SEQ", r.handle);
+            let declared = r.attrs[1] as usize;
+            assert_eq!(declared + 2, r.attrs.len(), "record {:08x} length", r.handle);
+        }
     }
 
     #[test]
-    fn uuid_pattern_matches_audio_sink() {
+    fn audio_sink_search_returns_only_a2dp() {
         // SEQ { UUID16(0x110B) }
-        let pattern = [0x35, 0x03, 0x19, 0x11, 0x0B];
-        assert!(uuid_pattern_matches_a2dp(&pattern));
+        let recs = matching_records(&[0x35, 0x03, 0x19, 0x11, 0x0B]);
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].handle, HANDLE_A2DP);
     }
 
     #[test]
-    fn uuid_pattern_matches_browse_root() {
-        let pattern = [0x35, 0x03, 0x19, 0x10, 0x02];
-        assert!(uuid_pattern_matches_a2dp(&pattern));
+    fn avrcp_search_returns_only_avrcp() {
+        // Search for AV Remote Control (0x110E) — a phone's typical AVRCP query.
+        let recs = matching_records(&[0x35, 0x03, 0x19, 0x11, 0x0E]);
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].handle, HANDLE_AVRCP);
+        // And the Target class id directly.
+        let recs = matching_records(&[0x35, 0x03, 0x19, 0x11, 0x0C]);
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].handle, HANDLE_AVRCP);
     }
 
     #[test]
-    fn uuid_pattern_no_match() {
-        // UUID16(0x110E) = AVRCP Target — we don't advertise this
-        let pattern = [0x35, 0x03, 0x19, 0x11, 0x0E];
-        assert!(!uuid_pattern_matches_a2dp(&pattern));
+    fn browse_root_returns_both() {
+        let recs = matching_records(&[0x35, 0x03, 0x19, 0x10, 0x02]);
+        assert_eq!(recs.len(), 2);
     }
 
     #[test]
-    fn search_response_match() {
-        let resp = build_search_response(0x0042, &[0x35, 0x03, 0x19, 0x11, 0x0B, 0x00, 0x01, 0x00]);
+    fn unknown_uuid_matches_nothing() {
+        let recs = matching_records(&[0x35, 0x03, 0x19, 0x12, 0x34]);
+        assert!(recs.is_empty());
+    }
+
+    #[test]
+    fn search_response_lists_both_handles_for_browse() {
+        let resp = build_search_response(0x0042, &[0x35, 0x03, 0x19, 0x10, 0x02]);
         assert_eq!(resp[0], SDP_SVC_SEARCH_RSP);
-        assert_eq!(u16::from_be_bytes([resp[1], resp[2]]), 0x0042);
-        // Should contain 1 record
-        assert_eq!(u16::from_be_bytes([resp[5], resp[6]]), 1); // total
+        assert_eq!(u16::from_be_bytes([resp[5], resp[6]]), 2); // total count
+        assert_eq!(u16::from_be_bytes([resp[7], resp[8]]), 2); // current count
     }
 
     #[test]
-    fn search_response_no_match() {
-        let resp = build_search_response(0x0001, &[0x35, 0x03, 0x19, 0x11, 0x0E, 0x00, 0x01, 0x00]);
-        assert_eq!(u16::from_be_bytes([resp[5], resp[6]]), 0); // total = 0
+    fn attr_response_returns_avrcp_record() {
+        let mut params = HANDLE_AVRCP.to_be_bytes().to_vec();
+        params.extend_from_slice(&[0xFF, 0xFF]); // max bytes
+        let resp = build_attr_response(0x0001, &params);
+        assert_eq!(resp[0], SDP_SVC_ATTR_RSP);
+        let byte_count = u16::from_be_bytes([resp[5], resp[6]]);
+        assert_eq!(byte_count as usize, AVRCP_TG_RECORD.len());
     }
 
     #[test]
-    fn search_attr_response_structure() {
+    fn search_attr_response_includes_avrcp() {
         let resp = build_search_attr_response(
             0x0001,
-            &[
-                0x35, 0x03, 0x19, 0x11, 0x0B, 0x00, 0xFF, 0x35, 0x05, 0x0A, 0x00, 0x00, 0xFF, 0xFF,
-                0x00,
-            ],
+            &[0x35, 0x03, 0x19, 0x11, 0x0E, 0x35, 0x05, 0x0A, 0x00, 0x00, 0xFF, 0xFF],
         );
         assert_eq!(resp[0], SDP_SVC_SEARCH_ATTR_RSP);
-        // Should have non-zero AttributeListsByteCount
-        let byte_count = u16::from_be_bytes([resp[5], resp[6]]);
-        assert!(byte_count > 0);
-        // Last byte should be continuation state = 0
-        assert_eq!(*resp.last().unwrap(), 0x00);
+        let byte_count = u16::from_be_bytes([resp[5], resp[6]]) as usize;
+        assert!(byte_count >= AVRCP_TG_RECORD.len());
+        assert_eq!(*resp.last().unwrap(), 0x00); // continuation
     }
 }

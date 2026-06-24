@@ -18,14 +18,26 @@ pub fn css() -> String {
   --ring-cream: {ring_cream};
   --dome: {dome};
 }}
+/* Matinee gold. data-theme wins over the OS query so the Settings control is
+   authoritative; the OS query only applies when no data-theme is set. */
+[data-theme='light'] {{
+  --accent: {accent_light};
+  --accent-hover: {accent_hover_light};
+  --accent-r: {alr};
+  --accent-g: {alg};
+  --accent-b: {alb};
+  --ring-cream: {ring_cream_light};
+  --dome: {dome_light};
+}}
 @media (prefers-color-scheme: light) {{
-  :root {{
+  :root:not([data-theme]) {{
     --accent: {accent_light};
     --accent-hover: {accent_hover_light};
     --accent-r: {alr};
     --accent-g: {alg};
     --accent-b: {alb};
     --ring-cream: {ring_cream_light};
+    --dome: {dome_light};
   }}
 }}
 
@@ -77,8 +89,11 @@ pub fn css() -> String {
     0%, 100% {{ opacity: 0.3; transform: scale(0.92); }}
     50% {{ opacity: 0.9; transform: scale(1.08); }}
 }}
+[data-theme='light'] .logo-glow {{
+    background: radial-gradient(circle, rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.08) 0%, transparent 70%);
+}}
 @media (prefers-color-scheme: light) {{
-    .logo-glow {{
+    :root:not([data-theme]) .logo-glow {{
         background: radial-gradient(circle, rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.08) 0%, transparent 70%);
     }}
 }}
@@ -123,6 +138,14 @@ pub fn css() -> String {
 .logo-connecting .logo-text {{ font-size: 20px; opacity: 1; }}
 .logo-connecting .logo-ring-container svg {{ animation-duration: 3s; }}
 
+/* Desktop: the fixed left rail owns the leftmost 96px, so the header logo is
+   shifted right to clear it and stay aligned with the shifted header content. */
+@media (min-width: 641px) {{
+    .logo-header {{
+        left: max(calc(96px + 16px), calc((100vw - 1200px) / 2 + 96px + 16px));
+    }}
+}}
+
 /* Wordmark state: about panel — Classical Badge */
 .logo-wordmark {{
     position: relative;
@@ -163,6 +186,7 @@ pub fn css() -> String {
         ring_cream = palette::RING_CREAM,
         ring_cream_light = palette::RING_CREAM_LIGHT,
         dome = palette::DOME,
+        dome_light = palette::DOME_LIGHT,
     )
 }
 
@@ -176,6 +200,14 @@ mod tests {
         assert!(
             out.contains(&format!("--accent: {}", palette::ACCENT)),
             "dark accent var missing"
+        );
+        assert!(
+            out.contains("[data-theme='light']"),
+            "data-theme light override block missing"
+        );
+        assert!(
+            out.contains(":root:not([data-theme])"),
+            "OS query should be scoped to :root:not([data-theme])"
         );
         assert!(
             out.contains(&format!("--accent: {}", palette::ACCENT_LIGHT)),

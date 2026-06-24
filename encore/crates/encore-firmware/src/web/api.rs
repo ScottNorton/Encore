@@ -327,11 +327,43 @@ fn read_cpu_frequencies() -> Vec<u32> {
     freqs
 }
 
-/// Read CPU temperature in millidegrees C from thermal_zone0.
+/// Read SoC die temperature in millidegrees C.
+///
+/// The Berlin SoC sensor (tsen-adc33) is exposed via hwmon in WHOLE degrees C: the
+/// stock kernel builds with `CONFIG_THERMAL` off, so `/sys/class/thermal` does not
+/// exist and the old `thermal_zone0` read always returned None (dashboard showed N/A).
+/// Prefer the hwmon tsen path and scale to millidegrees; keep `thermal_zone0` as a
+/// fallback for any kernel (e.g. a future 6.1 kexec) that does enable THERMAL.
 pub fn read_temperature_mc() -> Option<i32> {
+    if let Some(celsius) = read_tsen_celsius() {
+        return Some(celsius * 1000);
+    }
     std::fs::read_to_string("/sys/class/thermal/thermal_zone0/temp")
         .ok()
         .and_then(|s| s.trim().parse().ok())
+}
+
+/// Read the Berlin TSEN hwmon sensor in whole degrees Celsius, if present.
+///
+/// hwmon index is not fixed, so scan `/sys/class/hwmon/hwmon*` and look for
+/// `tsen_temp` (both the `device/` and the bare layout the stock scripts use).
+fn read_tsen_celsius() -> Option<i32> {
+    let entries = std::fs::read_dir("/sys/class/hwmon").ok()?;
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        for cand in [dir.join("device/tsen_temp"), dir.join("tsen_temp")] {
+            if let Ok(s) = std::fs::read_to_string(&cand) {
+                if let Ok(c) = s.trim().parse::<i32>() {
+                    // ponytail: reject implausible reads (sensor glitch / wrong node);
+                    // a real die temp is comfortably inside this range.
+                    if (0..=150).contains(&c) {
+                        return Some(c);
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Read disk usage via statvfs for actually-mounted filesystems.
@@ -572,6 +604,28 @@ pub async fn reboot_handler() -> impl axum::response::IntoResponse {
     });
 
     axum::Json(serde_json::json!({ "status": "rebooting", "delay_secs": 3 }))
+}
+
+/// POST /api/factory-reset — forget WiFi, reset Encore settings to defaults, reboot.
+///
+/// This is a settings reset, not the stock `/data` wipe: it removes Encore's config
+/// (which holds the WiFi credentials and all settings) plus the generated
+/// wpa_supplicant.conf, then reboots. The device comes back in setup/AP mode with
+/// defaults. Recoverable, and deliberately NOT wired to the physical reset button so
+/// it cannot be triggered by accident.
+pub async fn factory_reset_handler() -> impl axum::response::IntoResponse {
+    use std::process::Command;
+
+    let _ = std::fs::remove_file("/lsync/encore/config.toml");
+    let _ = std::fs::remove_file("/data/wifi/wpa_supplicant.conf");
+    let _ = Command::new("sync").output();
+
+    tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        let _ = std::process::Command::new("reboot").output();
+    });
+
+    axum::Json(serde_json::json!({ "status": "resetting", "delay_secs": 3 }))
 }
 
 // ── OTA update ──

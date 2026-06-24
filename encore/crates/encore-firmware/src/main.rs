@@ -25,6 +25,8 @@ mod mcu;
 #[cfg(target_os = "linux")]
 mod network;
 #[cfg(target_os = "linux")]
+mod sense;
+#[cfg(target_os = "linux")]
 mod spotify;
 mod subsystem;
 #[cfg(target_os = "linux")]
@@ -224,28 +226,49 @@ async fn main() -> anyhow::Result<()> {
         let status_rx = mgr.take_status_rx();
         web.set_status_rx(status_rx);
 
+        // LED command channel — created early so the audio and network subsystems can
+        // drive the ring (mic-mute indicator, wifi-setup feedback) before the
+        // LedSubsystem itself is started (it takes led_rx further down). Only present
+        // when the MCU is available.
+        let (led_tx, led_rx): (
+            Option<mpsc::Sender<led::LedCmd>>,
+            Option<mpsc::Receiver<led::LedCmd>>,
+        ) = if mcu.is_some() {
+            let (tx, rx) = mpsc::channel::<led::LedCmd>(32);
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
+
         // ── Audio subsystem (mixer thread + hardware init) ──
         let (audio_cmd_tx, audio_cmd_rx) = mpsc::channel::<audio::subsystem::AudioCmd>(32);
         let mut audio = audio::subsystem::AudioSubsystem::new(audio_cmd_rx);
         audio.set_ws_tx(ws_tx.clone());
+        if let Some(ref tx) = led_tx {
+            audio.set_led_tx(tx.clone());
+        }
         {
             let cfg = encore_common::config::EncoreConfigFile::load(std::path::Path::new(
                 "/lsync/encore/config.toml",
             ))
             .unwrap_or_default();
             audio.apply_power_config(&cfg.audio);
+            audio.apply_eq_config(&cfg.eq);
+            audio.apply_drc_config(&cfg.drc);
         }
 
         // Create MixerSlots for each audio consumer BEFORE starting audio subsystem
         let spotify_slot = audio.add_source().slot;
         let bt_slot = audio.add_source().slot;
         let wyoming_slot = audio.add_source().slot;
+        // Mark Wyoming as the voice/TTS source so the mixer ducks music while it plays.
+        wyoming_slot.set_voice(true);
         let network_slot = audio.add_source().slot; // group follower writes here
 
-        // Network tap: mixer thread writes post-DRC audio here when active (leader reads)
+        // Network tap: mixer writes post-EQ/DRC audio here when active (leader reads)
         let network_tap = crate::audio::mixer::MixerSlot::new();
         let tap_active = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        audio.set_network_tap(network_tap.clone(), tap_active.clone());
+        audio.set_network_tap(network_tap.clone(), tap_active.clone(), network_slot.clone());
 
         // Create capture consumers for mic audio (16kHz mono S16 from DSP left channel)
         let wyoming_mic = audio.add_capture_consumer(audio::capture::CaptureChannel::Left);
@@ -254,9 +277,55 @@ async fn main() -> anyhow::Result<()> {
         // Mic monitor consumers (one per beamformed channel for VU meters)
         let mic_monitor_l = audio.add_capture_consumer(audio::capture::CaptureChannel::Left);
         let mic_monitor_r = audio.add_capture_consumer(audio::capture::CaptureChannel::Right);
+        // Acoustic-sense consumer + playback-idle gate flag (must be grabbed before
+        // the audio subsystem starts, like the other capture consumers).
+        let sense_mic = audio.add_capture_consumer(audio::capture::CaptureChannel::Left);
+        let playback_flag = audio.playback_active_flag();
         let mic_test_active = audio.mic_test_flag();
+        let thermal_flag = audio.thermal_flag();
 
         mgr.start(Box::new(audio));
+
+        // ── Thermal protection ──
+        // Stock device_auto_recovery.sh rebooted the speaker on overheat. We take the
+        // gentler, recoverable action: mute the amp (the main heat source) on sustained
+        // overheat and unmute once it cools. No auto-reboot, which avoids a boot loop if
+        // a sensor read is bad (read_temperature_mc already range-checks the value).
+        {
+            let audio_tx = audio_cmd_tx.clone();
+            let throttle = thermal_flag;
+            tokio::spawn(async move {
+                // ponytail: stock thresholds (90/95C). Raise CRIT_C if the sealed
+                // enclosure idles hot; CLEAR_C gives hysteresis so it will not flap.
+                const WARN_C: i32 = 90;
+                const CRIT_C: i32 = 95;
+                const CLEAR_C: i32 = 85;
+                let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
+                loop {
+                    ticker.tick().await;
+                    let Some(mc) = web::api::read_temperature_mc() else {
+                        continue;
+                    };
+                    let c = mc / 1000;
+                    let protecting = throttle.load(std::sync::atomic::Ordering::Relaxed);
+                    if !protecting && c >= CRIT_C {
+                        tracing::warn!(
+                            "Thermal: SoC {}C >= {}C, muting amp to protect hardware",
+                            c,
+                            CRIT_C
+                        );
+                        throttle.store(true, std::sync::atomic::Ordering::Relaxed);
+                        let _ = audio_tx.try_send(audio::subsystem::AudioCmd::Mute);
+                    } else if protecting && c <= CLEAR_C {
+                        info!("Thermal: SoC {}C back under {}C, unmuting", c, CLEAR_C);
+                        throttle.store(false, std::sync::atomic::Ordering::Relaxed);
+                        let _ = audio_tx.try_send(audio::subsystem::AudioCmd::Unmute);
+                    } else if !protecting && c >= WARN_C {
+                        tracing::warn!("Thermal: SoC temperature {}C (warn at {}C)", c, WARN_C);
+                    }
+                }
+            });
+        }
 
         // ── Mic monitor task (computes levels from capture, sends to dashboard) ──
         {
@@ -339,7 +408,7 @@ async fn main() -> anyhow::Result<()> {
                 },
                 network::mdns::MdnsService {
                     service_type: "_spotify-connect._tcp".into(),
-                    instance_name: "Invoke".into(),
+                    instance_name: cfg.device.name.clone(),
                     port: spotify::ZEROCONF_PORT,
                     txt: vec!["VERSION=1.0".into(), "CPath=/".into()],
                 },
@@ -380,6 +449,9 @@ async fn main() -> anyhow::Result<()> {
         web.set_wifi_result_cache(net_sub.wifi_result_cache());
         web.set_network_state_cache(net_sub.network_state_cache());
         net_sub.set_discovery(mdns_discovery_tx, group_peer_id.clone());
+        if let Some(ref tx) = led_tx {
+            net_sub.set_led_tx(tx.clone());
+        }
         mgr.start(Box::new(net_sub));
 
         // ── VPN (WireGuard tunnel) ──
@@ -409,6 +481,8 @@ async fn main() -> anyhow::Result<()> {
         let (spotify_suspend_tx, spotify_suspend_rx) = mpsc::channel::<bool>(1);
         let (bt_suspend_tx, bt_suspend_rx) = mpsc::channel::<bool>(1);
         let (wyoming_suspend_tx, wyoming_suspend_rx) = mpsc::channel::<bool>(1);
+        // Mesh name: group → BT (Some(group_name) when grouped+mesh, else None).
+        let (bt_name_tx, bt_name_rx) = mpsc::channel::<Option<String>>(8);
 
         let group_vol_sync_rx: Option<mpsc::Receiver<u8>>;
         {
@@ -428,7 +502,6 @@ async fn main() -> anyhow::Result<()> {
                 cfg.device.name.clone(),
                 cfg.group.group_name.clone(),
                 channel,
-                cfg.group.buffer_ms,
                 cfg.group.enabled,
                 network_slot.clone(),
                 network_tap.clone(),
@@ -447,6 +520,25 @@ async fn main() -> anyhow::Result<()> {
             group_sub.add_suspend_tx(spotify_suspend_tx);
             group_sub.add_suspend_tx(bt_suspend_tx);
             group_sub.add_suspend_tx(wyoming_suspend_tx);
+            // BT mesh: the group tells the BT subsystem the mesh name to advertise.
+            group_sub.set_bt_name_tx(bt_name_tx);
+            group_sub.set_mesh_enabled(cfg.bluetooth.mesh_enabled);
+
+            // Spotify-zone signal: group decides (advertise, zone_name); forward it
+            // to the network subsystem as a NetworkCmd. Mirrors the mDNS→group
+            // forwarder above. Keeps GroupSubsystem free of cfg(linux) network types.
+            let (zone_tx, mut zone_rx) = mpsc::channel::<(bool, String)>(4);
+            group_sub.set_zone_tx(zone_tx);
+            {
+                let net_tx = network_cmd_tx.clone();
+                tokio::spawn(async move {
+                    while let Some((advertise, name)) = zone_rx.recv().await {
+                        let _ = net_tx
+                            .try_send(network::NetworkCmd::SetSpotifyZone { advertise, name });
+                    }
+                });
+            }
+
             mgr.start(Box::new(group_sub));
         }
 
@@ -486,6 +578,20 @@ async fn main() -> anyhow::Result<()> {
                 );
                 bt_sub.set_suspend_rx(bt_suspend_rx);
                 bt_sub.set_group_tx(group_cmd_tx.clone());
+                bt_sub.set_bt_name_rx(bt_name_rx);
+                // AVRCP absolute volume: source's volume slider -> our master
+                // volume, routed through the LED subsystem (the volume authority
+                // that applies to audio, group, dashboard and the LED ring).
+                if let Some(ref ltx) = led_tx {
+                    let (avrcp_vol_tx, mut avrcp_vol_rx) = mpsc::channel::<u8>(8);
+                    let ltx = ltx.clone();
+                    tokio::spawn(async move {
+                        while let Some(level) = avrcp_vol_rx.recv().await {
+                            let _ = ltx.try_send(led::LedCmd::SetVolume(level));
+                        }
+                    });
+                    bt_sub.set_avrcp_vol_tx(avrcp_vol_tx);
+                }
                 mgr.start(Box::new(bt_sub));
             } else {
                 info!("Bluetooth: disabled in config, skipping");
@@ -500,17 +606,16 @@ async fn main() -> anyhow::Result<()> {
             .unwrap_or_default();
             cfg.audio.volume_ring_step
         };
-        let (led_tx, button_rx) = if let Some(mcu) = mcu {
-            let (led_tx, led_rx) = mpsc::channel(32);
+        let button_rx = if let (Some(mcu), Some(led_rx)) = (mcu, led_rx) {
             let (button_tx, button_rx) = mpsc::channel::<led::ButtonAction>(32);
             let mut led_sub =
                 led::LedSubsystem::new(led_rx, audio_cmd_tx.clone(), button_tx, mcu, vol_step);
             led_sub.set_ws_tx(ws_tx.clone());
             led_sub.set_group_tx(group_cmd_tx.clone());
             mgr.start(Box::new(led_sub));
-            (Some(led_tx), Some(button_rx))
+            Some(button_rx)
         } else {
-            (None, None)
+            None
         };
 
         // ── Group volume sync (deferred until led_tx exists) ──
@@ -566,6 +671,38 @@ async fn main() -> anyhow::Result<()> {
             });
         }
 
+        // ── Acoustic sensing (optional — gated on [sense] enabled) ──
+        // Channel to the HA bridge: the SenseSubsystem emits SenseUpdate, HA publishes
+        // encore/<device>/sense/*. `sense_rx_for_ha` is only Some when sense is enabled,
+        // so the HA bridge uses its safe `pending()` path otherwise.
+        let (sense_device_name, sense_rx_for_ha) = {
+            let cfg = encore_common::config::EncoreConfigFile::load(std::path::Path::new(
+                "/lsync/encore/config.toml",
+            ))
+            .unwrap_or_default();
+            let device_name = cfg.device.name.clone();
+            let (sense_tx, sense_rx) = mpsc::channel::<sense::SenseUpdate>(32);
+            let rx_for_ha = if cfg.sense.enabled {
+                let mut sense_sub = sense::SenseSubsystem::new(
+                    cfg.sense.clone(),
+                    sense_mic,
+                    playback_flag,
+                    sense_tx,
+                );
+                if let Some(ref tx) = led_tx {
+                    sense_sub.set_led_tx(tx.clone());
+                }
+                mgr.start(Box::new(sense_sub));
+                Some(sense_rx)
+            } else {
+                info!("Sense: disabled in config, skipping");
+                // Drop the unused capture handles so they don't warn.
+                let _ = (sense_mic, playback_flag, sense_tx);
+                None
+            };
+            (device_name, rx_for_ha)
+        };
+
         // ── Home Assistant (optional — requires MQTT config) ──
         match load_ha_config() {
             Some((host, port, user, pass)) => {
@@ -573,6 +710,9 @@ async fn main() -> anyhow::Result<()> {
                 let mut ha_sub =
                     homeassistant::HomeAssistantSubsystem::new(host, port, user, pass, Some(ha_tx));
                 ha_sub.set_ws_rx(ws_tx.subscribe());
+                if let Some(sense_rx) = sense_rx_for_ha {
+                    ha_sub.set_sense_rx(sense_rx, &sense_device_name);
+                }
                 mgr.start(Box::new(ha_sub));
                 // Forward HA commands into the main routing pipeline
                 let audio_tx_ha = audio_cmd_tx.clone();
@@ -605,6 +745,8 @@ async fn main() -> anyhow::Result<()> {
             }
             None => {
                 info!("HA: no MQTT config found, skipping HomeAssistant subsystem");
+                // No HA bridge to publish sense updates — drop the receiver/name.
+                let _ = (sense_rx_for_ha, sense_device_name);
             }
         }
 
@@ -794,8 +936,16 @@ async fn main() -> anyhow::Result<()> {
                                 );
                             }
                         }
+                        ClientMsg::SetApRequested(on) => {
+                            info!("ClientMsg: SetApRequested({})", on);
+                            let _ =
+                                network_cmd_tx.try_send(network::NetworkCmd::SetApRequested(on));
+                        }
                         ClientMsg::RequestNetworkState => {
                             let _ = network_cmd_tx.try_send(network::NetworkCmd::RequestState);
+                        }
+                        ClientMsg::RequestAudioState => {
+                            let _ = audio_tx.try_send(audio::subsystem::AudioCmd::BroadcastState);
                         }
                         ClientMsg::SetDebugMode { subsystem, mode } => {
                             info!("ClientMsg: SetDebugMode({}, {:?})", subsystem, mode);
@@ -818,16 +968,6 @@ async fn main() -> anyhow::Result<()> {
                         ClientMsg::SetDrc { band, config } => {
                             let _ = audio_tx
                                 .try_send(audio::subsystem::AudioCmd::SetDrc { band, config });
-                        }
-                        ClientMsg::SetDrcCrossover {
-                            low_mid_hz,
-                            mid_high_hz,
-                        } => {
-                            let _ =
-                                audio_tx.try_send(audio::subsystem::AudioCmd::SetDrcCrossover {
-                                    low_mid_hz,
-                                    mid_high_hz,
-                                });
                         }
                         ClientMsg::SetDrcEnabled(enabled) => {
                             let _ = audio_tx
@@ -986,9 +1126,6 @@ async fn main() -> anyhow::Result<()> {
                                 _ => group::wire::ChannelAssignment::Stereo,
                             };
                             let _ = group_tx.try_send(group::GroupCmd::SetChannel(channel));
-                        }
-                        ClientMsg::SetGroupBufferMs(ms) => {
-                            let _ = group_tx.try_send(group::GroupCmd::SetBufferMs(ms));
                         }
                         ClientMsg::SetGroupName(name) => {
                             let _ = group_tx.try_send(group::GroupCmd::SetGroupName(name));

@@ -171,6 +171,22 @@ pub fn append_entries(entries: &[encore_common::protocol::LogEntry]) {
     render_log_output();
 }
 
+/// Show a Retry-able error in the log output if no logs have loaded yet.
+/// Live WS log entries, if any have arrived, take precedence and overwrite this.
+fn show_history_error() {
+    if LOG_BUFFER.with(|b| !b.borrow().is_empty()) {
+        return;
+    }
+    if let Some(el) = dom::get_el("log-output") {
+        dom::clear(&el);
+        let es = crate::components::async_state::error(
+            "Couldn't load log history from the device.",
+            Some(Box::new(fetch_log_history)),
+        );
+        dom::append(&el, &es);
+    }
+}
+
 /// Fetch log history from the server and prepend to the buffer.
 fn fetch_log_history() {
     wasm_bindgen_futures::spawn_local(async {
@@ -180,7 +196,10 @@ fn fetch_log_history() {
 
         let resp_val = match JsFuture::from(window.fetch_with_str(&url)).await {
             Ok(v) => v,
-            Err(_) => return,
+            Err(_) => {
+                show_history_error();
+                return;
+            }
         };
         let resp: web_sys::Response = resp_val.unchecked_into();
         let text_val = match resp.text() {
@@ -222,6 +241,8 @@ fn fetch_log_history() {
                 }
             });
             render_log_output();
+        } else {
+            show_history_error();
         }
     });
 }

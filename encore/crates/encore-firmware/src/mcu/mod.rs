@@ -47,6 +47,10 @@ pub enum McuEvent {
     MicLong,
     ResetShort,
     ResetLong,
+    /// BT + MIC held together (long press). Stock used this combo to trigger a
+    /// developer DSP memory-dump bugreport; it is the only multi-button gesture
+    /// the MCU emits.
+    BtMicCombo,
     VolumeUp(u8),
     VolumeDown(u8),
     VersionInfo([u8; 3]),
@@ -157,6 +161,7 @@ impl Mcu {
             (0x04, 0x07) => McuEvent::ResetLong,
             (0x04, 0x08) => McuEvent::VolumeUp(buf[2]),
             (0x04, 0x09) => McuEvent::VolumeDown(buf[2]),
+            (0x04, 0x0A) => McuEvent::BtMicCombo,
             (0x01, 0x01) => McuEvent::VersionInfo([buf[3], buf[4], buf[5]]),
             _ => McuEvent::Unknown(buf),
         };

@@ -22,6 +22,25 @@ const MAX_PAYLOAD: u32 = 1_048_576;
 /// Header size in bytes.
 pub const HEADER_SIZE: usize = 12;
 
+/// Frames of stereo PCM carried in one [`GroupPacket::AudioChunk`].
+///
+/// Sized so a whole encoded AudioChunk fits in a SINGLE network MTU. An
+/// oversized UDP datagram is IP-fragmented, and on a lossy WiFi link losing any
+/// one fragment drops the entire chunk (reassembly is all-or-nothing) — that is
+/// what turned grouped playback into near-constant static (a 480-frame chunk
+/// encoded to ~3871 bytes = 3 fragments, ~88% chunk loss measured on-device).
+///
+/// 144 frames -> 12 (header) + 19 (audio fields) + 144*2*4 = 1183-byte datagram,
+/// comfortably under a 1500 MTU (and reduced-MTU VPN/PPPoE paths). 144 is a
+/// multiple of 6, so the per-chunk duration is an exact integer microsecond
+/// count (144 * 1_000_000 / 48_000 = 3000), avoiding playout-timeline drift.
+/// The receiver (`follower.rs`) and sender (`leader.rs`) MUST agree on this.
+pub const AUDIO_CHUNK_FRAMES: usize = 144;
+/// Samples per AudioChunk (stereo interleaved L R L R ...).
+pub const AUDIO_CHUNK_SAMPLES: usize = AUDIO_CHUNK_FRAMES * 2;
+/// Duration of one AudioChunk in microseconds (exact for multiples of 6 frames).
+pub const AUDIO_CHUNK_DUR_US: u64 = AUDIO_CHUNK_FRAMES as u64 * 1_000_000 / 48_000;
+
 /// Packet types on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -114,6 +133,11 @@ pub enum GroupPacket {
     },
     LeaderRelease,
     AudioChunk {
+        seq: u32,
+        /// Stable small id of the leader that produced this chunk (FNV of its
+        /// peer_id). Followers accept only chunks from their current leader, so
+        /// a brief two-leaders window can never merge two streams.
+        leader_id: u32,
         play_at_us: u64,
         frame_count: u16,
         hop_count: u8,
@@ -167,8 +191,34 @@ pub enum GroupPacket {
 }
 
 /// Encode a GroupPacket into wire format (header + payload).
+///
+/// The header carries a `seq` for every packet type. For [`GroupPacket::AudioChunk`]
+/// the payload also carries its own `seq`, and the UDP audio receiver decodes
+/// timing solely from the payload (it ignores the header `seq`). Callers stream
+/// audio with the same value in both fields; the header `seq` is informational
+/// (e.g. capture/debug) for that type, not the field the jitter buffer keys on.
 pub fn encode(packet: &GroupPacket, seq: u32) -> Vec<u8> {
-    let (ptype, payload) = match packet {
+    let (ptype, payload) = encode_typed(packet);
+
+    let mut out = Vec::with_capacity(HEADER_SIZE + payload.len());
+    out.extend_from_slice(&MAGIC);
+    out.push(VERSION);
+    out.push(ptype as u8);
+    out.extend_from_slice(&seq.to_le_bytes());
+    out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    out.extend_from_slice(&payload);
+    out
+}
+
+/// Encode just the payload bytes of a packet (no header), the inverse of
+/// [`decode_payload`].
+pub fn encode_payload(packet: &GroupPacket) -> Vec<u8> {
+    encode_typed(packet).1
+}
+
+/// Build the `(PacketType, payload)` pair for a packet.
+fn encode_typed(packet: &GroupPacket) -> (PacketType, Vec<u8>) {
+    match packet {
         GroupPacket::ClockSyncReq { originate_us } => (
             PacketType::ClockSyncReq,
             originate_us.to_le_bytes().to_vec(),
@@ -197,12 +247,16 @@ pub fn encode(packet: &GroupPacket, seq: u32) -> Vec<u8> {
         }
         GroupPacket::LeaderRelease => (PacketType::LeaderRelease, Vec::new()),
         GroupPacket::AudioChunk {
+            seq,
+            leader_id,
             play_at_us,
             frame_count,
             hop_count,
             pcm,
         } => {
-            let mut p = Vec::with_capacity(11 + pcm.len() * 4);
+            let mut p = Vec::with_capacity(19 + pcm.len() * 4);
+            p.extend_from_slice(&seq.to_le_bytes());
+            p.extend_from_slice(&leader_id.to_le_bytes());
             p.extend_from_slice(&play_at_us.to_le_bytes());
             p.extend_from_slice(&frame_count.to_le_bytes());
             p.push(*hop_count);
@@ -333,16 +387,7 @@ pub fn encode(packet: &GroupPacket, seq: u32) -> Vec<u8> {
             p.extend_from_slice(act_bytes);
             (PacketType::PlayPause, p)
         }
-    };
-
-    let mut out = Vec::with_capacity(HEADER_SIZE + payload.len());
-    out.extend_from_slice(&MAGIC);
-    out.push(VERSION);
-    out.push(ptype as u8);
-    out.extend_from_slice(&seq.to_le_bytes());
-    out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-    out.extend_from_slice(&payload);
-    out
+    }
 }
 
 /// Read exactly one header from a byte stream. Returns (packet_type, sequence, payload_len).
@@ -407,13 +452,15 @@ pub fn decode_payload(ptype: PacketType, payload: &[u8]) -> io::Result<GroupPack
         }
         PacketType::LeaderRelease => Ok(GroupPacket::LeaderRelease),
         PacketType::AudioChunk => {
-            if payload.len() < 11 {
+            if payload.len() < 19 {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "short payload"));
             }
-            let play_at_us = u64::from_le_bytes(payload[0..8].try_into().unwrap());
-            let frame_count = u16::from_le_bytes(payload[8..10].try_into().unwrap());
-            let hop_count = payload[10];
-            let pcm_bytes = &payload[11..];
+            let seq = u32::from_le_bytes(payload[0..4].try_into().unwrap());
+            let leader_id = u32::from_le_bytes(payload[4..8].try_into().unwrap());
+            let play_at_us = u64::from_le_bytes(payload[8..16].try_into().unwrap());
+            let frame_count = u16::from_le_bytes(payload[16..18].try_into().unwrap());
+            let hop_count = payload[18];
+            let pcm_bytes = &payload[19..];
             if !pcm_bytes.len().is_multiple_of(4) {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -425,6 +472,8 @@ pub fn decode_payload(ptype: PacketType, payload: &[u8]) -> io::Result<GroupPack
                 .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
                 .collect();
             Ok(GroupPacket::AudioChunk {
+                seq,
+                leader_id,
                 play_at_us,
                 frame_count,
                 hop_count,
@@ -732,6 +781,8 @@ mod tests {
     fn round_trip_audio_chunk() {
         let pcm = vec![100i32, -200, 300, -400, 500, -600, 700, -800];
         let pkt = GroupPacket::AudioChunk {
+            seq: 7,
+            leader_id: 0,
             play_at_us: 5_000_000,
             frame_count: 4,
             hop_count: 0,
@@ -746,11 +797,15 @@ mod tests {
         let decoded = decode_payload(pt, &encoded[HEADER_SIZE..]).unwrap();
         match decoded {
             GroupPacket::AudioChunk {
+                seq,
+                leader_id,
                 play_at_us,
                 frame_count,
                 hop_count,
                 pcm: decoded_pcm,
             } => {
+                assert_eq!(seq, 7);
+                assert_eq!(leader_id, 0);
                 assert_eq!(play_at_us, 5_000_000);
                 assert_eq!(frame_count, 4);
                 assert_eq!(hop_count, 0);
@@ -758,6 +813,33 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn audio_chunk_datagram_fits_one_mtu() {
+        // A full AudioChunk must encode to a single un-fragmented UDP datagram.
+        // Above the MTU it fragments, and losing any one fragment drops the whole
+        // chunk on a lossy link — the multi-room "static" bug. Regression guard.
+        let pcm = vec![0i32; AUDIO_CHUNK_SAMPLES];
+        let pkt = GroupPacket::AudioChunk {
+            seq: 0,
+            leader_id: 0,
+            play_at_us: 0,
+            frame_count: AUDIO_CHUNK_FRAMES as u16,
+            hop_count: 0,
+            pcm,
+        };
+        let datagram = encode(&pkt, 0).len();
+        // 1500 MTU - 20 (IPv4) - 8 (UDP) = 1472; keep margin for reduced-MTU paths.
+        assert!(
+            datagram <= 1400,
+            "AudioChunk datagram is {datagram}B; >1400 fragments on the wire"
+        );
+        // The per-chunk duration must land on an exact integer-microsecond grid.
+        assert_eq!(
+            AUDIO_CHUNK_DUR_US * 48_000,
+            AUDIO_CHUNK_FRAMES as u64 * 1_000_000
+        );
     }
 
     #[test]
@@ -1075,6 +1157,8 @@ mod tests {
     fn round_trip_audio_chunk_with_hop_count() {
         let pcm = vec![1000i32, -2000];
         let pkt = GroupPacket::AudioChunk {
+            seq: 0,
+            leader_id: 0,
             play_at_us: 1_000_000,
             frame_count: 1,
             hop_count: 2,
@@ -1092,6 +1176,51 @@ mod tests {
                 assert_eq!(hop_count, 2);
             }
             _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn audio_chunk_carries_seq() {
+        let pkt = GroupPacket::AudioChunk {
+            seq: 42,
+            leader_id: 0,
+            play_at_us: 123456,
+            frame_count: 480,
+            hop_count: 0,
+            pcm: vec![1, 2, 3, 4],
+        };
+        let encoded = encode(&pkt, 0);
+        let header: [u8; HEADER_SIZE] = encoded[..HEADER_SIZE].try_into().unwrap();
+        let (pt, _, _) = {
+            let (p, s, l) = read_header(&header).unwrap();
+            (p.unwrap(), s, l)
+        };
+        let decoded = decode_payload(pt, &encoded[HEADER_SIZE..]).unwrap();
+        match decoded {
+            GroupPacket::AudioChunk {
+                seq, play_at_us, ..
+            } => {
+                assert_eq!(seq, 42);
+                assert_eq!(play_at_us, 123456);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn audio_chunk_carries_leader_id() {
+        let pkt = GroupPacket::AudioChunk {
+            seq: 1,
+            leader_id: 7,
+            play_at_us: 0,
+            frame_count: 480,
+            hop_count: 0,
+            pcm: vec![],
+        };
+        let back = decode_payload(PacketType::AudioChunk, &encode_payload(&pkt)).unwrap();
+        match back {
+            GroupPacket::AudioChunk { leader_id, .. } => assert_eq!(leader_id, 7),
+            _ => panic!(),
         }
     }
 

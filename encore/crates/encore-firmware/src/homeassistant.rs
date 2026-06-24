@@ -28,6 +28,10 @@ pub struct HomeAssistantSubsystem {
     client_tx: Option<mpsc::Sender<ClientMsg>>,
     /// WebSocket broadcast subscriber for caching group status.
     ws_rx: Option<tokio::sync::broadcast::Receiver<String>>,
+    /// Optional acoustic-sense update receiver (published under `encore/<slug>/sense/*`).
+    sense_rx: Option<mpsc::Receiver<crate::sense::SenseUpdate>>,
+    /// Per-device topic slug for sense topics (config device name, sanitized).
+    device_slug: String,
 }
 
 impl HomeAssistantSubsystem {
@@ -45,12 +49,42 @@ impl HomeAssistantSubsystem {
             mqtt_password: password,
             client_tx,
             ws_rx: None,
+            sense_rx: None,
+            device_slug: "invoke".to_string(),
         }
     }
 
     /// Set WebSocket broadcast receiver for caching group state.
     pub fn set_ws_rx(&mut self, rx: tokio::sync::broadcast::Receiver<String>) {
         self.ws_rx = Some(rx);
+    }
+
+    /// Provide the acoustic-sense update receiver and the device name used to
+    /// build the per-device topic prefix (`encore/<slug>/sense/*`). The slug is
+    /// the device name lowercased with non-alphanumeric chars replaced by `_`;
+    /// an empty result falls back to `invoke`.
+    pub fn set_sense_rx(
+        &mut self,
+        rx: mpsc::Receiver<crate::sense::SenseUpdate>,
+        device_name: &str,
+    ) {
+        let slug: String = device_name
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() {
+                    c.to_ascii_lowercase()
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let slug = slug.trim_matches('_').to_string();
+        self.device_slug = if slug.is_empty() {
+            "invoke".to_string()
+        } else {
+            slug
+        };
+        self.sense_rx = Some(rx);
     }
 
     fn handle_command(&self, topic: &str, payload: &[u8]) {
@@ -204,6 +238,8 @@ impl Subsystem for HomeAssistantSubsystem {
         let mut discovered = false;
         let mut ticker = interval(STATE_INTERVAL);
         let mut ws_rx = self.ws_rx.take();
+        let mut sense_rx = self.sense_rx.take();
+        let sense_base = format!("{}/{}/sense", PREFIX, self.device_slug);
 
         // Cached group state for publishing
         let mut group_enabled = false;
@@ -261,6 +297,29 @@ impl Subsystem for HomeAssistantSubsystem {
                             }
                         }
                     }
+                }
+                // Acoustic-sense updates → MQTT (per-device prefix)
+                Some(u) = async {
+                    match sense_rx.as_mut() {
+                        Some(r) => r.recv().await,
+                        None => std::future::pending::<Option<crate::sense::SenseUpdate>>().await,
+                    }
+                } => {
+                    match u {
+                        crate::sense::SenseUpdate::State { state, level } => {
+                            let s = match state {
+                                crate::sense::SenseState::Quiet => "quiet",
+                                crate::sense::SenseState::Activity => "activity",
+                            };
+                            client.publish(format!("{sense_base}/state"), QoS::AtLeastOnce, true, s).await.ok();
+                            client.publish(format!("{sense_base}/level"), QoS::AtLeastOnce, true, level.to_string()).await.ok();
+                        }
+                        crate::sense::SenseUpdate::Loud { level } => {
+                            let payload = serde_json::json!({ "event": "loud", "level": level }).to_string();
+                            client.publish(format!("{sense_base}/event"), QoS::AtLeastOnce, false, payload).await.ok();
+                        }
+                    }
+                    ctx.health.inc_msg();
                 }
                 _ = ticker.tick() => {
                     if discovered {

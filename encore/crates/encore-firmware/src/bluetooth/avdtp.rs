@@ -6,10 +6,11 @@
 
 use super::l2cap;
 use super::transport;
+use super::transport::ReaderHandle;
 use super::A2dpCodec;
 use crate::audio::mixer::MixerSlot;
-use std::os::fd::{AsRawFd, OwnedFd};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
@@ -67,14 +68,19 @@ enum AvdtpState {
 }
 
 /// Events sent from the AVDTP task to the main BT event loop.
+///
+/// The AVDTP loop owns the reader thread's lifecycle; these events only ask the
+/// main loop to update mixer-slot/group/UI state, never to stop the reader.
 #[derive(Debug)]
 pub enum AvdtpEvent {
-    /// Audio streaming started.
-    Streaming {
-        codec: A2dpCodec,
-        stop: Arc<AtomicBool>,
-    },
-    /// Audio streaming stopped (SUSPEND, CLOSE, or disconnect).
+    /// First START after OPEN — a reader thread is now producing audio.
+    Streaming { codec: A2dpCodec },
+    /// SUSPEND — source paused. The reader stays alive for an instant resume;
+    /// the main loop just silences the slot.
+    Paused,
+    /// START after SUSPEND — audio resumes on the same media transport.
+    Resumed { codec: A2dpCodec },
+    /// CLOSE/ABORT — the stream tore down and the reader was stopped.
     Stopped,
     /// Signaling disconnected (phone went away).
     Disconnected,
@@ -118,7 +124,7 @@ fn avdtp_loop(listener: OwnedFd, slot: Arc<MixerSlot>, tx: mpsc::Sender<AvdtpEve
         let mut media_fd: Option<OwnedFd> = None;
         let mut codec: Option<A2dpCodec> = None;
         let mut configured_seid: u8 = 0;
-        let mut reader_stop: Option<Arc<AtomicBool>> = None;
+        let mut reader: Option<ReaderHandle> = None;
 
         // Wait for a signaling connection
         let (accepted_fd, remote_addr) = match l2cap::l2cap_accept(listener_fd) {
@@ -222,56 +228,63 @@ fn avdtp_loop(listener: OwnedFd, slot: Arc<MixerSlot>, tx: mpsc::Sender<AvdtpEve
                 }
                 AVDTP_START => {
                     debug!("AVDTP: START");
-                    // Stop any existing reader
-                    if let Some(stop) = reader_stop.take() {
-                        stop.store(true, Ordering::Relaxed);
-                    }
-
-                    // If we don't have a media transport yet, try to accept one
-                    if media_fd.is_none() {
-                        // Non-blocking accept on the listener for media transport
-                        if let Ok((fd, _addr)) = l2cap::l2cap_accept(listener_fd) {
-                            media_fd = Some(fd);
-                            debug!("AVDTP: accepted media transport");
-                        }
-                    }
-
-                    if let (Some(mfd), Some(c)) = (media_fd.take(), codec) {
-                        // Get read MTU from L2CAP options
-                        let read_mtu = l2cap::l2cap_get_options(mfd.as_raw_fd())
-                            .map(|opts| opts.imtu)
-                            .unwrap_or(672);
-
-                        match transport::spawn_reader(mfd, read_mtu, slot.clone(), c) {
-                            Ok(stop) => {
-                                reader_stop = Some(stop.clone());
-                                state = AvdtpState::Streaming;
-                                let _ = tx.blocking_send(AvdtpEvent::Streaming { codec: c, stop });
-                                info!("AVDTP: streaming started (codec={}, mtu={})", c, read_mtu);
-                            }
-                            Err(e) => {
-                                warn!("AVDTP: reader spawn failed: {}", e);
-                            }
+                    // START after SUSPEND resumes streaming on the SAME media
+                    // transport — the source does not reopen it. If the reader
+                    // is still alive, just resume in place; never accept a new
+                    // transport (the old bug blocked here forever).
+                    let resuming = reader.as_ref().map_or(false, |h| h.is_running());
+                    if resuming {
+                        if let Some(c) = codec {
+                            state = AvdtpState::Streaming;
+                            let _ = tx.blocking_send(AvdtpEvent::Resumed { codec: c });
+                            info!("AVDTP: streaming resumed (codec={})", c);
                         }
                     } else {
-                        warn!("AVDTP: START but no media transport or codec");
+                        // First START after OPEN, or the previous reader died:
+                        // (re)acquire the media transport and spawn a reader.
+                        if let Some(h) = reader.take() {
+                            h.stop.store(true, Ordering::Relaxed);
+                        }
+                        if media_fd.is_none() {
+                            media_fd = accept_media_bounded(listener_fd, 2000, &remote_addr);
+                        }
+                        if let (Some(mfd), Some(c)) = (media_fd.take(), codec) {
+                            let read_mtu = l2cap::l2cap_get_options(mfd.as_raw_fd())
+                                .map(|opts| opts.imtu)
+                                .unwrap_or(672);
+                            match transport::spawn_reader(mfd, read_mtu, slot.clone(), c) {
+                                Ok(h) => {
+                                    reader = Some(h);
+                                    state = AvdtpState::Streaming;
+                                    let _ = tx.blocking_send(AvdtpEvent::Streaming { codec: c });
+                                    info!(
+                                        "AVDTP: streaming started (codec={}, mtu={})",
+                                        c, read_mtu
+                                    );
+                                }
+                                Err(e) => {
+                                    warn!("AVDTP: reader spawn failed: {}", e);
+                                }
+                            }
+                        } else {
+                            warn!("AVDTP: START but no media transport or codec");
+                        }
                     }
 
                     build_accept(txn_label, AVDTP_START, &[])
                 }
                 AVDTP_SUSPEND => {
                     debug!("AVDTP: SUSPEND");
-                    if let Some(stop) = reader_stop.take() {
-                        stop.store(true, Ordering::Relaxed);
-                    }
+                    // Keep the reader and media transport alive — A2DP resumes
+                    // on the same channel via START. Just mark paused (silent).
                     state = AvdtpState::Suspended;
-                    let _ = tx.blocking_send(AvdtpEvent::Stopped);
+                    let _ = tx.blocking_send(AvdtpEvent::Paused);
                     build_accept(txn_label, AVDTP_SUSPEND, &[])
                 }
                 AVDTP_CLOSE => {
                     debug!("AVDTP: CLOSE");
-                    if let Some(stop) = reader_stop.take() {
-                        stop.store(true, Ordering::Relaxed);
+                    if let Some(h) = reader.take() {
+                        h.stop.store(true, Ordering::Relaxed);
                     }
                     media_fd = None;
                     codec = None;
@@ -281,8 +294,8 @@ fn avdtp_loop(listener: OwnedFd, slot: Arc<MixerSlot>, tx: mpsc::Sender<AvdtpEve
                 }
                 AVDTP_ABORT => {
                     debug!("AVDTP: ABORT");
-                    if let Some(stop) = reader_stop.take() {
-                        stop.store(true, Ordering::Relaxed);
+                    if let Some(h) = reader.take() {
+                        h.stop.store(true, Ordering::Relaxed);
                     }
                     media_fd = None;
                     codec = None;
@@ -292,8 +305,8 @@ fn avdtp_loop(listener: OwnedFd, slot: Arc<MixerSlot>, tx: mpsc::Sender<AvdtpEve
                 }
                 AVDTP_RECONFIGURE => {
                     debug!("AVDTP: RECONFIGURE");
-                    if let Some(stop) = reader_stop.take() {
-                        stop.store(true, Ordering::Relaxed);
+                    if let Some(h) = reader.take() {
+                        h.stop.store(true, Ordering::Relaxed);
                     }
                     let _ = tx.blocking_send(AvdtpEvent::Stopped);
 
@@ -325,9 +338,20 @@ fn avdtp_loop(listener: OwnedFd, slot: Arc<MixerSlot>, tx: mpsc::Sender<AvdtpEve
             if state == AvdtpState::Open && media_fd.is_none() {
                 // Set listener to non-blocking for a quick check
                 l2cap::set_nonblocking(listener_fd).ok();
-                if let Ok((fd, _addr)) = l2cap::l2cap_accept(listener_fd) {
-                    media_fd = Some(fd);
-                    debug!("AVDTP: accepted media transport (post-OPEN)");
+                if let Ok((fd, addr)) = l2cap::l2cap_accept(listener_fd) {
+                    if addr == remote_addr {
+                        media_fd = Some(fd);
+                        debug!("AVDTP: accepted media transport (post-OPEN)");
+                    } else {
+                        // A different paired device opened PSM 25 mid-session — not
+                        // our source's media channel. Drop it (fd closes on scope
+                        // exit) rather than streaming the wrong device's audio.
+                        warn!(
+                            "AVDTP: rejected media transport from {} (peer is {})",
+                            l2cap::bdaddr_to_string(&addr),
+                            l2cap::bdaddr_to_string(&remote_addr)
+                        );
+                    }
                 }
                 // Restore blocking mode
                 restore_blocking(listener_fd);
@@ -335,8 +359,8 @@ fn avdtp_loop(listener: OwnedFd, slot: Arc<MixerSlot>, tx: mpsc::Sender<AvdtpEve
         }
 
         // Session ended — clean up
-        if let Some(stop) = reader_stop.take() {
-            stop.store(true, Ordering::Relaxed);
+        if let Some(h) = reader.take() {
+            h.stop.store(true, Ordering::Relaxed);
         }
         let _ = tx.blocking_send(AvdtpEvent::Disconnected);
 
@@ -357,6 +381,46 @@ fn restore_blocking(fd: std::os::fd::RawFd) {
     if flags >= 0 {
         unsafe { libc::fcntl(fd, libc::F_SETFL, flags & !libc::O_NONBLOCK) };
     }
+}
+
+/// Accept a media-transport connection without parking the signaling thread
+/// forever. Polls the (non-blocking) listener for up to `max_ms`, then gives
+/// up. START must never block here: on a SUSPEND→START resume the source
+/// reuses the existing transport and opens nothing, so a blocking accept would
+/// wedge the whole signaling channel (the original "no audio after pause" bug).
+fn accept_media_bounded(listener_fd: RawFd, max_ms: u64, expected: &[u8; 6]) -> Option<OwnedFd> {
+    l2cap::set_nonblocking(listener_fd).ok();
+    let step = 20u64;
+    let mut waited = 0u64;
+    let result = loop {
+        match l2cap::l2cap_accept(listener_fd) {
+            Ok((fd, addr)) if addr == *expected => {
+                debug!("AVDTP: accepted media transport");
+                break Some(fd);
+            }
+            // A different paired device's connection — drop it (fd closes here)
+            // and keep waiting for our session peer's media channel.
+            Ok((_fd, addr)) => {
+                warn!(
+                    "AVDTP: ignored media transport from {} (waiting for {})",
+                    l2cap::bdaddr_to_string(&addr),
+                    l2cap::bdaddr_to_string(expected)
+                );
+                if waited >= max_ms {
+                    break None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(step));
+                waited += step;
+            }
+            Err(_) if waited < max_ms => {
+                std::thread::sleep(std::time::Duration::from_millis(step));
+                waited += step;
+            }
+            Err(_) => break None,
+        }
+    };
+    restore_blocking(listener_fd);
+    result
 }
 
 // ── AVDTP message builders ──

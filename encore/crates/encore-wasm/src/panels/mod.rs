@@ -3,6 +3,7 @@
 mod about;
 mod config;
 mod health;
+mod theme;
 mod update;
 
 /// Render panel content into the panel body.
@@ -15,6 +16,7 @@ pub fn render(id: &str, container: &web_sys::Element) {
         "update" => update::render(container),
         "reboot" => render_reboot(container),
         "about" => about::render(container),
+        "theme" => theme::render(container),
         _ => {
             let msg = crate::dom::el("div", "text-muted", Some("Unknown panel"));
             crate::dom::append(container, &msg);
@@ -54,15 +56,17 @@ fn render_crashes(container: &web_sys::Element) {
         let result: Result<String, String> = async {
             let resp_val = JsFuture::from(window.fetch_with_str(&url))
                 .await
-                .map_err(|e| format!("fetch failed: {:?}", e))?;
+                .map_err(|_| "could not reach the device".to_string())?;
             let resp: web_sys::Response = resp_val.unchecked_into();
             if !resp.ok() {
                 return Err(format!("HTTP {}", resp.status()));
             }
-            let text_promise = resp.text().map_err(|e| format!("text() failed: {:?}", e))?;
+            let text_promise = resp
+                .text()
+                .map_err(|_| "could not read the response".to_string())?;
             let text_val = JsFuture::from(text_promise)
                 .await
-                .map_err(|e| format!("await text failed: {:?}", e))?;
+                .map_err(|_| "could not read the response".to_string())?;
             text_val
                 .as_string()
                 .ok_or_else(|| "response not a string".into())
@@ -162,7 +166,7 @@ fn render_reboot(container: &web_sys::Element) {
 
     let cancel_btn = dom::el("button", "btn", Some("Cancel"));
     dom::on_click(&cancel_btn, || {
-        crate::app::close_panel();
+        dom::window().location().set_hash("settings/system").ok();
     });
 
     let confirm_btn = dom::el("button", "btn btn-danger", Some("Reboot Now"));

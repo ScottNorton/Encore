@@ -3,6 +3,7 @@
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
+use crate::components::section_header;
 use crate::components::{SegmentedControl, SegmentedMode};
 use crate::dom;
 use encore_common::protocol::{
@@ -32,32 +33,37 @@ fn gain_label(cb: i16) -> String {
 }
 
 pub fn render(container: &web_sys::Element) {
-    // ── Volume Row (master knob + source sliders side by side) ──
+    // ── Master + Sources ──
+    dom::append(container, &section_header("Master and sources"));
     let vol_row = dom::create_div();
     dom::set_class(&vol_row, "vol-row");
     render_volume_knob(&vol_row);
     render_source_volumes(&vol_row);
     dom::append(container, &vol_row);
 
-    // ── VU Meter ──
-    render_vu_meter(container);
+    // ── Enhanced Bass (one-tap tone fix) ──
+    dom::append(container, &section_header("Enhanced bass"));
+    render_bass_boost(container);
 
-    // ── Microphone Test ──
-    render_mic_test(container);
-
-    // ── Audio Visualization ──
-    render_visualization(container);
-
-    // ── Equalizer ──
+    // ── Tone shaping (the controls people come to this tab for) ──
+    dom::append(container, &section_header("Tone shaping"));
     render_eq(container);
-
-    // ── Dynamics (DRC) ──
     render_drc(container);
 
-    // ── DSP Engine ──
+    // ── Monitoring ──
+    dom::append(container, &section_header("Levels and visualization"));
+    render_vu_meter(container);
+    render_visualization(container);
+
+    // ── Utilities ──
+    dom::append(container, &section_header("Mic and DSP"));
+    render_mic_test(container);
     render_dsp(container);
 
     update();
+    // The VU/spectrum/scope canvases are animated by a ~20fps loop that eases the
+    // low-rate device feed into smooth motion (see graphics::sound_viz).
+    crate::graphics::sound_viz::start();
 }
 
 // ─────────────────────── Master Volume ───────────────────────
@@ -72,24 +78,66 @@ fn render_volume_knob(container: &web_sys::Element) {
     let (knob_canvas, knob_ctx) = crate::graphics::create_canvas(180, 180);
     knob_canvas.set_id("vol-knob");
     let knob_el: web_sys::Element = knob_canvas.clone().into();
-    dom::append(&card, &knob_el);
+    dom::set_attr(&knob_el, "aria-hidden", "true");
+    dom::set_style(&knob_el, "pointer-events", "none");
+
+    // Stack the canvas and the accessible slider overlay.
+    let stack = dom::create_div();
+    dom::set_style(&stack, "position", "relative");
+    dom::set_style(&stack, "width", "180px");
+    dom::set_style(&stack, "height", "180px");
+    dom::set_style(&stack, "margin", "0 auto");
+    dom::append(&stack, &knob_el);
 
     let vol = crate::state::with(|s| s.config.as_ref().map(|c| c.master_volume).unwrap_or(70));
-    crate::graphics::knob::draw(&knob_ctx, 180.0, vol);
 
-    crate::graphics::knob::make_interactive(&knob_canvas, move |new_vol| {
+    let overlay = dom::create_div();
+    overlay.set_id("vol-knob-overlay");
+    dom::set_attr(&overlay, "role", "slider");
+    dom::set_attr(&overlay, "aria-label", "Master volume");
+    dom::set_attr(&overlay, "aria-valuemin", "0");
+    dom::set_attr(&overlay, "aria-valuemax", "100");
+    dom::set_attr(&overlay, "aria-valuenow", &vol.to_string());
+    dom::set_attr(&overlay, "tabindex", "0");
+    dom::set_style(&overlay, "position", "absolute");
+    dom::set_style(&overlay, "inset", "0");
+    dom::set_style(&overlay, "cursor", "pointer");
+    dom::append(&stack, &overlay);
+    dom::append(&card, &stack);
+
+    crate::graphics::knob::draw(&knob_ctx, 180.0, vol, "VOL");
+
+    crate::graphics::knob::make_interactive(&overlay, move |new_vol| {
         crate::ws::send_msg(&ClientMsg::SetMasterVolume(new_vol));
+        if let Some(ov) = dom::get_el("vol-knob-overlay") {
+            dom::set_attr(&ov, "aria-valuenow", &new_vol.to_string());
+            dom::set_attr(&ov, "aria-valuetext", &volume_valuetext(new_vol));
+        }
         if let Some(canvas) = dom::get_el("vol-knob") {
             if let Some(canvas) = canvas.dyn_ref::<web_sys::HtmlCanvasElement>() {
                 if let Ok(Some(ctx)) = canvas.get_context("2d") {
                     let ctx: web_sys::CanvasRenderingContext2d = ctx.unchecked_into();
-                    crate::graphics::knob::draw(&ctx, 180.0, new_vol);
+                    crate::graphics::knob::draw(&ctx, 180.0, new_vol, "VOL");
                 }
             }
         }
     });
 
     dom::append(container, &card);
+}
+
+/// Build the `aria-valuetext` for a volume slider, including the loud tier so a
+/// screen-reader user gets the "you are loud" signal the gold/red arc gives
+/// sighted users (design v2 a11y, Correction 8). Mirrors the knob fill ramp:
+/// >80 = high, >60 = elevated.
+fn volume_valuetext(v: u8) -> String {
+    if v > 80 {
+        format!("{} percent, high", v)
+    } else if v > 60 {
+        format!("{} percent, elevated", v)
+    } else {
+        format!("{} percent", v)
+    }
 }
 
 // ─────────────────────── Source Volumes ───────────────────────
@@ -260,6 +308,44 @@ fn render_source_volumes(container: &web_sys::Element) {
     dom::append(container, &card);
 }
 
+// ─────────────────────── Enhanced Bass ───────────────────────
+
+/// One-tap low-end lift. Maps to the EQ BassBoost preset (the now-working
+/// HybridFlow-6 path), surfaced prominently as the simple answer to thin sound.
+fn render_bass_boost(container: &web_sys::Element) {
+    let card = dom::create_div();
+    dom::set_class(&card, "card");
+
+    let on = crate::state::with(|s| {
+        s.eq_state
+            .as_ref()
+            .map(|eq| eq.preset == Some(EqPreset::BassBoost))
+            .unwrap_or(false)
+    });
+
+    let toggle =
+        crate::components::Toggle::create("bass-boost-toggle", "Enhanced Bass", on, |on| {
+            if on {
+                crate::ws::send_msg(&ClientMsg::SetEqPreset(EqPreset::BassBoost));
+                crate::components::toast::success("Enhanced bass on");
+            } else {
+                crate::ws::send_msg(&ClientMsg::SetEqPreset(EqPreset::Flat));
+                crate::components::toast::info("Enhanced bass off");
+            }
+        });
+    dom::set_class(&toggle, "toggle-wrap");
+    dom::append(&card, &toggle);
+
+    let desc = dom::el(
+        "div",
+        "text-muted text-sm mt-8",
+        Some("One-tap low-end lift for thin or quiet sources. Fine-tune in the Equalizer below."),
+    );
+    dom::append(&card, &desc);
+
+    dom::append(container, &card);
+}
+
 // ─────────────────────── VU Meter ───────────────────────
 
 fn render_vu_meter(container: &web_sys::Element) {
@@ -319,6 +405,7 @@ fn render_mic_test(container: &web_sys::Element) {
             crate::state::with_mut(|s| s.mic_testing = false);
             if let Some(btn) = dom::get_el("mic-test-btn") {
                 dom::set_text(&btn, "Start Test");
+                dom::set_class(&btn, "btn btn-primary");
             }
             if let Some(vu) = dom::get_el("mic-vu") {
                 dom::set_style(&vu, "display", "none");
@@ -331,6 +418,7 @@ fn render_mic_test(container: &web_sys::Element) {
             crate::state::with_mut(|s| s.mic_testing = true);
             if let Some(btn) = dom::get_el("mic-test-btn") {
                 dom::set_text(&btn, "Stop Test");
+                dom::set_class(&btn, "btn btn-danger");
             }
             if let Some(vu) = dom::get_el("mic-vu") {
                 dom::set_style(&vu, "display", "block");
@@ -510,6 +598,9 @@ fn update_eq_detail() {
             }
         };
         dom::set_style(&detail, "display", "block");
+        // Keep the preset pills truthful: a manual edit clears eq.preset, so
+        // reflect that immediately rather than leaving a stale pill lit.
+        update_eq_preset(eq.preset);
         let band = &eq.bands[idx];
 
         if let Some(lbl) = dom::get_el("eq-detail-label") {
@@ -557,15 +648,22 @@ fn render_eq(container: &web_sys::Element) {
     let card = dom::create_div();
     dom::set_class(&card, "card");
 
-    // Header: title + toggle
+    // Header: title (+ "Custom" badge) on the left, enable toggle on the right
     let header = dom::create_div();
     dom::set_class(&header, "flex justify-between items-center mb-12");
+    let left = dom::create_div();
+    dom::set_class(&left, "flex items-center gap-8");
     let title = dom::el("div", "card-title", Some("Equalizer"));
     dom::set_style(&title, "margin-bottom", "0");
+    dom::append(&left, &title);
+    let custom_badge = dom::el("span", "badge-experimental", Some("Custom"));
+    custom_badge.set_id("eq-custom-badge");
+    dom::set_style(&custom_badge, "display", "none");
+    dom::append(&left, &custom_badge);
     let toggle_wrap = crate::components::Toggle::create("eq-toggle", "", true, |checked| {
         crate::ws::send_msg(&ClientMsg::SetEqEnabled(checked));
     });
-    dom::append(&header, &title);
+    dom::append(&header, &left);
     dom::append(&header, &toggle_wrap);
     dom::append(&card, &header);
 
@@ -594,6 +692,34 @@ fn render_eq(container: &web_sys::Element) {
     );
     dom::set_style(&presets, "margin", "12px 0");
     dom::append(&card, &presets);
+
+    // Plain-language tooltips so preset names aren't guesswork.
+    for (id, tip) in [
+        (
+            "eq-presets-flat",
+            "No coloring \u{2014} the speaker's natural tuning.",
+        ),
+        ("eq-presets-bass", "Lifts the low end for fuller bass."),
+        ("eq-presets-vocal", "Brings voices and dialogue forward."),
+        ("eq-presets-warm", "Softer highs for a mellow tone."),
+        (
+            "eq-presets-night",
+            "Tames loud peaks for quiet, late listening.",
+        ),
+    ] {
+        if let Some(el) = dom::get_el(id) {
+            dom::set_attr(&el, "title", tip);
+        }
+    }
+
+    // Affordance: the curve is interactive, which isn't obvious otherwise.
+    let eq_hint = dom::el(
+        "div",
+        "text-muted text-sm",
+        Some("Tap a band on the curve to select it, then drag to shape frequency and gain."),
+    );
+    dom::set_style(&eq_hint, "margin-bottom", "8px");
+    dom::append(&card, &eq_hint);
 
     // EQ curve canvas
     let (eq_w, eq_h) = crate::graphics::eq_curve::dimensions();
@@ -860,6 +986,10 @@ fn render_drc(container: &web_sys::Element) {
     dom::set_class(&header, "flex justify-between items-center mb-12");
     let title = dom::el("div", "card-title", Some("Dynamics"));
     dom::set_style(&title, "margin-bottom", "0");
+    dom::append(
+        &title,
+        &dom::hint("Dynamic range compression evens out loud and quiet parts per band. Off keeps full dynamics."),
+    );
 
     let toggle_wrap = crate::components::Toggle::create("drc-toggle", "", false, |checked| {
         crate::ws::send_msg(&ClientMsg::SetDrcEnabled(checked));
@@ -892,154 +1022,77 @@ fn render_drc(container: &web_sys::Element) {
     dom::set_style(&presets, "margin", "12px 0");
     dom::append(&card, &presets);
 
-    // 3-band DRC controls
-    let bands = dom::create_div();
-    dom::set_style(&bands, "display", "grid");
-    dom::set_style(&bands, "grid-template-columns", "repeat(3, 1fr)");
-    dom::set_style(&bands, "gap", "12px");
+    // Single-band compressor controls.
+    // ponytail: the engine reads only the Mid band; the dashboard used to show
+    // Low/Mid/High columns + crossover sliders that did nothing. One band now.
+    let comp = dom::create_div();
 
-    for (label, band_enum, idx) in [
-        ("Low", DrcBand::Low, 0u8),
-        ("Mid", DrcBand::Mid, 1u8),
-        ("High", DrcBand::High, 2u8),
-    ] {
-        let col = dom::create_div();
-        dom::set_class(&col, "drc-band-col");
-
-        let band_label = dom::el("div", "drc-band-title", Some(label));
-        dom::append(&col, &band_label);
-
-        // Helper to create a DRC parameter slider row
-        for (param_label, param_id, min, max, default_val, suffix) in [
-            (
-                "Thresh",
-                format!("drc-thresh-{}", idx),
-                -60i32,
-                0,
-                -20,
-                "dB",
-            ),
-            ("Ratio", format!("drc-ratio-{}", idx), 10, 100, 20, ""),
-            ("Attack", format!("drc-attack-{}", idx), 1, 200, 10, "ms"),
-            (
-                "Release",
-                format!("drc-release-{}", idx),
-                10,
-                2000,
-                200,
-                "ms",
-            ),
-        ] {
-            let row = dom::create_div();
-            dom::set_class(&row, "drc-param-row");
-
-            let lbl = dom::el("label", "", Some(param_label));
-            dom::append(&row, &lbl);
-
-            let slider = dom::create_el("input");
-            dom::set_attr(&slider, "type", "range");
-            dom::set_attr(&slider, "min", &min.to_string());
-            dom::set_attr(&slider, "max", &max.to_string());
-            dom::set_attr(&slider, "value", &default_val.to_string());
-            slider.set_id(&param_id);
-
-            let val_el = dom::el(
-                "span",
-                "drc-val",
-                Some(&format!("{}{}", default_val, suffix)),
-            );
-            let val_id = format!("{}-val", param_id);
-            val_el.set_id(&val_id);
-
-            let band_e = band_enum;
-            let band_i = idx as usize;
-            let suffix_s = suffix.to_string();
-            let val_id_c = val_id.clone();
-            let cb = Closure::wrap(Box::new(move |e: web_sys::Event| {
-                if let Some(input) = e
-                    .target()
-                    .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
-                {
-                    let raw_val: i32 = input.value().parse().unwrap_or(default_val);
-                    if let Some(el) = dom::get_el(&val_id_c) {
-                        dom::set_text(&el, &format!("{}{}", raw_val, suffix_s));
-                    }
-                    // Read current band config from state, override the changed param
-                    let config = crate::state::with(|s| {
-                        let base = s
-                            .drc_state
-                            .as_ref()
-                            .map(|d| d.bands[band_i])
-                            .unwrap_or_default();
-                        read_drc_band_from_dom(band_i, base)
-                    });
-                    crate::ws::send_msg(&ClientMsg::SetDrc {
-                        band: band_e,
-                        config,
-                    });
-                }
-            }) as Box<dyn FnMut(_)>);
-            slider
-                .add_event_listener_with_callback("input", cb.as_ref().unchecked_ref())
-                .ok();
-            cb.forget();
-
-            dom::append(&row, &slider);
-            dom::append(&row, &val_el);
-            dom::append(&col, &row);
-        }
-
-        dom::append(&bands, &col);
-    }
-    dom::append(&card, &bands);
-
-    // Crossover frequency sliders
-    let xover = dom::create_div();
-    dom::set_class(&xover, "drc-crossover mt-12");
-
-    let xover_title = dom::el(
+    let caption = dom::el(
         "div",
         "text-sm text-muted mb-8",
-        Some("Crossover Frequencies"),
+        Some("Single-band compressor"),
     );
-    dom::append(&xover, &xover_title);
+    dom::append(&comp, &caption);
 
-    // Low/Mid crossover: 80-500 Hz
-    let low_mid =
-        crate::components::Slider::create("drc-xover-lm", "Low/Mid", 80, 500, 200, "Hz", |v| {
-            let mid_high: u16 = dom::get_el("drc-xover-mh")
-                .and_then(|el| el.dyn_into::<web_sys::HtmlInputElement>().ok())
-                .map(|i| i.value().parse().unwrap_or(2000))
-                .unwrap_or(2000);
-            crate::ws::send_msg(&ClientMsg::SetDrcCrossover {
-                low_mid_hz: v as u16,
-                mid_high_hz: mid_high,
-            });
-        });
-    dom::append(&xover, &low_mid);
+    for (param_label, param_id, min, max, default_val, suffix) in [
+        ("Thresh", "drc-thresh-1", -60i32, 0, -20, "dB"),
+        ("Ratio", "drc-ratio-1", 10, 100, 20, ""),
+        ("Attack", "drc-attack-1", 1, 200, 10, "ms"),
+        ("Release", "drc-release-1", 10, 2000, 200, "ms"),
+    ] {
+        let row = dom::create_div();
+        dom::set_class(&row, "drc-param-row");
 
-    // Mid/High crossover: 1000-8000 Hz
-    let mid_high = crate::components::Slider::create(
-        "drc-xover-mh",
-        "Mid/High",
-        1000,
-        8000,
-        2000,
-        "Hz",
-        |v| {
-            let low_mid: u16 = dom::get_el("drc-xover-lm")
-                .and_then(|el| el.dyn_into::<web_sys::HtmlInputElement>().ok())
-                .map(|i| i.value().parse().unwrap_or(200))
-                .unwrap_or(200);
-            crate::ws::send_msg(&ClientMsg::SetDrcCrossover {
-                low_mid_hz: low_mid,
-                mid_high_hz: v as u16,
-            });
-        },
-    );
-    dom::append(&xover, &mid_high);
+        let lbl = dom::el("label", "", Some(param_label));
+        dom::append(&row, &lbl);
 
-    dom::append(&card, &xover);
+        let slider = dom::create_el("input");
+        dom::set_attr(&slider, "type", "range");
+        dom::set_attr(&slider, "min", &min.to_string());
+        dom::set_attr(&slider, "max", &max.to_string());
+        dom::set_attr(&slider, "value", &default_val.to_string());
+        slider.set_id(param_id);
+
+        let val_el = dom::el(
+            "span",
+            "drc-val",
+            Some(&format!("{}{}", default_val, suffix)),
+        );
+        let val_id = format!("{}-val", param_id);
+        val_el.set_id(&val_id);
+
+        let suffix_s = suffix.to_string();
+        let val_id_c = val_id.clone();
+        let cb = Closure::wrap(Box::new(move |e: web_sys::Event| {
+            if let Some(input) = e
+                .target()
+                .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+            {
+                let raw_val: i32 = input.value().parse().unwrap_or(default_val);
+                if let Some(el) = dom::get_el(&val_id_c) {
+                    dom::set_text(&el, &format!("{}{}", raw_val, suffix_s));
+                }
+                // Engine applies only the Mid band, so the one UI band writes Mid.
+                let config = crate::state::with(|s| {
+                    let base = s.drc_state.as_ref().map(|d| d.bands[1]).unwrap_or_default();
+                    read_drc_band_from_dom(1, base)
+                });
+                crate::ws::send_msg(&ClientMsg::SetDrc {
+                    band: DrcBand::Mid,
+                    config,
+                });
+            }
+        }) as Box<dyn FnMut(_)>);
+        slider
+            .add_event_listener_with_callback("input", cb.as_ref().unchecked_ref())
+            .ok();
+        cb.forget();
+
+        dom::append(&row, &slider);
+        dom::append(&row, &val_el);
+        dom::append(&comp, &row);
+    }
+    dom::append(&card, &comp);
 
     dom::append(container, &card);
 }
@@ -1085,7 +1138,7 @@ fn render_dsp(container: &web_sys::Element) {
     dom::set_class(&info_row, "flex justify-between mb-12");
     let ver = dom::el("span", "stat-label", Some("Version: \u{2014}"));
     ver.set_id("dsp-version");
-    let hf = dom::el("span", "stat-value text-sm", Some("HF: \u{2014}"));
+    let hf = dom::el("span", "stat-value text-sm", Some("DAC: \u{2014}"));
     hf.set_id("dsp-hybridflow");
     dom::append(&info_row, &ver);
     dom::append(&info_row, &hf);
@@ -1273,9 +1326,12 @@ pub fn update() {
             if let Some(canvas) = canvas.dyn_ref::<web_sys::HtmlCanvasElement>() {
                 if let Ok(Some(ctx)) = canvas.get_context("2d") {
                     let ctx: web_sys::CanvasRenderingContext2d = ctx.unchecked_into();
-                    crate::graphics::knob::draw(&ctx, 180.0, s.master_volume);
+                    crate::graphics::knob::draw(&ctx, 180.0, s.master_volume, "VOL");
                 }
             }
+        }
+        if let Some(ov) = dom::get_el("vol-knob-overlay") {
+            dom::set_attr(&ov, "aria-valuenow", &s.master_volume.to_string());
         }
 
         // Show/hide source volume rows
@@ -1320,23 +1376,9 @@ pub fn update() {
             }
         }
 
-        // VU meter
-        if let Some(canvas) = dom::get_el("vu-meter") {
-            if let Some(canvas) = canvas.dyn_ref::<web_sys::HtmlCanvasElement>() {
-                if let Ok(Some(ctx)) = canvas.get_context("2d") {
-                    let ctx: web_sys::CanvasRenderingContext2d = ctx.unchecked_into();
-                    crate::graphics::vu_meter::draw(
-                        &ctx,
-                        320.0,
-                        64.0,
-                        s.audio_left_rms,
-                        s.audio_right_rms,
-                        s.audio_left_peak,
-                        s.audio_right_peak,
-                    );
-                }
-            }
-        }
+        // The VU meter, spectrum bars, and oscilloscope are drawn by the sound_viz
+        // loop (it eases the low-rate device feed to a smooth framerate). update()
+        // still owns the mic-test VU below and all the non-canvas DOM here.
 
         // Mic VU meter (only when testing)
         if s.mic_testing {
@@ -1365,33 +1407,7 @@ pub fn update() {
             dom::set_style(&hint, "display", if show { "inline" } else { "none" });
         }
 
-        // Spectrum analyzer
-        if let Some(ref bins) = s.audio_spectrum {
-            if s.viz_mode == "spectrum" || s.viz_mode == "both" {
-                if let Some(canvas) = dom::get_el("spectrum-canvas") {
-                    if let Some(canvas) = canvas.dyn_ref::<web_sys::HtmlCanvasElement>() {
-                        if let Ok(Some(ctx)) = canvas.get_context("2d") {
-                            let ctx: web_sys::CanvasRenderingContext2d = ctx.unchecked_into();
-                            crate::graphics::spectrum::draw(&ctx, bins);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Oscilloscope
-        if let Some(ref waveform) = s.audio_waveform {
-            if s.viz_mode == "scope" || s.viz_mode == "both" {
-                if let Some(canvas) = dom::get_el("scope-canvas") {
-                    if let Some(canvas) = canvas.dyn_ref::<web_sys::HtmlCanvasElement>() {
-                        if let Ok(Some(ctx)) = canvas.get_context("2d") {
-                            let ctx: web_sys::CanvasRenderingContext2d = ctx.unchecked_into();
-                            crate::graphics::scope::draw(&ctx, waveform);
-                        }
-                    }
-                }
-            }
-        }
+        // (spectrum + oscilloscope canvases are animated by graphics::sound_viz)
 
         // EQ state — canvas + toggle + presets
         if let Some(ref eq) = s.eq_state {
@@ -1414,6 +1430,24 @@ pub fn update() {
                 }
             }
             update_eq_preset(eq.preset);
+
+            // Sync the Enhanced Bass quick-toggle to the live preset.
+            if let Some(el) = dom::get_el("bass-boost-toggle") {
+                if let Some(input) = el.dyn_ref::<web_sys::HtmlInputElement>() {
+                    input.set_checked(eq.preset == Some(EqPreset::BassBoost));
+                }
+            }
+
+            // "Custom" badge: lit when the curve is hand-edited (no preset) and
+            // actually deviates from flat.
+            if let Some(badge) = dom::get_el("eq-custom-badge") {
+                let custom = eq.preset.is_none() && eq.bands.iter().any(|b| b.gain_cb != 0);
+                dom::set_style(
+                    &badge,
+                    "display",
+                    if custom { "inline-flex" } else { "none" },
+                );
+            }
         }
 
         // DRC state
@@ -1424,18 +1458,14 @@ pub fn update() {
                     input.set_checked(drc.enabled);
                 }
             }
-            // Band parameters
-            for (i, band) in drc.bands.iter().enumerate() {
-                set_drc_slider(&format!("drc-thresh-{}", i), band.threshold_db as i32, "dB");
-                set_drc_slider(&format!("drc-ratio-{}", i), band.ratio_x10 as i32, "");
-                set_drc_slider(&format!("drc-attack-{}", i), band.attack_ms as i32, "ms");
-                set_drc_slider(&format!("drc-release-{}", i), band.release_ms as i32, "ms");
-            }
+            // Single-band compressor — engine applies only the Mid band.
+            let band = &drc.bands[1];
+            set_drc_slider("drc-thresh-1", band.threshold_db as i32, "dB");
+            set_drc_slider("drc-ratio-1", band.ratio_x10 as i32, "");
+            set_drc_slider("drc-attack-1", band.attack_ms as i32, "ms");
+            set_drc_slider("drc-release-1", band.release_ms as i32, "ms");
             // Preset highlighting
             update_drc_preset(drc.preset);
-            // Crossover sliders
-            set_drc_slider("drc-xover-lm", drc.low_mid_hz as i32, "Hz");
-            set_drc_slider("drc-xover-mh", drc.mid_high_hz as i32, "Hz");
         }
 
         // DSP info
@@ -1444,7 +1474,7 @@ pub fn update() {
                 dom::set_text(&el, &format!("Version: {}", dsp.version));
             }
             if let Some(el) = dom::get_el("dsp-hybridflow") {
-                dom::set_text(&el, &format!("HF: {}", dsp.hybridflow));
+                dom::set_text(&el, &format!("DAC: Program {}", dsp.hybridflow));
             }
             if let Some(el) = dom::get_el("mic-mute-toggle") {
                 if let Some(input) = el.dyn_ref::<web_sys::HtmlInputElement>() {

@@ -76,6 +76,21 @@ where
     cb.forget();
 }
 
+/// Bind a keydown handler (for roving-tabindex / arrow-key controls on
+/// role=slider and role=radio overlays).
+pub fn on_keydown<F>(el: &Element, f: F)
+where
+    F: FnMut(web_sys::KeyboardEvent) + 'static,
+{
+    let mut f = f;
+    let cb = Closure::wrap(Box::new(move |e: web_sys::KeyboardEvent| {
+        f(e);
+    }) as Box<dyn FnMut(_)>);
+    el.add_event_listener_with_callback("keydown", cb.as_ref().unchecked_ref())
+        .unwrap();
+    cb.forget();
+}
+
 pub fn on_input<F>(el: &Element, f: F)
 where
     F: FnMut(String) + 'static,
@@ -122,6 +137,15 @@ pub fn el(tag: &str, class: &str, text: Option<&str>) -> Element {
     if let Some(t) = text {
         e.set_text_content(Some(t));
     }
+    e
+}
+
+/// A small "?" help marker with a native hover/long-press tooltip. Append it
+/// inside a label to explain jargon without cluttering the layout.
+pub fn hint(tooltip: &str) -> Element {
+    let e = el("span", "hint", Some("?"));
+    set_attr(&e, "title", tooltip);
+    set_attr(&e, "aria-label", tooltip);
     e
 }
 

@@ -56,6 +56,14 @@ pub enum BtAction {
     Connect { addr: String },
     Disconnect { addr: String },
     Forget { addr: String },
+    /// Change the Bluetooth name this speaker advertises ("visible as").
+    SetName { name: String },
+    /// AVRCP transport control to the connected source: "play", "pause",
+    /// "next", "prev", or "stop".
+    Transport { key: String },
+    /// Ask the speaker to (re)broadcast its current BtStatus now, so a freshly
+    /// opened dashboard fills in immediately instead of waiting for the next tick.
+    RequestStatus,
 }
 
 /// Single LED animation frame (13 LEDs: 12 ring + 1 center).
@@ -240,7 +248,14 @@ pub enum DrcPreset {
     Protect,
 }
 
-/// Full DRC state broadcast to dashboard
+/// Full DRC state broadcast to dashboard.
+///
+/// ponytail: the software compressor is single-band — only `bands[1]` (Mid) is
+/// applied to audio (see `SharedDrcParams::update_from_state` in the firmware).
+/// `bands[0]`/`bands[2]` and the `low_mid_hz`/`mid_high_hz` crossover fields are
+/// vestigial: kept so the wire/config shape stays stable and as scaffolding for
+/// a future true-multiband engine. The dashboard renders/sends only the one
+/// band. Upgrade path = a real Linkwitz-Riley split feeding three processors.
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DrcState {
     pub bands: [DrcBandConfig; 3],
@@ -344,6 +359,73 @@ pub enum BtEvent {
         addr: String,
         rssi: i16,
     },
+}
+
+/// The currently-connected A2DP source.
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BtConnectedDevice {
+    pub name: String,
+    pub addr: String,
+    /// Negotiated codec, e.g. "SBC", "aptX", "aptX HD".
+    pub codec: String,
+}
+
+/// A bonded device in the paired list. `name` is the friendly name learned on a
+/// past connection (persisted by the speaker); empty if never seen, in which
+/// case the dashboard falls back to the address.
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BtPairedDevice {
+    pub addr: String,
+    #[serde(default)]
+    pub name: String,
+}
+
+/// Persistent Bluetooth status (broadcast on connect/disconnect/stream changes
+/// and rebroadcast periodically so late-joining dashboards catch up).
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BtStatus {
+    /// The connected source, or `None` when discoverable/idle.
+    pub connected: Option<BtConnectedDevice>,
+    /// True while audio is actively streaming (false when paused/suspended).
+    pub playing: bool,
+    /// Bonded devices (address + persisted friendly name). Lets the UI offer
+    /// per-device reconnect/forget with a readable label.
+    #[serde(default)]
+    pub paired: Vec<BtPairedDevice>,
+    /// The Bluetooth name this speaker advertises ("visible as" on phones).
+    #[serde(default)]
+    pub name: String,
+}
+
+/// Now-playing metadata pulled from the source over AVRCP (Controller role).
+/// Empty strings where the source didn't supply a field; an all-empty track
+/// means "nothing playing / cleared".
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BtTrack {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub artist: String,
+    #[serde(default)]
+    pub album: String,
+}
+
+impl BtTrack {
+    /// True when there's no usable metadata (used to hide the now-playing card).
+    pub fn is_empty(&self) -> bool {
+        self.title.is_empty() && self.artist.is_empty() && self.album.is_empty()
+    }
+}
+
+/// Playback position/duration for the connected source, in milliseconds.
+/// `duration_ms == 0` means unknown (live stream or source didn't report) —
+/// the dashboard then shows elapsed time without a total or bar.
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BtPlayStatus {
+    #[serde(default)]
+    pub position_ms: u32,
+    #[serde(default)]
+    pub duration_ms: u32,
 }
 
 /// Network state
@@ -469,12 +551,15 @@ pub struct GroupStatus {
     pub group_name: String,
     pub role: String,
     pub peers: Vec<PeerInfo>,
-    pub buffer_ms: u16,
     pub channel: String,
     #[serde(default)]
     pub party_mode: bool,
     #[serde(default)]
     pub volume: u8,
+    #[serde(default)]
+    pub coordinator_id: String,
+    #[serde(default)]
+    pub zone_name: String,
 }
 
 /// Firmware -> Dashboard messages
@@ -485,6 +570,11 @@ pub enum ServerMsg {
     SubsystemStatus(SubsystemSnapshot),
     TrackChanged(TrackInfo),
     BluetoothEvent(BtEvent),
+    BluetoothStatus(BtStatus),
+    /// AVRCP now-playing metadata for the connected source.
+    BluetoothTrack(BtTrack),
+    /// AVRCP playback position/duration for the connected source.
+    BluetoothPlayStatus(BtPlayStatus),
     VolumeChanged {
         source: SourceId,
         level: u8,
@@ -559,6 +649,10 @@ pub enum ClientMsg {
     BluetoothControl(BtAction),
     SetLed(LedAnimation),
     SetWifi(WifiCredentials),
+    /// Raise/lower explicit AP demand (host AP for grouping, or manual). The
+    /// firmware reconfigures the single radio so AP+STA coexist on a non-DFS
+    /// channel. JSON: `{"type":"SetApRequested","data":true}`.
+    SetApRequested(bool),
     SetDebugMode {
         subsystem: String,
         mode: DebugMode,
@@ -577,10 +671,6 @@ pub enum ClientMsg {
     SetDrc {
         band: DrcBand,
         config: DrcBandConfig,
-    },
-    SetDrcCrossover {
-        low_mid_hz: u16,
-        mid_high_hz: u16,
     },
     SetDrcEnabled(bool),
     SetDrcPreset(DrcPreset),
@@ -616,11 +706,13 @@ pub enum ClientMsg {
     // Group controls
     SetGroupEnabled(bool),
     SetGroupChannel(String),
-    SetGroupBufferMs(u16),
     SetGroupName(String),
     SetGroupVolume(u8),
     SetPartyMode(bool),
     RequestGroupStatus,
+    /// Re-broadcast EQ, DRC, and DSP state. Sent by the dashboard on connect so
+    /// the Sound tab populates even when it opens after the audio subsystem booted.
+    RequestAudioState,
     // Mic test
     StartMicTest,
     StopMicTest,
@@ -635,6 +727,12 @@ pub struct EncoreConfig {
     pub bluetooth_volume: u8,
     pub tts_duck_percent: u8,
     pub volume_ring_step: u8,
+    /// Loudness cap: the loudest permitted DAC digital-volume register (lower =
+    /// louder). Dashboard-editable; always clamped to the firmware's hard safety
+    /// floor (MIN_SAFE_VOLUME_REG) downstream in `volume_to_reg`, so a reckless
+    /// value can only ever make the speaker quieter than that floor, never louder.
+    #[serde(default = "crate::config::default_max_volume_reg")]
+    pub max_volume_reg: u8,
     pub spotify_enabled: bool,
     pub spotify_bitrate: String,
     pub spotify_gapless: bool,
@@ -643,6 +741,7 @@ pub struct EncoreConfig {
     pub spotify_normalisation_pregain_db: f32,
     pub bluetooth_enabled: bool,
     pub bluetooth_discoverable: bool,
+    pub bluetooth_mesh_enabled: bool,
     pub homeassistant_enabled: bool,
     pub mqtt_host: Option<String>,
     pub mqtt_port: Option<u16>,
@@ -667,7 +766,6 @@ pub struct EncoreConfig {
     pub group_enabled: bool,
     pub group_name: String,
     pub group_channel: String,
-    pub group_buffer_ms: u16,
     #[serde(default)]
     pub group_peers: Vec<String>,
     pub debug_mode: String,
@@ -690,6 +788,7 @@ impl EncoreConfig {
             bluetooth_volume: cfg.audio.bluetooth_volume,
             tts_duck_percent: cfg.audio.tts_duck_percent,
             volume_ring_step: cfg.audio.volume_ring_step,
+            max_volume_reg: cfg.audio.max_volume_reg,
             spotify_enabled: cfg.spotify.enabled,
             spotify_bitrate: cfg.spotify.bitrate.clone(),
             spotify_gapless: cfg.spotify.gapless,
@@ -698,6 +797,7 @@ impl EncoreConfig {
             spotify_normalisation_pregain_db: cfg.spotify.normalisation_pregain_db,
             bluetooth_enabled: cfg.bluetooth.enabled,
             bluetooth_discoverable: cfg.bluetooth.discoverable,
+            bluetooth_mesh_enabled: cfg.bluetooth.mesh_enabled,
             homeassistant_enabled: cfg.homeassistant.enabled,
             mqtt_host: cfg.homeassistant.mqtt_host.clone(),
             mqtt_port: cfg.homeassistant.mqtt_port,
@@ -722,7 +822,6 @@ impl EncoreConfig {
             group_enabled: cfg.group.enabled,
             group_name: cfg.group.group_name.clone(),
             group_channel: cfg.group.channel.clone(),
-            group_buffer_ms: cfg.group.buffer_ms,
             group_peers: cfg.group.peers.clone(),
             debug_mode: cfg.debug.default_mode.clone(),
         }
@@ -753,6 +852,10 @@ impl EncoreConfig {
                 idle_timeout_secs: existing.audio.idle_timeout_secs,
                 standby_timeout_secs: existing.audio.standby_timeout_secs,
                 dsp_power_gate: existing.audio.dsp_power_gate,
+                eq_boot_preset: existing.audio.eq_boot_preset.clone(),
+                // Loudness cap is now dashboard-editable; persist the chosen value.
+                // The hard safety floor is enforced downstream in volume_to_reg.
+                max_volume_reg: self.max_volume_reg,
             },
             eq: existing.eq.clone(),
             drc: existing.drc.clone(),
@@ -768,6 +871,7 @@ impl EncoreConfig {
             bluetooth: BluetoothConfig {
                 enabled: self.bluetooth_enabled,
                 discoverable: self.bluetooth_discoverable,
+                mesh_enabled: self.bluetooth_mesh_enabled,
             },
             homeassistant: HomeAssistantConfig {
                 enabled: self.homeassistant_enabled,
@@ -812,7 +916,6 @@ impl EncoreConfig {
                 enabled: self.group_enabled,
                 group_name: self.group_name.clone(),
                 channel: self.group_channel.clone(),
-                buffer_ms: self.group_buffer_ms,
                 peer_id: existing.group.peer_id.clone(),
                 peers: self.group_peers.clone(),
                 party_mode: existing.group.party_mode,
@@ -821,6 +924,8 @@ impl EncoreConfig {
                 default_mode: self.debug_mode.clone(),
                 overrides: existing.debug.overrides.clone(),
             },
+            // Sense is not dashboard-editable; preserve whatever is on disk.
+            sense: existing.sense.clone(),
         }
     }
 }
@@ -1288,7 +1393,7 @@ mod tests {
             ServerMsg::DrcState(DrcState::default()),
             ServerMsg::DspInfo(DspInfo {
                 version: "1.0".into(),
-                hybridflow: 6,
+                hybridflow: 1,
                 mic_muted: false,
                 dsp_volume: 80,
             }),
@@ -1387,10 +1492,6 @@ mod tests {
                 band: DrcBand::Low,
                 config: DrcBandConfig::default(),
             },
-            ClientMsg::SetDrcCrossover {
-                low_mid_hz: 200,
-                mid_high_hz: 2000,
-            },
             ClientMsg::SetDrcEnabled(false),
             ClientMsg::SetDrcPreset(DrcPreset::Off),
             ClientMsg::SetDspVolume(80),
@@ -1411,6 +1512,7 @@ mod tests {
             },
             ClientMsg::DspPollEvents,
             ClientMsg::RequestNetworkState,
+            ClientMsg::RequestAudioState,
             ClientMsg::SetCustomAnimation {
                 frames: vec![LedFrame {
                     colors: [(255, 0, 0); 13],
@@ -1494,6 +1596,8 @@ mod tests {
                 idle_timeout_secs: 10,
                 standby_timeout_secs: 120,
                 dsp_power_gate: true,
+                eq_boot_preset: None,
+                max_volume_reg: 0x30,
             },
             eq: crate::config::EqConfig::default(),
             drc: crate::config::DrcConfig::default(),
@@ -1507,6 +1611,7 @@ mod tests {
             bluetooth: crate::config::BluetoothConfig {
                 enabled: true,
                 discoverable: false,
+                mesh_enabled: false,
             },
             homeassistant: crate::config::HomeAssistantConfig {
                 enabled: true,
@@ -1535,6 +1640,7 @@ mod tests {
                 default_mode: "trace".into(),
                 ..Default::default()
             },
+            sense: crate::config::SenseConfig::default(),
         };
 
         let proto = EncoreConfig::from_file(&file_cfg);
@@ -1586,18 +1692,23 @@ mod tests {
                 is_relay: false,
                 instability_score: 3,
             }],
-            buffer_ms: 80,
             channel: "stereo".into(),
             party_mode: true,
             volume: 65,
+            coordinator_id: "abc-123".into(),
+            zone_name: "Living Room".into(),
         };
         let rt: GroupStatus = rkyv_rt!(&status, GroupStatus);
         assert_eq!(rt.group_name, "Living Room");
         assert!(rt.party_mode);
         assert_eq!(rt.volume, 65);
+        assert_eq!(rt.coordinator_id, "abc-123");
+        assert_eq!(rt.zone_name, "Living Room");
         let jrt: GroupStatus = json_rt!(&status, GroupStatus);
         assert!(jrt.party_mode);
         assert_eq!(jrt.volume, 65);
+        assert_eq!(jrt.coordinator_id, "abc-123");
+        assert_eq!(jrt.zone_name, "Living Room");
     }
 
     #[test]
@@ -1923,13 +2034,14 @@ mod tests {
     fn dsp_info_round_trip() {
         let info = DspInfo {
             version: "1.2.3".into(),
-            hybridflow: 6,
+            hybridflow: 1,
             mic_muted: false,
             dsp_volume: 80,
         };
         let rt: DspInfo = rkyv_rt!(&info, DspInfo);
         assert_eq!(rt.version, "1.2.3");
-        assert_eq!(rt.hybridflow, 6);
+        // (DAC runs Program 1; hybridflow is a legacy field name for the DAC program)
+        assert_eq!(rt.hybridflow, 1);
         let jrt: DspInfo = json_rt!(&info, DspInfo);
         assert_eq!(jrt.dsp_volume, 80);
     }
@@ -2045,6 +2157,91 @@ mod tests {
         assert_eq!(
             merged.debug.overrides.get("audio").map(|s| s.as_str()),
             Some("trace")
+        );
+    }
+
+    #[test]
+    fn loudness_cap_round_trips_and_is_now_editable() {
+        use crate::config::*;
+        // The loudness cap is now dashboard-editable: to_file_merge must persist the
+        // chosen value rather than preserving the existing one, and it must survive a
+        // file -> protocol -> file round trip. Regression guard — this is a safety
+        // knob, so an accidental reset to a louder default would matter.
+        let mut proto = EncoreConfig::from_file(&EncoreConfigFile::default());
+        proto.max_volume_reg = 0x42;
+        let existing = EncoreConfigFile {
+            audio: AudioConfig {
+                max_volume_reg: 0x20, // a different value on the existing file
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let merged = proto.to_file_merge(&existing);
+        assert_eq!(
+            merged.audio.max_volume_reg, 0x42,
+            "the chosen loudness cap must be persisted, not the existing value"
+        );
+        assert_eq!(EncoreConfig::from_file(&merged).max_volume_reg, 0x42);
+    }
+
+    #[test]
+    fn every_editable_field_survives_proto_file_proto_round_trip() {
+        // EncoreConfig <-> EncoreConfigFile is 40+ fields hand-wired through both
+        // from_file and to_file_merge. Forgetting either side silently drops a
+        // dashboard setting on save. This guard sets every editable field to a
+        // distinct NON-default value, then checks proto -> file -> proto is an
+        // identity: merging onto EncoreConfigFile::default() means any field that
+        // either function fails to carry reverts to its default and mismatches.
+        let proto = EncoreConfig {
+            device_name: "RoundTrip-Dev".into(),
+            master_volume: 11,
+            spotify_volume: 22,
+            bluetooth_volume: 33,
+            tts_duck_percent: 44,
+            volume_ring_step: 5,
+            max_volume_reg: 0x28,
+            spotify_enabled: false,
+            spotify_bitrate: "160".into(),
+            spotify_gapless: false,
+            spotify_normalisation: true,
+            spotify_normalisation_type: "album".into(),
+            spotify_normalisation_pregain_db: -3.5,
+            bluetooth_enabled: false,
+            bluetooth_discoverable: false,
+            bluetooth_mesh_enabled: true,
+            homeassistant_enabled: true,
+            mqtt_host: Some("mqtt.host".into()),
+            mqtt_port: Some(1884),
+            mqtt_user: Some("mqtt-user".into()),
+            mqtt_password: Some("mqtt-pass".into()),
+            wyoming_enabled: true,
+            wyoming_host: Some("wyo.host".into()),
+            wyoming_port: Some(10301),
+            wifi_ssid: Some("wifi-ssid".into()),
+            wifi_password: Some("wifi-pass".into()),
+            ap_keep_alive: false,
+            ap_ssid: Some("ap-ssid".into()),
+            ap_password: Some("ap-pass".into()),
+            vpn_enabled: true,
+            vpn_private_key: Some("vpn-pk".into()),
+            vpn_address: Some("10.9.0.2/32".into()),
+            vpn_peer_public_key: Some("vpn-ppk".into()),
+            vpn_peer_preshared_key: Some("vpn-psk".into()),
+            vpn_peer_endpoint: Some("vpn.host:51820".into()),
+            vpn_peer_allowed_ips: Some("0.0.0.0/0".into()),
+            vpn_persistent_keepalive: 31,
+            group_enabled: true,
+            group_name: "Party".into(),
+            group_channel: "left".into(),
+            group_peers: vec!["peer-a".into(), "peer-b".into()],
+            debug_mode: "trace".into(),
+        };
+        let file = proto.to_file_merge(&crate::config::EncoreConfigFile::default());
+        let proto2 = EncoreConfig::from_file(&file);
+        assert_eq!(
+            format!("{proto:?}"),
+            format!("{proto2:?}"),
+            "an editable field was dropped in from_file or to_file_merge"
         );
     }
 }

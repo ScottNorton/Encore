@@ -3,6 +3,7 @@
 //! Handles discovery, clock sync, leader election, audio streaming,
 //! and follower playback for groups of Harman Kardon Invoke speakers on the same LAN.
 
+pub mod buffer_ctl;
 pub mod clock;
 pub mod discovery;
 pub mod election;
@@ -39,8 +40,6 @@ pub enum GroupCmd {
     LocalAudioStopped { source: String },
     /// Update channel assignment from web UI.
     SetChannel(ChannelAssignment),
-    /// Update buffer depth from web UI.
-    SetBufferMs(u16),
     /// Update group name from web UI.
     SetGroupName(String),
     /// Enable/disable group mode.
@@ -53,6 +52,26 @@ pub enum GroupCmd {
     PlayPause { action: String },
     /// Toggle party mode (accept streams from any group).
     SetPartyMode(bool),
+}
+
+/// Guard a freshly-elected leader waits before activating its audio tap, so a
+/// previous leader's stream has drained from followers before ours begins
+/// (one heartbeat). Prevents a brief two-streams overlap during a handoff.
+const LEADER_TAP_GUARD: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Derive a stable small id for a leader from its peer_id (FNV-1a/32).
+///
+/// Tagged onto every audio chunk so a follower can accept only its current
+/// leader's stream; a brief two-leaders window then can never merge streams.
+pub fn leader_fnv(peer_id: &str) -> u32 {
+    const OFFSET: u32 = 0x811c_9dc5;
+    const PRIME: u32 = 0x0100_0193;
+    let mut hash = OFFSET;
+    for b in peer_id.as_bytes() {
+        hash ^= *b as u32;
+        hash = hash.wrapping_mul(PRIME);
+    }
+    hash
 }
 
 /// State machine for this speaker's role in the group.
@@ -103,7 +122,9 @@ pub struct GroupSubsystem {
     group_name: String,
     /// Channel assignment for this speaker.
     channel: ChannelAssignment,
-    /// Jitter buffer depth in ms.
+    /// Playout lead in ms. No longer a user setting: seeded from the
+    /// [`buffer_ctl::BufferCtl`] default. The leader uses it as the play-at
+    /// lead; the follower sizes its jitter buffer from it.
     buffer_ms: u16,
     /// Whether group mode is enabled.
     enabled: bool,
@@ -138,6 +159,18 @@ pub struct GroupSubsystem {
 
     /// mDNS discovery channel: receives discovered group peers.
     discovery_rx: Option<mpsc::Receiver<discovery::DiscoveryEvent>>,
+
+    /// Spotify-zone advertise signal: (advertise, zone_name). Forwarded by main.rs
+    /// to the network subsystem's mDNS responder. Kept as a plain tuple so this
+    /// (host-compilable) module never references the cfg(linux) `network` types.
+    zone_tx: Option<mpsc::Sender<(bool, String)>>,
+
+    /// Tells the BT subsystem the mesh name: `Some(group_name)` when grouped and
+    /// mesh is on (so the group looks like one BT device), `None` to revert to
+    /// the speaker's own name.
+    bt_name_tx: Option<mpsc::Sender<Option<String>>>,
+    /// Whether Bluetooth mesh mode is on.
+    mesh_enabled: bool,
 }
 
 impl GroupSubsystem {
@@ -146,7 +179,6 @@ impl GroupSubsystem {
         device_name: String,
         group_name: String,
         channel: ChannelAssignment,
-        buffer_ms: u16,
         enabled: bool,
         network_slot: Arc<MixerSlot>,
         network_tap: Arc<MixerSlot>,
@@ -160,7 +192,13 @@ impl GroupSubsystem {
             device_name,
             group_name,
             channel,
-            buffer_ms,
+            // Seed the playout lead from the controller's default. The buffer is
+            // no longer a user knob; BufferCtl owns it internally.
+            // ponytail: static default for now. The leader->follower
+            // target_lead_us broadcast and the adaptive underrun/jitter feedback
+            // loop (BufferCtl::observe/on_underrun/on_clean_decay_tick driven by
+            // live device measurements) are device integration, out of scope here.
+            buffer_ms: (buffer_ctl::BufferCtl::new().target_lead_us() / 1000) as u16,
             enabled,
             bootstrap_peers,
             party_mode,
@@ -174,7 +212,20 @@ impl GroupSubsystem {
             ws_tx: None,
             spotify_cmd_tx: None,
             discovery_rx: None,
+            zone_tx: None,
+            bt_name_tx: None,
+            mesh_enabled: false,
         }
+    }
+
+    /// Set the channel that tells the BT subsystem the mesh name.
+    pub fn set_bt_name_tx(&mut self, tx: mpsc::Sender<Option<String>>) {
+        self.bt_name_tx = Some(tx);
+    }
+
+    /// Enable/disable Bluetooth mesh mode (advertise the group name when grouped).
+    pub fn set_mesh_enabled(&mut self, on: bool) {
+        self.mesh_enabled = on;
     }
 
     /// Add a suspend channel for an audio source subsystem.
@@ -202,7 +253,14 @@ impl GroupSubsystem {
         self.discovery_rx = Some(rx);
     }
 
+    /// Set the Spotify-zone advertise signal sender.
+    pub fn set_zone_tx(&mut self, tx: mpsc::Sender<(bool, String)>) {
+        self.zone_tx = Some(tx);
+    }
+
     /// Suspend all local audio sources (entering follower mode).
+    // ponytail: real follower source-suspension (call this on follower entry) is
+    // device step 11, see docs/superpowers/specs/2026-06-17-group-sync-hardening-design.md.
     #[allow(dead_code)]
     async fn suspend_sources(&self) {
         for tx in &self.suspend_txs {
@@ -211,6 +269,8 @@ impl GroupSubsystem {
     }
 
     /// Resume all local audio sources (leaving follower mode).
+    // ponytail: real follower source-resumption (call this on standalone return) is
+    // device step 11, see docs/superpowers/specs/2026-06-17-group-sync-hardening-design.md.
     #[allow(dead_code)]
     async fn resume_sources(&self) {
         for tx in &self.suspend_txs {
@@ -220,6 +280,17 @@ impl GroupSubsystem {
 
     /// Broadcast group status to WebSocket clients.
     fn broadcast_status(&self, role: GroupRole, peers: &HashMap<String, ConnectedPeer>) {
+        // Tell the BT subsystem the mesh name on every state change: the group
+        // name when we're grouped and mesh is on, else revert to our own name.
+        if let Some(ref tx) = self.bt_name_tx {
+            let mesh_name = if self.mesh_enabled && !peers.is_empty() {
+                Some(self.group_name.clone())
+            } else {
+                None
+            };
+            let _ = tx.try_send(mesh_name);
+        }
+
         let Some(ref ws) = self.ws_tx else { return };
 
         let peer_infos: Vec<encore_common::protocol::PeerInfo> = peers
@@ -249,6 +320,14 @@ impl GroupSubsystem {
             })
             .collect();
 
+        let coordinator_id =
+            election::choose_coordinator(self.peer_id.as_str(), peers.keys().map(|s| s.as_str()));
+        let zone_name = if self.group_name.is_empty() {
+            self.device_name.clone()
+        } else {
+            self.group_name.clone()
+        };
+
         let status = encore_common::protocol::GroupStatus {
             enabled: self.enabled,
             group_name: self.group_name.clone(),
@@ -258,7 +337,6 @@ impl GroupSubsystem {
                 GroupRole::Follower => "follower".into(),
             },
             peers: peer_infos,
-            buffer_ms: self.buffer_ms,
             channel: match self.channel {
                 ChannelAssignment::Stereo => "stereo".into(),
                 ChannelAssignment::Left => "left".into(),
@@ -266,11 +344,49 @@ impl GroupSubsystem {
             },
             party_mode: self.party_mode,
             volume: self.volume,
+            coordinator_id,
+            zone_name,
         };
 
         let msg = encore_common::protocol::ServerMsg::GroupStatus(status);
         if let Ok(json) = serde_json::to_string(&msg) {
             let _ = ws.send(json);
+        }
+    }
+
+    /// Persist group-mode on/off so a deliberate leave (or join) survives reboot.
+    /// Reuses the existing `group.enabled` flag — false means "a human turned
+    /// group mode off", which the startup gate and the auto-connect guards honor.
+    fn persist_enabled(&self, enabled: bool) {
+        let config_path = std::path::Path::new("/lsync/encore/config.toml");
+        if let Ok(mut cfg) = encore_common::config::EncoreConfigFile::load(config_path) {
+            cfg.group.enabled = enabled;
+            let _ = cfg.save(config_path);
+        }
+    }
+
+    /// Compute the desired Spotify-zone advertise state and send it only when it
+    /// actually changed (edge-triggered) to avoid churning the mDNS responder.
+    fn emit_zone_if_changed(
+        &self,
+        peers: &HashMap<String, ConnectedPeer>,
+        last: &mut Option<(bool, String)>,
+    ) {
+        let coord =
+            election::choose_coordinator(self.peer_id.as_str(), peers.keys().map(|s| s.as_str()));
+        let is_coord = coord == self.peer_id;
+        let desired = election::decide_spotify_zone(
+            self.enabled,
+            !peers.is_empty(),
+            is_coord,
+            &self.group_name,
+            &self.device_name,
+        );
+        if last.as_ref() != Some(&desired) {
+            if let Some(ref tx) = self.zone_tx {
+                let _ = tx.try_send(desired.clone());
+            }
+            *last = Some(desired);
         }
     }
 
@@ -326,8 +442,10 @@ impl GroupSubsystem {
     fn apply_election_result(
         our_id: &str,
         winner_id: &str,
+        winner_score: u64,
         election_id: u32,
         source: &str,
+        election_state: &mut ElectionState,
         role: &mut GroupRole,
         leader_id: &mut Option<String>,
         peer_mgr: &mut PeerManager,
@@ -339,11 +457,18 @@ impl GroupSubsystem {
         buffer_ms: u64,
         network_slot: &Arc<MixerSlot>,
         jitter_buffer: &mut JitterBuffer,
+        drift_ctl: &mut follower::DriftController,
+        shared_targets: &leader::SharedTargets,
     ) {
         info!(
             "Group: election {} result: winner={} source={}",
             election_id, winner_id, source
         );
+
+        // Record the agreed leader as the incumbent so the next election applies
+        // hysteresis on-device (keep the leader unless beaten by >20%). Without
+        // this production call the stickiness only ever fires in tests.
+        election_state.set_incumbent(Some((winner_id.to_string(), winner_score)));
 
         if winner_id == our_id {
             // We won — become leader (election scoring already ensures audio source wins)
@@ -352,16 +477,27 @@ impl GroupSubsystem {
                 *role = GroupRole::Leader;
                 *leader_id = None;
 
-                tap_active.store(true, Ordering::Relaxed);
+                // Publish the live follower set; the streaming task reads it
+                // fresh each tick so membership changes take effect immediately.
+                shared_targets.set(Self::target_addrs(peers));
+
                 let tap = network_tap.clone();
                 let active = tap_active.clone();
                 let sock = udp_socket.clone();
-                let addrs: Vec<std::net::SocketAddr> = peers
-                    .values()
-                    .map(|p| std::net::SocketAddr::new(p.address, peer::GROUP_AUDIO_PORT))
-                    .collect();
+                let targets = shared_targets.clone();
+                let our_fnv = leader_fnv(our_id);
                 *leader_task_handle = Some(tokio::spawn(async move {
-                    leader::leader_stream_task(tap, active, sock, addrs, buffer_ms).await;
+                    // A freshly-elected leader waits one guard interval before
+                    // activating the tap, so a previous leader's stream has
+                    // drained from followers before ours starts. Activate the tap
+                    // only *after* the guard, immediately before the stream loop —
+                    // otherwise the mixer pushes ~5s of audio into an undrained tap
+                    // ring (silently discarded, then up to ~2s burst-sent stale at
+                    // handoff) while this task sleeps.
+                    tokio::time::sleep(LEADER_TAP_GUARD).await;
+                    active.store(true, Ordering::Relaxed);
+                    leader::leader_stream_task(tap, active, sock, targets, our_fnv, buffer_ms)
+                        .await;
                 }));
 
                 let claim = GroupPacket::LeaderClaim {
@@ -389,12 +525,22 @@ impl GroupSubsystem {
             *role = GroupRole::Follower;
             *leader_id = Some(winner_id.to_string());
             jitter_buffer.clear();
+            drift_ctl.reset();
+            jitter_buffer.set_current_leader(leader_fnv(winner_id));
             network_slot.set_active(true);
             info!(
                 "Group: election lost, entering follower mode (leader={})",
                 winner_id
             );
         }
+    }
+
+    /// Build the UDP target list (audio port) for all connected peers.
+    fn target_addrs(peers: &HashMap<String, ConnectedPeer>) -> Vec<std::net::SocketAddr> {
+        peers
+            .values()
+            .map(|p| std::net::SocketAddr::new(p.address, peer::GROUP_AUDIO_PORT))
+            .collect()
     }
 }
 
@@ -419,6 +565,7 @@ impl Subsystem for GroupSubsystem {
                         match cmd {
                             Some(GroupCmd::SetEnabled(true)) => {
                                 self.enabled = true;
+                                self.persist_enabled(true);
                                 break;
                             }
                             Some(GroupCmd::RequestStatus) => {
@@ -465,7 +612,7 @@ impl Subsystem for GroupSubsystem {
         );
 
         // Spawn UDP audio receiver task
-        let (udp_audio_tx, mut udp_audio_rx) = mpsc::channel::<(u64, Vec<i32>)>(256);
+        let (udp_audio_tx, mut udp_audio_rx) = mpsc::channel::<(u32, u32, u64, Vec<i32>)>(256);
         {
             let sock = udp_socket.clone();
             tokio::spawn(async move {
@@ -495,10 +642,14 @@ impl Subsystem for GroupSubsystem {
                         continue;
                     }
                     if let Ok(GroupPacket::AudioChunk {
-                        play_at_us, pcm, ..
+                        seq,
+                        leader_id,
+                        play_at_us,
+                        pcm,
+                        ..
                     }) = wire::decode_payload(ptype, &buf[wire::HEADER_SIZE..payload_end])
                     {
-                        let _ = udp_audio_tx.try_send((play_at_us, pcm));
+                        let _ = udp_audio_tx.try_send((seq, leader_id, play_at_us, pcm));
                     }
                 }
             });
@@ -508,11 +659,23 @@ impl Subsystem for GroupSubsystem {
         let mut role = GroupRole::Standalone;
         let mut peers: HashMap<String, ConnectedPeer> = HashMap::new();
         let mut leader_id: Option<String> = None;
+        // Last (advertise, zone_name) we pushed to the network subsystem (dedupe).
+        let mut last_advertise: Option<(bool, String)> = None;
         let mut jitter_buffer = JitterBuffer::new(self.buffer_ms, self.channel);
+        let mut drift_ctl = follower::DriftController::new();
+        // Live follower target set, re-read by the leader streaming task each
+        // tick. Updated on every membership change while we are the leader.
+        let shared_targets = leader::SharedTargets::new();
         let mut discovery_table = PeerTable::new();
         let mut active_sources: HashSet<String> = HashSet::new();
         let mut election_state = ElectionState::new();
         let uptime_start = Instant::now();
+        // Debounce leadership release: a brief source pause/resume must not drop
+        // and re-take leadership. Set when all sources stop; cleared if audio
+        // resumes before the grace elapses.
+        let mut release_leadership_at: Option<Instant> = None;
+        const LEADERSHIP_RELEASE_GRACE: std::time::Duration =
+            std::time::Duration::from_millis(1500);
         // Track peers with pending duplicate disconnect events to ignore
         let mut pending_dup_disconnects: HashMap<String, u32> = HashMap::new();
         // Reconnect queue: (peer_id, address, next_attempt_time, attempt_count)
@@ -547,6 +710,7 @@ impl Subsystem for GroupSubsystem {
         }
 
         self.broadcast_status(role, &peers);
+        self.emit_zone_if_changed(&peers, &mut last_advertise);
 
         loop {
             tokio::select! {
@@ -558,6 +722,14 @@ impl Subsystem for GroupSubsystem {
                             // Skip self-connections (shouldn't reach here after peer.rs fix, but guard)
                             if peer_id == self.peer_id {
                                 info!("Group: ignoring self-connection event");
+                                continue;
+                            }
+
+                            // Group mode off = deliberately ungrouped: reject inbound
+                            // peers too, so another node still re-dialing us can't pull
+                            // us back in. Dropping `writer` here closes the connection.
+                            if !self.enabled {
+                                info!("Group: rejecting inbound peer {} ({}) — group mode off", name, peer_id);
                                 continue;
                             }
 
@@ -616,7 +788,13 @@ impl Subsystem for GroupSubsystem {
                                 Self::handle_election_action(&action, &mut peer_mgr, &self.peer_id, our_score);
                             }
 
+                            // Keep the leader's live target set in sync with membership.
+                            if role == GroupRole::Leader {
+                                shared_targets.set(Self::target_addrs(&peers));
+                            }
+
                             self.broadcast_status(role, &peers);
+                            self.emit_zone_if_changed(&peers, &mut last_advertise);
                             ctx.health.inc_msg();
                         }
                         PeerEvent::Disconnected { peer_id } => {
@@ -654,6 +832,7 @@ impl Subsystem for GroupSubsystem {
                                     role = GroupRole::Standalone;
                                     self.network_slot.set_active(false);
                                     jitter_buffer.clear();
+                                    drift_ctl.reset();
                                 }
 
                                 // Trigger election if we have active sources and peers
@@ -673,9 +852,13 @@ impl Subsystem for GroupSubsystem {
                                 if let Some(h) = leader_task_handle.take() {
                                     h.abort();
                                 }
+                            } else if role == GroupRole::Leader {
+                                // Drop the departed peer from the leader's live target set.
+                                shared_targets.set(Self::target_addrs(&peers));
                             }
 
                             self.broadcast_status(role, &peers);
+                            self.emit_zone_if_changed(&peers, &mut last_advertise);
                             ctx.health.inc_msg();
                         }
                         PeerEvent::Packet { peer_id, packet } => {
@@ -719,6 +902,8 @@ impl Subsystem for GroupSubsystem {
                                             role = GroupRole::Follower;
                                             leader_id = Some(peer_id.clone());
                                             jitter_buffer.clear();
+                                            drift_ctl.reset();
+                                            jitter_buffer.set_current_leader(leader_fnv(&peer_id));
                                             self.network_slot.set_active(true);
                                         }
                                     } else if role != GroupRole::Follower {
@@ -726,6 +911,8 @@ impl Subsystem for GroupSubsystem {
                                         role = GroupRole::Follower;
                                         leader_id = Some(peer_id.clone());
                                         jitter_buffer.clear();
+                                        drift_ctl.reset();
+                                        jitter_buffer.set_current_leader(leader_fnv(&peer_id));
                                         self.network_slot.set_active(true);
                                         info!("Group: entered follower mode (mixed audio)");
                                     }
@@ -743,6 +930,7 @@ impl Subsystem for GroupSubsystem {
                                             role = GroupRole::Standalone;
                                             self.network_slot.set_active(false);
                                             jitter_buffer.clear();
+                                            drift_ctl.reset();
                                             // Phase 2: No resume needed — local sources were never suspended
                                             info!("Group: returned to standalone");
                                         }
@@ -752,10 +940,12 @@ impl Subsystem for GroupSubsystem {
                                     }
                                     self.broadcast_status(role, &peers);
                                 }
-                                GroupPacket::AudioChunk { play_at_us, frame_count: _, hop_count: _, pcm } => {
-                                    // Audio normally arrives via UDP, but accept via TCP as fallback
+                                GroupPacket::AudioChunk { seq, leader_id: chunk_leader, play_at_us, frame_count: _, hop_count: _, pcm } => {
+                                    // Audio normally arrives via UDP, but accept via TCP as fallback.
+                                    // `accept` drops chunks tagged with a leader id other than our
+                                    // current leader's, so a handoff can never merge two streams.
                                     if role == GroupRole::Follower {
-                                        jitter_buffer.insert(play_at_us, pcm);
+                                        jitter_buffer.accept(chunk_leader, seq, play_at_us, pcm);
                                     }
                                 }
                                 GroupPacket::Heartbeat => {
@@ -769,12 +959,17 @@ impl Subsystem for GroupSubsystem {
                                     self.broadcast_status(role, &peers);
                                 }
                                 GroupPacket::GroupConfig { .. } => {
-                                    // Remote config update (informational)
+                                    // ponytail: this is where a follower will apply
+                                    // the leader-broadcast target_lead_us once the
+                                    // device-side broadcast + adaptive feedback loop
+                                    // lands. Out of scope here; today it stays a no-op.
                                 }
                                 GroupPacket::PeerGossip { peers: gossip_peers } => {
                                     for entry in gossip_peers {
                                         // Skip ourselves
                                         if entry.peer_id == self.peer_id { continue; }
+                                        // Group mode off: don't auto-join via gossip.
+                                        if !self.enabled { continue; }
                                         // Filter by group name (unless party mode)
                                         if !self.party_mode && entry.group_name != self.group_name { continue; }
                                         // Skip already-connected peers
@@ -801,26 +996,32 @@ impl Subsystem for GroupSubsystem {
                                 }
                                 GroupPacket::ElectionVote { election_id, score, peer_id: voter_id } => {
                                     let action = election_state.handle_vote(election_id, &voter_id, score, &self.peer_id);
-                                    if let ElectionAction::Winner { election_id: eid, ref winner_id, ref source } = action {
+                                    if let ElectionAction::Winner { election_id: eid, ref winner_id, ref source, winner_score } = action {
                                         Self::apply_election_result(
-                                            &self.peer_id, winner_id, eid, source,
+                                            &self.peer_id, winner_id, winner_score, eid, source,
+                                            &mut election_state,
                                             &mut role, &mut leader_id, &mut peer_mgr, &peers,
                                             &mut leader_task_handle, &self.network_tap, &self.tap_active,
                                             &udp_socket, self.buffer_ms as u64,
                                             &self.network_slot, &mut jitter_buffer,
+                                            &mut drift_ctl,
+                                            &shared_targets,
                                         );
                                         self.broadcast_status(role, &peers);
                                     }
                                 }
                                 GroupPacket::ElectionResult { election_id, winner_id, source } => {
                                     let action = election_state.handle_result(election_id, &winner_id, &source);
-                                    if let ElectionAction::Winner { election_id: eid, ref winner_id, ref source } = action {
+                                    if let ElectionAction::Winner { election_id: eid, ref winner_id, ref source, winner_score } = action {
                                         Self::apply_election_result(
-                                            &self.peer_id, winner_id, eid, source,
+                                            &self.peer_id, winner_id, winner_score, eid, source,
+                                            &mut election_state,
                                             &mut role, &mut leader_id, &mut peer_mgr, &peers,
                                             &mut leader_task_handle, &self.network_tap, &self.tap_active,
                                             &udp_socket, self.buffer_ms as u64,
                                             &self.network_slot, &mut jitter_buffer,
+                                            &mut drift_ctl,
+                                            &shared_targets,
                                         );
                                         self.broadcast_status(role, &peers);
                                     }
@@ -876,9 +1077,10 @@ impl Subsystem for GroupSubsystem {
 
                 // ── UDP audio from leader (follower receives) ──
                 audio = udp_audio_rx.recv() => {
-                    if let Some((play_at_us, pcm)) = audio {
+                    if let Some((seq, chunk_leader, play_at_us, pcm)) = audio {
                         if role == GroupRole::Follower {
-                            jitter_buffer.insert(play_at_us, pcm);
+                            // Drop chunks from any leader other than our current one.
+                            jitter_buffer.accept(chunk_leader, seq, play_at_us, pcm);
                             // UDP audio proves leader is alive
                             if let Some(ref lid) = leader_id {
                                 if let Some(peer) = peers.get_mut(lid.as_str()) {
@@ -898,6 +1100,12 @@ impl Subsystem for GroupSubsystem {
                             active_sources.insert(source.clone());
                             info!("Group: local audio started ({}), active sources: {:?}", source, active_sources);
 
+                            // Audio resumed within the grace window: cancel any
+                            // pending leadership release (avoid a pause/resume flap).
+                            if release_leadership_at.take().is_some() {
+                                info!("Group: audio resumed, cancelling leadership release");
+                            }
+
                             // Audio source should always be the leader
                             if !peers.is_empty() && role != GroupRole::Leader {
                                 let avg_rtt = Self::compute_avg_rtt(&peers);
@@ -910,19 +1118,14 @@ impl Subsystem for GroupSubsystem {
                             active_sources.remove(&source);
                             info!("Group: local audio stopped ({}), active sources: {:?}", source, active_sources);
 
-                            // Only release leadership when ALL local sources stop
+                            // Only release leadership when ALL local sources stop,
+                            // and debounce it: a short source pause should not drop
+                            // and re-take leadership. Arm a grace timer; the actual
+                            // release happens on the election-check tick if audio
+                            // has not resumed by then.
                             if role == GroupRole::Leader && active_sources.is_empty() {
-                                info!("Group: all sources stopped, releasing leadership");
-                                role = GroupRole::Standalone;
-                                self.tap_active.store(false, Ordering::Relaxed);
-                                if let Some(h) = leader_task_handle.take() {
-                                    h.abort();
-                                }
-
-                                let release = GroupPacket::LeaderRelease;
-                                peer_mgr.broadcast(&release);
-
-                                self.broadcast_status(role, &peers);
+                                info!("Group: all sources stopped, arming leadership release");
+                                release_leadership_at = Some(Instant::now() + LEADERSHIP_RELEASE_GRACE);
                             }
                         }
                         GroupCmd::SetVolume(vol) => {
@@ -949,13 +1152,10 @@ impl Subsystem for GroupSubsystem {
                             peer_mgr.broadcast(&info_pkt);
                             self.broadcast_status(role, &peers);
                         }
-                        GroupCmd::SetBufferMs(ms) => {
-                            self.buffer_ms = ms;
-                            jitter_buffer.set_buffer_ms(ms);
-                        }
                         GroupCmd::SetGroupName(name) => {
                             self.group_name = name;
                             self.broadcast_status(role, &peers);
+                            self.emit_zone_if_changed(&peers, &mut last_advertise);
                         }
                         GroupCmd::RequestStatus => {
                             self.broadcast_status(role, &peers);
@@ -996,6 +1196,8 @@ impl Subsystem for GroupSubsystem {
                         }
                         GroupCmd::SetEnabled(enabled) => {
                             self.enabled = enabled;
+                            // Make the human's choice sticky across reboots.
+                            self.persist_enabled(enabled);
                             if !enabled {
                                 // Return to standalone, disconnect peers
                                 if role == GroupRole::Leader {
@@ -1007,9 +1209,19 @@ impl Subsystem for GroupSubsystem {
                                 } else if role == GroupRole::Follower {
                                     self.network_slot.set_active(false);
                                     jitter_buffer.clear();
+                                    drift_ctl.reset();
                                 }
                                 role = GroupRole::Standalone;
+                                // Actually leave: drop peer sockets and stop chasing
+                                // them, so "group mode off" doesn't silently rejoin.
+                                // (LeaderRelease above is broadcast first.)
+                                for id in peer_mgr.connected_peer_ids() {
+                                    peer_mgr.remove_writer(&id);
+                                }
+                                peers.clear();
+                                reconnect_queue.clear();
                                 self.broadcast_status(role, &peers);
+                                self.emit_zone_if_changed(&peers, &mut last_advertise);
                             } else {
                                 // Re-enabled: trigger election if we have audio and peers
                                 if !active_sources.is_empty() && !peers.is_empty() && role == GroupRole::Standalone {
@@ -1019,6 +1231,7 @@ impl Subsystem for GroupSubsystem {
                                     Self::handle_election_action(&action, &mut peer_mgr, &self.peer_id, our_score);
                                 }
                                 self.broadcast_status(role, &peers);
+                                self.emit_zone_if_changed(&peers, &mut last_advertise);
                             }
                         }
                     }
@@ -1081,8 +1294,40 @@ impl Subsystem for GroupSubsystem {
                         if let Some(ref lid) = leader_id {
                             if let Some(peer) = peers.get(lid) {
                                 let now = clock::now_us();
-                                let samples = jitter_buffer.drain_ready(now, &peer.clock);
+                                let mut samples = jitter_buffer.drain_ready(now, &peer.clock);
                                 if !samples.is_empty() {
+                                    // Buffer-fill drift control: regulate the network_slot backlog
+                                    // (the de-facto follower buffer, since the jitter buffer runs
+                                    // ~empty here) toward a target. error_us is a single-timeline
+                                    // sample count on our OWN ring -- no leader/follower clock phase
+                                    // enters it (the old cross-timeline metric read a steady ~-800ms).
+                                    const TARGET_BACKLOG_US: i64 = 150_000; // ~150ms; absorbs single-radio WiFi bursts
+                                    const COARSE_THRESH_US: i64 = 60_000; // only big excursions snap; steady-state jitter is left to the smoothed fine loop
+                                    let raw_backlog_us =
+                                        (self.network_slot.available() as i64 / 2) * 1_000_000 / 48_000;
+                                    // EMA-smooth so the loop tracks the trend, not the WiFi burst
+                                    // jitter (raw +-5ms was thrashing the coarse path every tick).
+                                    let backlog_us = drift_ctl.smoothed_backlog(raw_backlog_us);
+                                    let error_us = backlog_us - TARGET_BACKLOG_US;
+                                    drift_ctl.last_error_us = error_us; // keep group::drift telemetry truthful on coarse ticks
+                                    if peer.clock.converged() && error_us.abs() > COARSE_THRESH_US && drift_ctl.coarse_ready() {
+                                        follower::coarse_correction(error_us, &mut samples, &mut drift_ctl);
+                                        drift_ctl.reset_fine(); // coarse moved the buffer; keep the fine integrator clean
+                                    } else {
+                                        let corr = follower::drift_correction(
+                                            error_us, peer.clock.converged(), &mut drift_ctl);
+                                        if corr > 0 {
+                                            let drop = (corr as usize) * 2;
+                                            if samples.len() > drop {
+                                                samples.truncate(samples.len() - drop);
+                                            }
+                                        } else if corr < 0 && samples.len() >= 2 {
+                                            let last = [samples[samples.len() - 2], samples[samples.len() - 1]];
+                                            for _ in 0..(-corr) {
+                                                samples.extend_from_slice(&last);
+                                            }
+                                        }
+                                    }
                                     self.network_slot.push(&samples);
                                 }
                             }
@@ -1113,6 +1358,7 @@ impl Subsystem for GroupSubsystem {
                                 role = GroupRole::Standalone;
                                 self.network_slot.set_active(false);
                                 jitter_buffer.clear();
+                                drift_ctl.reset();
                             }
                             if !active_sources.is_empty() && !peers.is_empty() {
                                 let avg_rtt = Self::compute_avg_rtt(&peers);
@@ -1128,21 +1374,56 @@ impl Subsystem for GroupSubsystem {
                             if let Some(h) = leader_task_handle.take() {
                                 h.abort();
                             }
+                        } else if role == GroupRole::Leader {
+                            // Drop the evicted peer from the leader's live target set.
+                            shared_targets.set(Self::target_addrs(&peers));
                         }
                         self.broadcast_status(role, &peers);
                     }
+                    self.emit_zone_if_changed(&peers, &mut last_advertise);
                 }
 
                 // ── Election timeout check ──
                 _ = election_check_interval.tick() => {
+                    // Debounced leadership release: if the grace has elapsed and
+                    // audio is still stopped while we are leader, release now.
+                    if let Some(deadline) = release_leadership_at {
+                        if Instant::now() >= deadline {
+                            release_leadership_at = None;
+                            if role == GroupRole::Leader && active_sources.is_empty() {
+                                info!("Group: grace elapsed, releasing leadership");
+                                role = GroupRole::Standalone;
+                                self.tap_active.store(false, Ordering::Relaxed);
+                                if let Some(h) = leader_task_handle.take() {
+                                    h.abort();
+                                }
+                                peer_mgr.broadcast(&GroupPacket::LeaderRelease);
+                                self.broadcast_status(role, &peers);
+                            }
+                        }
+                    }
+
+                    // A trigger suppressed during cooldown/active election is not
+                    // dropped: fire it now that the cooldown has elapsed.
+                    if election_state.has_pending() {
+                        let pending = election_state.poll_pending(election_state.cooldown_elapsed());
+                        if matches!(pending, ElectionAction::StartElection { .. }) {
+                            let avg_rtt = Self::compute_avg_rtt(&peers);
+                            let our_score = election::election_score(avg_rtt, uptime_start.elapsed().as_secs(), &self.peer_id, !active_sources.is_empty());
+                            Self::handle_election_action(&pending, &mut peer_mgr, &self.peer_id, our_score);
+                        }
+                    }
                     let action = election_state.check_timeout(&self.peer_id);
-                    if let ElectionAction::Winner { election_id, ref winner_id, ref source } = action {
+                    if let ElectionAction::Winner { election_id, ref winner_id, ref source, winner_score } = action {
                         Self::apply_election_result(
-                            &self.peer_id, winner_id, election_id, source,
+                            &self.peer_id, winner_id, winner_score, election_id, source,
+                            &mut election_state,
                             &mut role, &mut leader_id, &mut peer_mgr, &peers,
                             &mut leader_task_handle, &self.network_tap, &self.tap_active,
                             &udp_socket, self.buffer_ms as u64,
                             &self.network_slot, &mut jitter_buffer,
+                            &mut drift_ctl,
+                            &shared_targets,
                         );
                         self.broadcast_status(role, &peers);
                     }
@@ -1169,8 +1450,11 @@ impl Subsystem for GroupSubsystem {
                         if peers.contains_key(&disc.peer_id) {
                             continue;
                         }
-                        // Filter by group name (unless party mode)
-                        if self.party_mode || disc.group_name == self.group_name || disc.group_name.is_empty() {
+                        // Group mode off = deliberately ungrouped: never auto-join.
+                        // Filter by group name (unless party mode).
+                        if self.enabled
+                            && (self.party_mode || disc.group_name == self.group_name || disc.group_name.is_empty())
+                        {
                             info!("Group: mDNS discovered peer {} ({}) at {}", disc.name, disc.peer_id, disc.address);
                             let channel = match disc.channel.as_str() {
                                 "left" => wire::ChannelAssignment::Left,
@@ -1193,6 +1477,13 @@ impl Subsystem for GroupSubsystem {
 
                 // ── Reconnect queue: retry disconnected peers ──
                 _ = reconnect_interval.tick() => {
+                    // Group mode off: drop the queue instead of chasing peers. A
+                    // disconnect re-enqueues unconditionally, so without this a
+                    // deliberately-ungrouped speaker would re-dial on the next tick.
+                    if !self.enabled {
+                        reconnect_queue.clear();
+                        continue;
+                    }
                     let now = Instant::now();
                     let mut retry_later = VecDeque::new();
                     while let Some((pid, addr, next_at, attempts)) = reconnect_queue.pop_front() {
@@ -1220,6 +1511,8 @@ impl Subsystem for GroupSubsystem {
 
                 // ── Bootstrap peer reconnection ──
                 _ = bootstrap_interval.tick() => {
+                    // Group mode off: don't seed-connect to bootstrap peers either.
+                    if self.enabled {
                     for addr_str in &self.bootstrap_peers {
                         if let Ok(addr) = addr_str.parse::<std::net::IpAddr>() {
                             // Only reconnect if not already connected to anyone at this address
@@ -1228,6 +1521,7 @@ impl Subsystem for GroupSubsystem {
                                 peer_mgr.connect_to_peer(&format!("bootstrap-{}", addr), addr);
                             }
                         }
+                    }
                     }
                 }
 
@@ -1240,6 +1534,23 @@ impl Subsystem for GroupSubsystem {
                             .unwrap_or_default()
                             .as_secs(),
                     );
+                    // Drift telemetry: one line per ~2s status tick while following.
+                    if role == GroupRole::Follower {
+                        if let Some(peer) = leader_id.as_ref().and_then(|lid| peers.get(lid)) {
+                            info!(target: "group::drift",
+                                error_us = drift_ctl.last_error_us,
+                                offset_us = peer.clock.offset_us(),
+                                rtt_us = peer.clock.rtt_us(),
+                                skew_ppm = peer.clock.skew_ppm(),
+                                sigma_us = peer.clock.sigma_offset_us(),
+                                converged = peer.clock.converged(),
+                                depth_us = jitter_buffer.depth_us(),
+                                slot_backlog_us = (self.network_slot.available() / 2) as u64 * 1_000_000 / 48_000,
+                                skips = drift_ctl.skips,
+                                dups = drift_ctl.dups,
+                                "follower drift");
+                        }
+                    }
                 }
 
                 // ── Shutdown ──

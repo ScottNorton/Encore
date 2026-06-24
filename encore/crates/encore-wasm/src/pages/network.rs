@@ -152,10 +152,11 @@ pub fn render(container: &web_sys::Element) {
     dom::append(&iface_card, &iface_body);
     dom::append(container, &iface_card);
 
-    // ── Developer Tools ──
+    // ── Developer (collapsed by default) ──
+    // Dev-only subsystem holds, off the common WiFi path, so they start hidden.
     let dev_card = dom::create_div();
     dom::set_class(&dev_card, "card");
-    let dev_title = dom::el("div", "card-title", Some("Developer"));
+    let (dev_title, dev_body) = crate::components::collapsible::collapsible("Developer", false);
     dom::append(&dev_card, &dev_title);
 
     let subsystems = [
@@ -206,8 +207,9 @@ pub fn render(container: &web_sys::Element) {
         cb.forget();
 
         dom::append(&row, &select);
-        dom::append(&dev_card, &row);
+        dom::append(&dev_body, &row);
     }
+    dom::append(&dev_card, &dev_body);
     dom::append(container, &dev_card);
 
     update();
@@ -358,6 +360,7 @@ fn save_network_config() {
     });
 
     crate::ws::send_msg(&ClientMsg::SaveConfig(Box::new(config)));
+    crate::components::toast::info("Saved. The speaker is rebooting\u{2026}");
 
     // If SSID changed, also send SetWifi to connect immediately
     if !ssid_val.is_empty() {

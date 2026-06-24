@@ -27,6 +27,88 @@ fn format_time(ms: u32) -> String {
     format!("{}:{:02}", secs / 60, secs % 60)
 }
 
+/// "M:SS of M:SS" caption for the seek slider's `aria-valuetext` (spec a11y:
+/// the time lives on the slider on demand, not in the live region). Pure.
+fn seek_valuetext(position_ms: u32, duration_ms: u32) -> String {
+    format!(
+        "{} of {}",
+        format_time(position_ms),
+        format_time(duration_ms)
+    )
+}
+
+/// Step the seek position by `delta_secs` seconds (signed), clamped to
+/// `[0, duration_ms]`. Used by the seek overlay's arrow keys. Pure.
+fn seek_step_ms(position_ms: u32, duration_ms: u32, delta_secs: i32) -> u32 {
+    let delta_ms = delta_secs * 1000;
+    let next = position_ms as i64 + delta_ms as i64;
+    next.clamp(0, duration_ms as i64) as u32
+}
+
+/// Wire the Ovation seek overlay (`#sp-seek-overlay`, a `role="slider"` built by
+/// `ovation::render`): a pointer click maps to a seek position; arrow keys nudge
+/// by 5s. Both send `SpotifyAction::Seek`. This page owns the Seek message and
+/// the time formatting; `update()` keeps `aria-valuenow`/`aria-valuetext` synced.
+fn wire_seek_overlay() {
+    let Some(overlay) = dom::get_el("sp-seek-overlay") else {
+        return;
+    };
+
+    // Pointer: horizontal fraction across the ring maps to a seek position.
+    {
+        let cb = Closure::wrap(Box::new(move |e: web_sys::MouseEvent| {
+            if let Some(o) = dom::get_el("sp-seek-overlay") {
+                let rect = o.get_bounding_client_rect();
+                if rect.width() <= 0.0 {
+                    return;
+                }
+                let pct = ((e.client_x() as f64 - rect.left()) / rect.width()).clamp(0.0, 1.0);
+                let duration = crate::state::with(|s| {
+                    s.spotify_status
+                        .as_ref()
+                        .map(|st| st.duration_ms)
+                        .unwrap_or(0)
+                });
+                if duration > 0 {
+                    let pos = (pct * duration as f64) as u32;
+                    crate::ws::send_msg(&ClientMsg::SpotifyControl(SpotifyAction::Seek {
+                        position_ms: pos,
+                    }));
+                }
+            }
+        }) as Box<dyn FnMut(_)>);
+        overlay
+            .add_event_listener_with_callback("click", cb.as_ref().unchecked_ref())
+            .ok();
+        cb.forget();
+    }
+
+    // Arrow keys: nudge by 5s (Home/End jump to the ends). Reads live position
+    // from state so steps are relative to where the track actually is.
+    dom::on_keydown(&overlay, |e: web_sys::KeyboardEvent| {
+        let (position, duration) = crate::state::with(|s| {
+            s.spotify_status
+                .as_ref()
+                .map(|st| (st.position_ms, st.duration_ms))
+                .unwrap_or((0, 0))
+        });
+        if duration == 0 {
+            return;
+        }
+        let pos = match e.key().as_str() {
+            "ArrowRight" | "ArrowUp" => seek_step_ms(position, duration, 5),
+            "ArrowLeft" | "ArrowDown" => seek_step_ms(position, duration, -5),
+            "Home" => 0,
+            "End" => duration,
+            _ => return,
+        };
+        e.prevent_default();
+        crate::ws::send_msg(&ClientMsg::SpotifyControl(SpotifyAction::Seek {
+            position_ms: pos,
+        }));
+    });
+}
+
 fn start_position_timer() {
     stop_position_timer();
     let id = dom::set_interval(
@@ -70,8 +152,27 @@ fn update_progress_only() {
                 }
             }
             set_text_if_changed("sp-time-cur", &format_time(position));
+            sync_seek_overlay(position, duration);
         }
     });
+}
+
+/// Keep the seek slider overlay's `aria-valuenow` (0-100) and `aria-valuetext`
+/// ("M:SS of M:SS") in step with the server/interpolated position.
+fn sync_seek_overlay(position_ms: u32, duration_ms: u32) {
+    if let Some(el) = dom::get_el("sp-seek-overlay") {
+        let pct = if duration_ms > 0 {
+            (position_ms as f64 / duration_ms as f64 * 100.0).min(100.0) as u32
+        } else {
+            0
+        };
+        dom::set_attr(&el, "aria-valuenow", &pct.to_string());
+        dom::set_attr(
+            &el,
+            "aria-valuetext",
+            &seek_valuetext(position_ms, duration_ms),
+        );
+    }
 }
 
 fn get_input_value(id: &str) -> Option<String> {
@@ -112,167 +213,83 @@ fn set_text_if_changed(id: &str, text: &str) {
     }
 }
 
+/// Swap a transport button's inline-SVG glyph, but only when it actually
+/// changed (the icon swap path: play↔pause, repeat↔repeat-one). Avoids
+/// re-parsing identical SVG markup every update tick.
+fn set_icon_if_changed(id: &str, svg: &str) {
+    if let Some(el) = dom::get_el(id) {
+        if el.inner_html() != svg {
+            el.set_inner_html(svg);
+        }
+    }
+}
+
+// ── Transport icons (inline SVG, currentColor so CSS tints them gold/ember) ──
+// 24x24 viewBox to match the app's nav icons. Filled glyphs for the transport
+// affordances; the repeat/shuffle line glyphs read on the ghost buttons.
+const ICON_SHUFFLE: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7h3.5l3 4.5"/><path d="M14.5 16.5l1 1.5H21"/><path d="M3 17h3.5l11-13H21"/><path d="M18.5 2.5 21 4l-2.5 1.5"/><path d="M18.5 16 21 17.5 18.5 19"/></svg>"#;
+const ICON_PREV: &str = r#"<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 5.5a1 1 0 0 0-2 0v13a1 1 0 0 0 2 0V13l9.4 5.6a1 1 0 0 0 1.6-.86V6.26a1 1 0 0 0-1.6-.86L7 11V5.5z"/></svg>"#;
+const ICON_NEXT: &str = r#"<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M17 5.5a1 1 0 0 1 2 0v13a1 1 0 0 1-2 0V13l-9.4 5.6A1 1 0 0 1 6 17.74V6.26a1 1 0 0 1 1.6-.86L17 11V5.5z"/></svg>"#;
+const ICON_PLAY: &str = r#"<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.14v13.72a1 1 0 0 0 1.54.84l10.3-6.86a1 1 0 0 0 0-1.68L9.54 4.3A1 1 0 0 0 8 5.14z"/></svg>"#;
+const ICON_PAUSE: &str = r#"<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="4.5" width="4" height="15" rx="1"/><rect x="14" y="4.5" width="4" height="15" rx="1"/></svg>"#;
+const ICON_REPEAT: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 2.5 20.5 6 17 9.5"/><path d="M3.5 11V9.5a3.5 3.5 0 0 1 3.5-3.5h13.5"/><path d="M7 21.5 3.5 18 7 14.5"/><path d="M20.5 13v1.5a3.5 3.5 0 0 1-3.5 3.5H3.5"/></svg>"#;
+const ICON_REPEAT_ONE: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 2.5 20.5 6 17 9.5"/><path d="M3.5 11V9.5a3.5 3.5 0 0 1 3.5-3.5h13.5"/><path d="M7 21.5 3.5 18 7 14.5"/><path d="M20.5 13v1.5a3.5 3.5 0 0 1-3.5 3.5H3.5"/><path d="M11.3 16.5v-5l-1.4 1" stroke-width="1.6"/></svg>"#;
+
 pub fn render(container: &web_sys::Element) {
     stop_position_timer();
     SETTINGS_LOADED.with(|s| *s.borrow_mut() = false);
     LAST_COVER_URL.with(|s| s.borrow_mut().clear());
     VOL_DRAGGING.with(|d| *d.borrow_mut() = false);
+    // spotify::render is reused by Stage; park any stale bloom loop from a prior
+    // mount before ovation::render rebuilds the canvas.
+    crate::graphics::ovation::park();
 
     // ── Main player card ──
     let card = dom::create_div();
-    dom::set_class(&card, "card glass-card");
+    dom::set_class(&card, "card glass-card sp-card");
     card.set_id("spotify-card");
 
-    // Album art container
-    let art_wrap = dom::create_div();
-    art_wrap.set_id("sp-art-wrap");
-    dom::set_style(&art_wrap, "width", "280px");
-    dom::set_style(&art_wrap, "height", "280px");
-    dom::set_style(&art_wrap, "max-width", "100%");
-    dom::set_style(&art_wrap, "border-radius", "12px");
-    dom::set_style(&art_wrap, "margin", "0 auto 12px auto");
-    dom::set_style(&art_wrap, "overflow", "hidden");
-    dom::set_style(&art_wrap, "position", "relative");
-    // Gradient fallback
-    dom::set_style(
-        &art_wrap,
-        "background",
-        "linear-gradient(135deg, #1db954 0%, #191414 100%)",
-    );
+    // Ovation rings: builds <img id="sp-art-img"> (album center), an aria-hidden
+    // canvas for the gold progress arc + audio-reactive ray bloom, a conic
+    // #sp-progress fallback ring, the #sp-explicit badge, and a role="slider"
+    // #sp-seek-overlay. spotify::update() still finds every id it drives.
+    crate::graphics::ovation::render(&card);
 
-    // <img> element for album art (no crossorigin!)
-    let art_img = dom::create_el("img");
-    art_img.set_id("sp-art-img");
-    dom::set_attr(&art_img, "alt", "");
-    dom::set_style(&art_img, "width", "100%");
-    dom::set_style(&art_img, "height", "100%");
-    dom::set_style(&art_img, "object-fit", "cover");
-    dom::set_style(&art_img, "display", "none"); // hidden until loaded
+    // Seek a11y: the overlay carries the keyboard/pointer seek + aria-valuetext.
+    // ovation::render builds the overlay element but leaves the Seek message to
+    // this page, which owns SpotifyAction::Seek and the time formatting.
+    wire_seek_overlay();
 
-    // onload: show the image
-    {
-        let onload = Closure::wrap(Box::new(|_: web_sys::Event| {
-            web_sys::console::log_1(&"SP: album art loaded OK".into());
-            if let Some(el) = dom::get_el("sp-art-img") {
-                dom::set_style(&el, "display", "block");
-            }
-        }) as Box<dyn FnMut(_)>);
-        let _ = art_img.add_event_listener_with_callback("load", onload.as_ref().unchecked_ref());
-        onload.forget();
-    }
+    // ── Track info (aria-live so track changes are announced; time stays out) ──
+    let meta = dom::create_div();
+    meta.set_id("sp-meta");
+    dom::set_class(&meta, "sp-meta text-center");
+    dom::set_attr(&meta, "aria-live", "polite");
+    dom::set_attr(&meta, "aria-atomic", "true");
 
-    // onerror: log failure
-    {
-        let onerror = Closure::wrap(Box::new(|_: web_sys::Event| {
-            web_sys::console::error_1(&"SP: album art FAILED to load".into());
-            if let Some(el) = dom::get_el("sp-art-img") {
-                dom::set_style(&el, "display", "none");
-            }
-        }) as Box<dyn FnMut(_)>);
-        let _ = art_img.add_event_listener_with_callback("error", onerror.as_ref().unchecked_ref());
-        onerror.forget();
-    }
-
-    dom::append(&art_wrap, &art_img);
-
-    // Explicit badge
-    let explicit = dom::create_div();
-    explicit.set_id("sp-explicit");
-    dom::set_style(&explicit, "display", "none");
-    dom::set_style(&explicit, "position", "absolute");
-    dom::set_style(&explicit, "bottom", "8px");
-    dom::set_style(&explicit, "right", "8px");
-    dom::set_style(&explicit, "background", "rgba(255,255,255,0.15)");
-    dom::set_style(&explicit, "color", "#fff");
-    dom::set_style(&explicit, "font-size", "11px");
-    dom::set_style(&explicit, "font-weight", "700");
-    dom::set_style(&explicit, "padding", "2px 6px");
-    dom::set_style(&explicit, "border-radius", "3px");
-    dom::set_text(&explicit, "E");
-    dom::append(&art_wrap, &explicit);
-
-    dom::append(&card, &art_wrap);
-
-    // ── Track info ──
     let title = dom::create_div();
     title.set_id("sp-title");
-    dom::set_class(&title, "text-center");
-    dom::set_style(&title, "font-size", "18px");
-    dom::set_style(&title, "font-weight", "700");
-    dom::set_style(&title, "margin-bottom", "4px");
-    dom::set_style(&title, "white-space", "nowrap");
-    dom::set_style(&title, "overflow", "hidden");
-    dom::set_style(&title, "text-overflow", "ellipsis");
-    dom::append(&card, &title);
+    dom::set_class(&title, "sp-title");
+    dom::append(&meta, &title);
 
     let artist = dom::create_div();
     artist.set_id("sp-artist");
-    dom::set_class(&artist, "text-center text-muted");
-    dom::set_style(&artist, "white-space", "nowrap");
-    dom::set_style(&artist, "overflow", "hidden");
-    dom::set_style(&artist, "text-overflow", "ellipsis");
-    dom::append(&card, &artist);
+    dom::set_class(&artist, "sp-artist text-muted");
+    dom::append(&meta, &artist);
 
     let album_el = dom::create_div();
     album_el.set_id("sp-album");
-    dom::set_class(&album_el, "text-center text-muted text-sm mt-4");
-    dom::set_style(&album_el, "white-space", "nowrap");
-    dom::set_style(&album_el, "overflow", "hidden");
-    dom::set_style(&album_el, "text-overflow", "ellipsis");
-    dom::append(&card, &album_el);
+    dom::set_class(&album_el, "sp-album text-muted text-sm mt-4");
+    dom::append(&meta, &album_el);
 
-    // ── Progress / Seek bar ──
-    let progress_section = dom::create_div();
-    dom::set_class(&progress_section, "mt-16");
+    dom::append(&card, &meta);
 
-    let bar_wrap = dom::create_div();
-    bar_wrap.set_id("sp-bar-wrap");
-    dom::set_class(&bar_wrap, "sp-seek-wrap");
-    dom::set_style(&bar_wrap, "cursor", "pointer");
-    dom::set_style(&bar_wrap, "padding", "8px 0");
-    let track_bar = dom::create_div();
-    dom::set_class(&track_bar, "sp-seek-track");
-    let fill = dom::create_div();
-    fill.set_id("sp-progress");
-    dom::set_class(&fill, "sp-seek-fill");
-    dom::set_style(&fill, "width", "0%");
-    // Seek dot (thumb that appears on hover)
-    let seek_dot = dom::create_div();
-    dom::set_class(&seek_dot, "sp-seek-dot");
-    dom::append(&fill, &seek_dot);
-    dom::append(&track_bar, &fill);
-    dom::append(&bar_wrap, &track_bar);
-    dom::append(&progress_section, &bar_wrap);
-
-    // Seek click handler — only sends command, no state mutation
-    {
-        let bar_id = "sp-bar-wrap".to_string();
-        let cb = Closure::wrap(Box::new(move |e: web_sys::MouseEvent| {
-            if let Some(bar) = dom::get_el(&bar_id) {
-                let rect = bar.get_bounding_client_rect();
-                let pct = ((e.client_x() as f64 - rect.left()) / rect.width()).clamp(0.0, 1.0);
-                let duration = crate::state::with(|s| {
-                    s.spotify_status
-                        .as_ref()
-                        .map(|st| st.duration_ms)
-                        .unwrap_or(0)
-                });
-                if duration > 0 {
-                    let pos = (pct * duration as f64) as u32;
-                    crate::ws::send_msg(&ClientMsg::SpotifyControl(SpotifyAction::Seek {
-                        position_ms: pos,
-                    }));
-                }
-            }
-        }) as Box<dyn FnMut(_)>);
-        let _ = bar_wrap.add_event_listener_with_callback("click", cb.as_ref().unchecked_ref());
-        cb.forget();
-    }
-
-    // Time labels
+    // ── Time labels (below the ring; the seek arc itself is in Ovation) ──
     let time_row = dom::create_div();
-    dom::set_class(&time_row, "flex justify-between text-muted text-sm");
-    dom::set_style(&time_row, "margin-top", "4px");
+    dom::set_class(
+        &time_row,
+        "flex justify-between text-muted text-sm sp-time-row",
+    );
     let time_cur = dom::create_div();
     time_cur.set_id("sp-time-cur");
     dom::set_text(&time_cur, "0:00");
@@ -281,16 +298,16 @@ pub fn render(container: &web_sys::Element) {
     dom::set_text(&time_dur, "0:00");
     dom::append(&time_row, &time_cur);
     dom::append(&time_row, &time_dur);
-    dom::append(&progress_section, &time_row);
-
-    dom::append(&card, &progress_section);
+    dom::append(&card, &time_row);
 
     // ── Transport controls ──
     let controls = dom::create_div();
     dom::set_class(&controls, "sp-transport mt-16");
 
-    // Shuffle — ghost button, green when active
-    let shuffle_btn = dom::el("button", "sp-btn", Some("\u{1F500}"));
+    // Shuffle — ghost button, gold when active. Inline SVG (currentColor) so the
+    // theme tints it, not a colored emoji.
+    let shuffle_btn = dom::el("button", "sp-btn", None);
+    shuffle_btn.set_inner_html(ICON_SHUFFLE);
     shuffle_btn.set_id("sp-shuffle");
     dom::on_click(&shuffle_btn, || {
         let current = crate::state::with(|s| {
@@ -306,14 +323,17 @@ pub fn render(container: &web_sys::Element) {
     dom::append(&controls, &shuffle_btn);
 
     // Previous — skip button
-    let prev_btn = dom::el("button", "sp-btn-skip", Some("\u{23EE}"));
+    let prev_btn = dom::el("button", "sp-btn-skip", None);
+    prev_btn.set_inner_html(ICON_PREV);
     dom::on_click(&prev_btn, || {
         crate::ws::send_msg(&ClientMsg::SpotifyControl(SpotifyAction::Previous));
     });
     dom::append(&controls, &prev_btn);
 
-    // Play/Pause — big green circle
-    let play_btn = dom::el("button", "sp-btn-play", Some("\u{25B6}"));
+    // Play/Pause — gold spotlight circle. update() swaps inner_html between the
+    // play triangle and pause bars.
+    let play_btn = dom::el("button", "sp-btn-play", None);
+    play_btn.set_inner_html(ICON_PLAY);
     play_btn.set_id("sp-playpause");
     dom::on_click(&play_btn, || {
         let is_playing = crate::state::with(|s| {
@@ -332,14 +352,17 @@ pub fn render(container: &web_sys::Element) {
     dom::append(&controls, &play_btn);
 
     // Next — skip button
-    let next_btn = dom::el("button", "sp-btn-skip", Some("\u{23ED}"));
+    let next_btn = dom::el("button", "sp-btn-skip", None);
+    next_btn.set_inner_html(ICON_NEXT);
     dom::on_click(&next_btn, || {
         crate::ws::send_msg(&ClientMsg::SpotifyControl(SpotifyAction::Next));
     });
     dom::append(&controls, &next_btn);
 
-    // Repeat — ghost button, green when active, cycles off→context→track→off
-    let repeat_btn = dom::el("button", "sp-btn", Some("\u{1F501}"));
+    // Repeat — ghost button, gold when active, cycles off→context→track→off.
+    // update() swaps in the "repeat one" SVG (with a small 1) for track mode.
+    let repeat_btn = dom::el("button", "sp-btn", None);
+    repeat_btn.set_inner_html(ICON_REPEAT);
     repeat_btn.set_id("sp-repeat");
     dom::on_click(&repeat_btn, || {
         let (rc, rt) = crate::state::with(|s| {
@@ -372,16 +395,18 @@ pub fn render(container: &web_sys::Element) {
 
     dom::append(&card, &controls);
 
-    // ── Volume slider ──
+    // ── Player volume: ONE clean horizontal slider (matches the preview) ──
+    // A speaker icon + a gold slider + a % readout. The on_input handler sends
+    // SetVolume; VOL_DRAGGING guards against server overwrites mid-drag.
     let vol_section = dom::create_div();
     vol_section.set_id("sp-vol-section");
     dom::set_class(&vol_section, "sp-vol-row mt-16");
 
     let vol_icon = dom::create_div();
     vol_icon.set_id("sp-vol-icon");
-    dom::set_style(&vol_icon, "font-size", "16px");
-    dom::set_style(&vol_icon, "min-width", "20px");
-    dom::set_text(&vol_icon, "\u{1F509}"); // 🔉
+    dom::set_class(&vol_icon, "sp-vol-icon");
+    dom::set_attr(&vol_icon, "aria-hidden", "true");
+    vol_icon.set_inner_html(vol_icon_svg(50));
 
     let vol_slider = dom::create_el("input");
     vol_slider.set_id("sp-vol-slider");
@@ -389,6 +414,8 @@ pub fn render(container: &web_sys::Element) {
     dom::set_attr(&vol_slider, "min", "0");
     dom::set_attr(&vol_slider, "max", "100");
     dom::set_attr(&vol_slider, "value", "50");
+    dom::set_attr(&vol_slider, "aria-label", "Player volume");
+    dom::set_style(&vol_slider, "--sp-vol-fill", "50%");
 
     // Track drag state to prevent server overwrites during thumb drag
     {
@@ -427,17 +454,8 @@ pub fn render(container: &web_sys::Element) {
                 if let Some(el) = dom::get_el("sp-vol-label") {
                     dom::set_text(&el, &format!("{}%", val));
                 }
-                // Update icon based on level
-                if let Some(icon) = dom::get_el("sp-vol-icon") {
-                    let emoji = if val == 0 {
-                        "\u{1F507}"
-                    } else if val < 50 {
-                        "\u{1F509}"
-                    } else {
-                        "\u{1F50A}"
-                    };
-                    dom::set_text(&icon, emoji);
-                }
+                set_vol_icon(val);
+                set_vol_fill(val);
                 crate::ws::send_msg(&ClientMsg::SpotifyControl(SpotifyAction::SetVolume {
                     level: val,
                 }));
@@ -468,7 +486,7 @@ pub fn render(container: &web_sys::Element) {
     dom::append(&card, &conn_badge);
 
     // ── Settings toggle ──
-    let settings_toggle = dom::el("button", "sp-settings-btn", Some("Settings"));
+    let settings_toggle = dom::el("button", "sp-settings-btn", Some("Spotify settings"));
     dom::on_click(&settings_toggle, || {
         if let Some(el) = dom::get_el("sp-settings") {
             let hidden = js_sys::Reflect::get(&el, &"hidden".into())
@@ -575,37 +593,44 @@ pub fn render(container: &web_sys::Element) {
     dom::append(&card, &settings);
     dom::append(container, &card);
 
-    // ── Empty state ──
-    let empty = dom::create_div();
-    empty.set_id("sp-empty");
-    dom::set_class(&empty, "text-center text-muted mt-16");
+    update();
+}
 
-    let empty_icon = dom::create_div();
-    dom::set_style(&empty_icon, "font-size", "48px");
-    dom::set_style(&empty_icon, "margin-bottom", "12px");
-    dom::set_style(&empty_icon, "color", "#1db954");
-    dom::set_style(&empty_icon, "opacity", "0.6");
-    empty_icon.set_inner_html("&#9835;");
-    dom::append(&empty, &empty_icon);
-
-    let empty_title = dom::create_div();
-    dom::set_style(&empty_title, "font-size", "16px");
-    dom::set_style(&empty_title, "font-weight", "600");
-    dom::set_style(&empty_title, "margin-bottom", "8px");
-    dom::set_text(&empty_title, "Connect with Spotify");
-    dom::append(&empty, &empty_title);
-
-    let empty_desc = dom::create_div();
-    dom::set_class(&empty_desc, "text-sm");
-    dom::set_text(
-        &empty_desc,
+/// Paint the META area for the idle (no-track) hero: the connect prompt stands
+/// in for title/artist, the album/cover glyph falls back, and the explicit badge
+/// hides. The Ovation bloom keeps its calm fallback ring (it reads no cover).
+fn apply_idle_meta() {
+    set_text_if_changed("sp-title", "Connect with Spotify");
+    set_text_if_changed(
+        "sp-artist",
         "Open Spotify and select \"Invoke\" as playback device",
     );
-    dom::append(&empty, &empty_desc);
+    set_text_if_changed("sp-album", "");
+    // No cover: hide the <img> so the music-note fallback glyph shows through.
+    let url_changed = LAST_COVER_URL.with(|prev| !prev.borrow().is_empty());
+    if url_changed {
+        if let Some(img) = dom::get_el("sp-art-img") {
+            dom::set_style(&img, "display", "none");
+        }
+        LAST_COVER_URL.with(|prev| prev.borrow_mut().clear());
+    }
+    if let Some(el) = dom::get_el("sp-explicit") {
+        dom::set_style(&el, "display", "none");
+    }
+}
 
-    dom::append(container, &empty);
-
-    update();
+/// Zero the transport/progress/volume readouts when there is no SpotifyStatus at
+/// all. The controls stay present (just dimmed via .sp-idle) so the composition
+/// matches the preview whether or not the server has reported playback yet.
+fn apply_idle_transport() {
+    if let Some(el) = dom::get_el("sp-progress") {
+        dom::set_style(&el, "width", "0%");
+    }
+    set_text_if_changed("sp-time-cur", "0:00");
+    set_text_if_changed("sp-time-dur", "0:00");
+    sync_seek_overlay(0, 0);
+    set_icon_if_changed("sp-playpause", ICON_PLAY);
+    set_text_if_changed("sp-connected", "");
 }
 
 pub fn update() {
@@ -629,6 +654,7 @@ pub fn update() {
                     if let Some(img) = dom::get_el("sp-art-img") {
                         if !track.cover_url.is_empty() {
                             dom::set_attr(&img, "src", &track.cover_url);
+                            dom::set_style(&img, "display", "block");
                         } else {
                             dom::set_style(&img, "display", "none");
                         }
@@ -646,6 +672,10 @@ pub fn update() {
                         if track.is_explicit { "block" } else { "none" },
                     );
                 }
+            } else {
+                // Idle (no track) but Spotify is up — keep the full hero and put
+                // the connect prompt in the META area in place of title/artist.
+                apply_idle_meta();
             }
 
             // Progress + time
@@ -661,14 +691,14 @@ pub fn update() {
             }
             set_text_if_changed("sp-time-cur", &format_time(position));
             set_text_if_changed("sp-time-dur", &format_time(duration));
+            sync_seek_overlay(position, duration);
 
-            // Play/Pause icon — driven by server state only
-            let play_icon = if st.is_playing {
-                "\u{23F8}"
-            } else {
-                "\u{25B6}"
-            };
-            set_text_if_changed("sp-playpause", play_icon);
+            // Play/Pause icon — driven by server state only. Swap the inline
+            // SVG (play triangle ↔ pause bars), not text content.
+            set_icon_if_changed(
+                "sp-playpause",
+                if st.is_playing { ICON_PAUSE } else { ICON_PLAY },
+            );
 
             // Shuffle highlight — toggle .active class for green color
             if let Some(el) = dom::get_el("sp-shuffle") {
@@ -682,16 +712,17 @@ pub fn update() {
                 );
             }
 
-            // Repeat highlight + icon — toggle .active class
+            // Repeat highlight + icon — swap inline SVG ("repeat one" carries a
+            // small 1 for track mode) and toggle the gold .active class.
             if let Some(el) = dom::get_el("sp-repeat") {
                 if st.repeat_track {
-                    set_text_if_changed("sp-repeat", "\u{1F502}");
+                    set_icon_if_changed("sp-repeat", ICON_REPEAT_ONE);
                     dom::set_class(&el, "sp-btn active");
                 } else if st.repeat_context {
-                    set_text_if_changed("sp-repeat", "\u{1F501}");
+                    set_icon_if_changed("sp-repeat", ICON_REPEAT);
                     dom::set_class(&el, "sp-btn active");
                 } else {
-                    set_text_if_changed("sp-repeat", "\u{1F501}");
+                    set_icon_if_changed("sp-repeat", ICON_REPEAT);
                     dom::set_class(&el, "sp-btn");
                 }
             }
@@ -704,14 +735,8 @@ pub fn update() {
                     let _ = js_sys::Reflect::set(&el, &"value".into(), &vol_pct.to_string().into());
                 }
                 set_text_if_changed("sp-vol-label", &format!("{}%", vol_pct));
-                let emoji = if vol_pct == 0 {
-                    "\u{1F507}"
-                } else if vol_pct < 50 {
-                    "\u{1F509}"
-                } else {
-                    "\u{1F50A}"
-                };
-                set_text_if_changed("sp-vol-icon", emoji);
+                set_vol_icon(vol_pct);
+                set_vol_fill(vol_pct);
             }
 
             // Connection badge
@@ -747,12 +772,23 @@ pub fn update() {
             }
         }
 
-        // Visibility
-        if let Some(card) = dom::get_el("spotify-card") {
-            dom::set_style(&card, "display", if has_track { "block" } else { "none" });
+        // No status at all (server hasn't sent SpotifyStatus yet): still paint
+        // the full hero — the idle prompt in META, zeroed transport/volume.
+        if status.is_none() {
+            apply_idle_meta();
+            apply_idle_transport();
         }
-        if let Some(empty) = dom::get_el("sp-empty") {
-            dom::set_style(&empty, "display", if has_track { "none" } else { "block" });
+
+        // The Stage hero is ALWAYS visible (track or not); we only dim the
+        // transport when idle via the .sp-idle class. The card itself never
+        // collapses — the Ovation bloom + transport + volume always render.
+        if let Some(card) = dom::get_el("spotify-card") {
+            dom::set_style(&card, "display", "block");
+            if has_track {
+                dom::remove_class(&card, "sp-idle");
+            } else {
+                dom::add_class(&card, "sp-idle");
+            }
         }
 
         status.map(|st| st.is_playing).unwrap_or(false)
@@ -777,6 +813,39 @@ fn setting_row(label: &str) -> web_sys::Element {
     row
 }
 
+/// Inline speaker-icon SVG (currentColor) for the horizontal volume slider,
+/// muted / low / loud by level. Pure.
+fn vol_icon_svg(val: u8) -> &'static str {
+    if val == 0 {
+        // Muted: speaker + an X.
+        r#"<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M4 9v6h3l5 4V5L7 9z"/><path d="M16 9.5l5 5M21 9.5l-5 5" fill="none"/></svg>"#
+    } else if val < 50 {
+        // Low: speaker + one wave.
+        r#"<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9v6h3l5 4V5L7 9z"/><path d="M16 9.5a4 4 0 0 1 0 5" fill="none"/></svg>"#
+    } else {
+        // Loud: speaker + two waves.
+        r#"<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9v6h3l5 4V5L7 9z"/><path d="M16 9.5a4 4 0 0 1 0 5M18.5 7a8 8 0 0 1 0 10" fill="none"/></svg>"#
+    }
+}
+
+/// Swap the volume speaker icon for the current level, only when it changed.
+fn set_vol_icon(val: u8) {
+    let svg = vol_icon_svg(val);
+    if let Some(icon) = dom::get_el("sp-vol-icon") {
+        if icon.inner_html() != svg {
+            icon.set_inner_html(svg);
+        }
+    }
+}
+
+/// Drive the gold fill of the horizontal volume slider by setting the
+/// `--sp-vol-fill` custom property (a percentage the track gradient reads).
+fn set_vol_fill(val: u8) {
+    if let Some(el) = dom::get_el("sp-vol-slider") {
+        dom::set_style(&el, "--sp-vol-fill", &format!("{}%", val.min(100)));
+    }
+}
+
 fn save_spotify_settings() {
     crate::state::with(|s| {
         if let Some(ref config) = s.config {
@@ -793,6 +862,32 @@ fn save_spotify_settings() {
                 cfg.spotify_normalisation_pregain_db = v.parse().unwrap_or(0.0);
             }
             crate::ws::send_msg(&ClientMsg::SaveConfig(Box::new(cfg)));
+            crate::components::toast::success("Spotify settings saved");
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn seek_valuetext_formats_position_of_duration() {
+        // 1:23 of 3:45
+        assert_eq!(seek_valuetext(83_000, 225_000), "1:23 of 3:45");
+        assert_eq!(seek_valuetext(0, 0), "0:00 of 0:00");
+        assert_eq!(seek_valuetext(5_000, 65_000), "0:05 of 1:05");
+    }
+
+    #[test]
+    fn seek_step_advances_and_clamps() {
+        // +5s from the middle.
+        assert_eq!(seek_step_ms(60_000, 200_000, 5), 65_000);
+        // -5s from the middle.
+        assert_eq!(seek_step_ms(60_000, 200_000, -5), 55_000);
+        // Clamps at the end.
+        assert_eq!(seek_step_ms(198_000, 200_000, 5), 200_000);
+        // Never goes below zero.
+        assert_eq!(seek_step_ms(2_000, 200_000, -5), 0);
+    }
 }

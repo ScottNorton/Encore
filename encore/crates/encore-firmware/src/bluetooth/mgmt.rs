@@ -19,7 +19,7 @@ const MGMT_OP_SET_CONNECTABLE: u16 = 0x0007;
 const MGMT_OP_SET_PAIRABLE: u16 = 0x0009;
 const MGMT_OP_SET_SSP: u16 = 0x000B;
 const MGMT_OP_SET_DEV_CLASS: u16 = 0x000D;
-const MGMT_OP_SET_LOCAL_NAME: u16 = 0x000F;
+pub const MGMT_OP_SET_LOCAL_NAME: u16 = 0x000F;
 const MGMT_OP_LOAD_LINK_KEYS: u16 = 0x0012;
 const MGMT_OP_DISCONNECT: u16 = 0x0014;
 const MGMT_OP_SET_IO_CAPABILITY: u16 = 0x0018;
@@ -402,6 +402,11 @@ impl MgmtSocket {
     }
 
     /// Remove a stored link key for the given address.
+    /// Addresses of all bonded devices, for the dashboard's paired list.
+    pub fn paired_addrs(&self) -> Vec<[u8; 6]> {
+        self.link_keys.iter().map(|k| k.addr).collect()
+    }
+
     pub fn remove_link_key(&mut self, addr: &[u8; 6]) {
         self.link_keys.retain(|k| k.addr != *addr);
         if let Err(e) = save_link_keys_to_file(&self.link_keys) {
@@ -418,6 +423,34 @@ impl MgmtSocket {
     }
 
     /// Handle a BtAction from the dashboard.
+    /// Change the advertised local name live (the "visible as" name on phones).
+    pub async fn set_local_name(&self, name: &str) {
+        let mut name_buf = [0u8; 260]; // 249 name + 11 short_name
+        let name_bytes = name.as_bytes();
+        let len = name_bytes.len().min(248);
+        name_buf[..len].copy_from_slice(&name_bytes[..len]);
+        if let Err(e) = self
+            .send_cmd(MGMT_OP_SET_LOCAL_NAME, 0, &name_buf)
+            .await
+        {
+            warn!("Bluetooth mgmt: SET_LOCAL_NAME failed: {}", e);
+        }
+    }
+
+    /// Toggle BR/EDR discoverability. Connectable stays on regardless, so
+    /// bonded devices and auto-reconnect still work — this only hides the
+    /// speaker from *new* device scans while it is in use.
+    pub async fn set_discoverable(&self, on: bool) {
+        let val = if on { 0x01 } else { 0x00 };
+        // [discoverable: u8, timeout: u16 LE] — timeout 0 = no auto-expiry
+        if let Err(e) = self
+            .send_cmd(MGMT_OP_SET_DISCOVERABLE, 0, &[val, 0x00, 0x00])
+            .await
+        {
+            warn!("Bluetooth mgmt: SET_DISCOVERABLE({}) failed: {}", on, e);
+        }
+    }
+
     pub async fn handle_action(&self, action: encore_common::protocol::BtAction) {
         use encore_common::protocol::BtAction;
         match action {
@@ -472,12 +505,31 @@ impl MgmtSocket {
                     self.remove_link_key_by_ref(&bdaddr);
                 }
             }
+            BtAction::SetName { .. } => {
+                // Handled in the subsystem loop (needs to persist + broadcast).
+            }
+            BtAction::Transport { .. } => {
+                // Handled in the subsystem loop (needs the AVCTP socket).
+            }
+            BtAction::RequestStatus => {
+                // Handled in the subsystem loop (it owns broadcast_bt_status).
+            }
             BtAction::Connect { addr } => {
-                // A2DP sink = phone initiates connection, not us
-                info!(
-                    "Bluetooth mgmt: Connect({}) — A2DP sink waits for phone to connect",
-                    addr
-                );
+                // An A2DP sink doesn't open the media stream itself, but it can
+                // page a *bonded* source to re-establish the ACL using the
+                // stored link key. Sources with audio routed here then re-open
+                // A2DP on their own. (Verified live: pages a paused/dropped PC
+                // back as a connected device.)
+                if let Some(bdaddr) = l2cap::string_to_bdaddr(&addr) {
+                    info!("Bluetooth mgmt: connecting (paging bonded) {}", addr);
+                    let mut params = [0u8; 8];
+                    params[..6].copy_from_slice(&bdaddr);
+                    params[6] = 0x00; // BR/EDR
+                    params[7] = 0x03; // NoInputNoOutput (Just Works; already bonded)
+                    if let Err(e) = self.send_cmd(MGMT_OP_PAIR_DEVICE, 0, &params).await {
+                        warn!("Bluetooth mgmt: Connect (PAIR_DEVICE) failed: {}", e);
+                    }
+                }
             }
         }
     }
@@ -668,7 +720,11 @@ fn save_link_keys_to_file(keys: &[LinkKey]) -> Result<()> {
     if let Some(parent) = std::path::Path::new(BT_KEYS_PATH).parent() {
         std::fs::create_dir_all(parent).ok();
     }
-    std::fs::write(BT_KEYS_PATH, &data)?;
+    // Atomic write: a reboot/crash mid-write must not truncate bt_keys (that
+    // would "load 0" next boot and the next pairing would clobber every key).
+    let tmp = format!("{}.tmp", BT_KEYS_PATH);
+    std::fs::write(&tmp, &data)?;
+    std::fs::rename(&tmp, BT_KEYS_PATH)?;
     Ok(())
 }
 

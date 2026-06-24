@@ -199,7 +199,7 @@ uboot/                    USB-boot files go here (user-supplied, see flashing gu
 | | |
 |---|---|
 | **SoC** | Marvell BG2CDP (88DE3006), dual-core Cortex-A7 @ 1.3 GHz, 512 MB RAM, 512 MB NAND |
-| **Audio Output** | 3 drivers, TI TAS5756M DAC, Class-D amplifier |
+| **Audio Output** | 3 drivers, TI PCM5121 DAC, TI TPA3116 Class-D amplifier |
 | **Audio Input** | 7 MEMS microphones with DSP beamforming |
 | **DSP** | Analog Devices ADSP-21489 SHARC @ 450 MHz, firmware uploaded over SPI at every boot |
 | **Wireless** | Marvell 88W8887: dual-band WiFi (STA+AP) and Bluetooth 4.1 + BLE |

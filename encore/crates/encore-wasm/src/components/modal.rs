@@ -166,7 +166,7 @@ impl Modal {
         dom::set_style(&dialog, "width", "90%");
 
         let title_el = dom::el("div", "card-title", Some(title));
-        dom::set_style(&title_el, "color", "#FFA030");
+        dom::set_style(&title_el, "color", "var(--accent)");
         dom::append(&dialog, &title_el);
 
         let msg = dom::el("div", "", Some(message));

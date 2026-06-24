@@ -78,3 +78,8 @@ spotify_client_id.txt
 *.env
 *.keystore
 .aider*
+
+# librespot-audio is vendored + patched (upstream PR #1722) and MUST be tracked
+# despite the vendor/ rule above; the [patch.crates-io] in encore/Cargo.toml needs it.
+!encore/vendor/
+!encore/vendor/librespot-audio/**

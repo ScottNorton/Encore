@@ -35,6 +35,16 @@ pub fn render(container: &web_sys::Element) {
             field_range("cfg-spotify-vol", "Spotify Volume", cfg.spotify_volume),
             field_range("cfg-bt-vol", "Bluetooth Volume", cfg.bluetooth_volume),
             field_range("cfg-tts-duck", "TTS Duck %", cfg.tts_duck_percent),
+            field_range(
+                "cfg-max-vol-limit",
+                "Max Volume Limit %",
+                reg_to_limit_pct(cfg.max_volume_reg),
+            ),
+            field_note(
+                "\u{26A0} The volume limit caps how hard the amp drives the speaker. \
+                 Raising it gets louder but risks driver or hearing damage — the \
+                 default was calibrated by ear. A hard safety floor still applies.",
+            ),
         ],
     );
 
@@ -70,7 +80,7 @@ pub fn render(container: &web_sys::Element) {
                 cfg.wifi_ssid.as_deref().unwrap_or(""),
                 "",
             ),
-            TextField::create(
+            TextField::password(
                 "cfg-wifi-pass",
                 "WiFi Password",
                 cfg.wifi_password.as_deref().unwrap_or(""),
@@ -86,7 +96,7 @@ pub fn render(container: &web_sys::Element) {
         "VPN (WireGuard)",
         &[
             field_toggle("cfg-vpn-en", "Enabled", cfg.vpn_enabled),
-            TextField::create(
+            TextField::password(
                 "cfg-vpn-key",
                 "Private Key",
                 cfg.vpn_private_key.as_deref().unwrap_or(""),
@@ -104,7 +114,7 @@ pub fn render(container: &web_sys::Element) {
                 cfg.vpn_peer_public_key.as_deref().unwrap_or(""),
                 "",
             ),
-            TextField::create(
+            TextField::password(
                 "cfg-vpn-peer-psk",
                 "Peer Preshared Key",
                 cfg.vpn_peer_preshared_key.as_deref().unwrap_or(""),
@@ -214,6 +224,25 @@ fn field_range(id: &str, label: &str, value: u8) -> web_sys::Element {
     wrap
 }
 
+/// Map the DAC loudness-cap register to a friendly "max volume limit" percent.
+/// The register is inverted (lower = louder): 0x18 (24) is the hard floor = 100%,
+/// 0xA0 (160) is very quiet = 0%.
+fn reg_to_limit_pct(reg: u8) -> u8 {
+    let reg = reg.clamp(24, 160) as u32;
+    (((160 - reg) * 100) / 136) as u8
+}
+
+/// Inverse of `reg_to_limit_pct`. The firmware re-clamps to its hard safety floor.
+fn limit_pct_to_reg(pct: u8) -> u8 {
+    let pct = pct.min(100) as u32;
+    (160 - (pct * 136) / 100).clamp(24, 160) as u8
+}
+
+/// A small inline note/warning rendered under a field.
+fn field_note(text: &str) -> web_sys::Element {
+    dom::el("div", "text-sm mt-8", Some(text))
+}
+
 fn field_toggle(id: &str, label: &str, checked: bool) -> web_sys::Element {
     let wrap = dom::create_div();
     dom::set_class(&wrap, "toggle-wrap");
@@ -263,6 +292,9 @@ fn save_config() {
         spotify_volume: get_input_value("cfg-spotify-vol").parse().unwrap_or(70),
         bluetooth_volume: get_input_value("cfg-bt-vol").parse().unwrap_or(70),
         tts_duck_percent: get_input_value("cfg-tts-duck").parse().unwrap_or(80),
+        max_volume_reg: limit_pct_to_reg(
+            get_input_value("cfg-max-vol-limit").parse().unwrap_or(77),
+        ),
         volume_ring_step: crate::state::with(|s| {
             s.config.as_ref().map(|c| c.volume_ring_step).unwrap_or(2)
         }),
@@ -296,6 +328,13 @@ fn save_config() {
         }),
         bluetooth_enabled: get_checkbox("cfg-bt-en"),
         bluetooth_discoverable: get_checkbox("cfg-bt-disc"),
+        // Not in this form — preserve the live value so a config save can't clobber it.
+        bluetooth_mesh_enabled: crate::state::with(|s| {
+            s.config
+                .as_ref()
+                .map(|c| c.bluetooth_mesh_enabled)
+                .unwrap_or(false)
+        }),
         homeassistant_enabled: crate::state::with(|s| {
             s.config
                 .as_ref()
@@ -402,9 +441,6 @@ fn save_config() {
                 .map(|c| c.group_channel.clone())
                 .unwrap_or_else(|| "stereo".into())
         }),
-        group_buffer_ms: crate::state::with(|s| {
-            s.config.as_ref().map(|c| c.group_buffer_ms).unwrap_or(80)
-        }),
         group_peers: crate::state::with(|s| {
             s.config
                 .as_ref()
@@ -415,7 +451,5 @@ fn save_config() {
     };
 
     crate::ws::send_msg(&ClientMsg::SaveConfig(Box::new(config)));
-
-    // Visual feedback
-    web_sys::console::log_1(&"Config saved".into());
+    crate::components::toast::success("Configuration saved");
 }

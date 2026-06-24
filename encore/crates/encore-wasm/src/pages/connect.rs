@@ -182,7 +182,7 @@ async fn verify_connection(host: String) {
     }
     crate::brand::set_state(crate::brand::LogoState::Header);
     crate::app::check_setup_status();
-    dom::window().location().set_hash("dashboard").ok();
+    dom::window().location().set_hash("home").ok();
 }
 
 /// Revert to connect screen after a failed connection attempt.

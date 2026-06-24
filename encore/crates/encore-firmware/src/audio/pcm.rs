@@ -17,6 +17,7 @@ use tracing::{info, warn};
 const _: () = {
     assert!(std::mem::size_of::<SndPcmHwParams>() == 604);
     assert!(std::mem::size_of::<SndPcmSwParams>() == 104);
+    assert!(std::mem::size_of::<SndXferi>() == 12);
 };
 
 // ── Kernel ALSA constants ────────────────────────────────────────────
@@ -137,6 +138,15 @@ pub(crate) struct SndPcmSwParams {
     pub(crate) reserved: [u8; 64],
 }
 
+/// Argument for the interleaved transfer ioctls (`struct snd_xferi`).
+/// 32-bit ARM ABI: `result` (long), `buf` (pointer), `frames` (unsigned long) = 12 bytes.
+#[repr(C)]
+pub(crate) struct SndXferi {
+    pub(crate) result: isize,
+    pub(crate) buf: *mut core::ffi::c_void,
+    pub(crate) frames: usize,
+}
+
 // ── nix ioctl declarations ──────────────────────────────────────────
 
 nix::ioctl_none!(pcm_prepare, ALSA_MAGIC, 0x40);
@@ -146,9 +156,15 @@ nix::ioctl_none!(pcm_drain, ALSA_MAGIC, 0x44);
 
 nix::ioctl_readwrite!(pcm_hw_params, ALSA_MAGIC, 0x11, SndPcmHwParams);
 nix::ioctl_readwrite!(pcm_sw_params, ALSA_MAGIC, 0x13, SndPcmSwParams);
-// Note: WRITEI_FRAMES (0x50) and READI_FRAMES (0x51) ioctls both return ENOTTY
-// on the BG2CDP kernel 3.8. Playback uses the write() syscall and capture uses
-// read() instead — see AlsaPcm::write_frames and capture::capture_thread.
+// SNDRV_PCM_IOCTL_READI_FRAMES is `_IOR` (not `_IOWR`). The kernel encodes it as
+// _IOR('A', 0x51, struct snd_xferi) = 0x800c4151 on this BG2CDP 3.8 / arm32 build
+// (snd_xferi = 12 bytes). Verified against the stock arecord via raw strace: every
+// capture READI is ioctl(fd, 0x800c4151, ...). Using `_IOWR` (0xc00c4151) flips the
+// direction bits, so the kernel's capture-ioctl switch misses the case and falls
+// through to the common handler's -ENOTTY — which is why the plain read() syscall
+// (also ENOTTY) was wrongly blamed before. Direction matters here, not just nr/size.
+nix::ioctl_read!(pcm_readi, ALSA_MAGIC, 0x51, SndXferi);
+// Playback uses the write() syscall (works on this kernel); see AlsaPcm::write_frames.
 
 // ── Public API ──────────────────────────────────────────────────────
 

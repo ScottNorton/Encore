@@ -19,9 +19,10 @@ thread_local! {
 /// `bins`: 32 magnitude values in range [0.0, 1.0].
 pub fn draw(ctx: &CanvasRenderingContext2d, bins: &[f32; NUM_BARS]) {
     ctx.clear_rect(0.0, 0.0, W, H);
+    let is_dark = super::theme::is_dark();
 
     // Background
-    ctx.set_fill_style_str("rgba(13,17,23,0.6)");
+    ctx.set_fill_style_str(super::theme::canvas_bg(is_dark));
     ctx.fill_rect(0.0, 0.0, W, H);
 
     let bar_w = (W - BAR_GAP * (NUM_BARS as f64 - 1.0)) / NUM_BARS as f64;
@@ -34,14 +35,8 @@ pub fn draw(ctx: &CanvasRenderingContext2d, bins: &[f32; NUM_BARS]) {
             let bar_h = level as f64 * (H - 4.0);
             let y = H - bar_h;
 
-            // Color gradient based on level
-            let color = if level > 0.8 {
-                "rgb(248,81,73)" // red
-            } else if level > 0.5 {
-                "rgb(227,179,65)" // yellow
-            } else {
-                "rgb(63,185,80)" // green
-            };
+            // Shared green→yellow→orange→red level ramp (theme-aware).
+            let color = super::theme::level_color(level as f64, true, is_dark);
 
             ctx.set_fill_style_str(color);
             ctx.fill_rect(x, y, bar_w, bar_h);
@@ -55,7 +50,8 @@ pub fn draw(ctx: &CanvasRenderingContext2d, bins: &[f32; NUM_BARS]) {
 
             // Draw peak line
             let peak_y = H - peaks[i] as f64 * (H - 4.0);
-            ctx.set_fill_style_str("rgba(230,237,243,0.8)");
+            let (ir, ig, ib) = super::theme::ink_rgb(is_dark);
+            ctx.set_fill_style_str(&super::rgba_str(ir, ig, ib, 0.8));
             ctx.fill_rect(x, peak_y - 1.0, bar_w, 2.0);
         }
     });

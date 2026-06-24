@@ -30,37 +30,10 @@ fn db_to_pos(db: f64) -> f64 {
     ((db - DB_MIN) / DB_RANGE).clamp(0.0, 1.0)
 }
 
-/// Get segment color based on its position along the meter.
-fn segment_color(seg: usize, lit: bool) -> &'static str {
+/// Get segment color based on its position along the meter and the theme.
+fn segment_color(seg: usize, lit: bool, is_dark: bool) -> &'static str {
     let t = seg as f64 / SEGMENTS as f64;
-    if !lit {
-        // Dim ghost outline so you can see the full meter scale
-        if t < 0.6 {
-            return "rgba(63,185,80,0.06)";
-        }
-        if t < 0.8 {
-            return "rgba(227,179,65,0.06)";
-        }
-        if t < 0.92 {
-            return "rgba(210,153,34,0.08)";
-        }
-        return "rgba(248,81,73,0.10)";
-    }
-    if t < 0.6 {
-        "rgb(63,185,80)"
-    }
-    // green
-    else if t < 0.8 {
-        "rgb(227,179,65)"
-    }
-    // yellow
-    else if t < 0.92 {
-        "rgb(210,153,34)"
-    }
-    // orange
-    else {
-        "rgb(248,81,73)"
-    } // red
+    crate::graphics::theme::level_color(t, lit, is_dark)
 }
 
 /// Draw horizontal VU meter bars (segmented LED style, dB-proportional).
@@ -169,7 +142,8 @@ fn draw_impl(
     draw_segmented_bar(ctx, bar_x, y_r, bar_w, bar_h, seg_w, r_pos, r_hold);
 
     // Channel labels
-    ctx.set_fill_style_str("rgba(139,148,158,0.6)");
+    let (mr, mg, mb) = crate::graphics::theme::muted_rgb(crate::graphics::theme::is_dark());
+    ctx.set_fill_style_str(&crate::graphics::rgba_str(mr, mg, mb, 0.95));
     ctx.set_font("bold 10px system-ui");
     ctx.set_text_align("left");
     ctx.set_text_baseline("middle");
@@ -178,7 +152,7 @@ fn draw_impl(
 
     // dB scale labels
     ctx.set_font("9px system-ui");
-    ctx.set_fill_style_str("rgba(139,148,158,0.4)");
+    ctx.set_fill_style_str(&crate::graphics::rgba_str(mr, mg, mb, 0.7));
     ctx.set_text_align("center");
     ctx.set_text_baseline("top");
     for &(db, label) in &[
@@ -192,7 +166,7 @@ fn draw_impl(
         let x = bar_x + db_to_pos(db) * bar_w;
         ctx.fill_text(label, x, scale_y).ok();
         // Subtle tick mark
-        ctx.set_stroke_style_str("rgba(139,148,158,0.12)");
+        ctx.set_stroke_style_str(&crate::graphics::rgba_str(mr, mg, mb, 0.2));
         ctx.set_line_width(0.5);
         ctx.begin_path();
         ctx.move_to(x, scale_y - 2.0);
@@ -219,6 +193,7 @@ fn draw_segmented_bar(
     };
     let seg_gap = 1.5;
     let radius = 1.5;
+    let is_dark = crate::graphics::theme::is_dark();
 
     for i in 0..SEGMENTS {
         let sx = x + i as f64 * (seg_w + seg_gap);
@@ -226,10 +201,14 @@ fn draw_segmented_bar(
         let is_peak_hold = peak_seg == Some(i) && !lit;
 
         if is_peak_hold {
-            // Peak hold: bright white segment
-            ctx.set_fill_style_str("rgba(255,255,255,0.8)");
+            // Peak hold: high-contrast marker against the current theme
+            ctx.set_fill_style_str(if is_dark {
+                "rgba(255,255,255,0.8)"
+            } else {
+                "rgba(0,0,0,0.55)"
+            });
         } else {
-            ctx.set_fill_style_str(segment_color(i, lit));
+            ctx.set_fill_style_str(segment_color(i, lit, is_dark));
         }
 
         ctx.begin_path();

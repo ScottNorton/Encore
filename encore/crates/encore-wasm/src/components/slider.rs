@@ -21,6 +21,7 @@ impl Slider {
         let header = dom::create_div();
         dom::set_class(&header, "flex justify-between mb-8");
         let lbl = dom::el("label", "", Some(label));
+        dom::set_attr(&lbl, "for", id);
         let val = dom::el(
             "span",
             "stat-value text-sm",
@@ -36,6 +37,7 @@ impl Slider {
         dom::set_attr(&input, "min", &min.to_string());
         dom::set_attr(&input, "max", &max.to_string());
         dom::set_attr(&input, "value", &value.to_string());
+        dom::set_attr(&input, "aria-label", label);
         input.set_id(id);
 
         let id_str = id.to_string();

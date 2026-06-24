@@ -31,15 +31,18 @@ pub fn draw(ctx: &CanvasRenderingContext2d) {
         ctx.stroke();
     }
 
-    // Inner dark circle
-    ctx.set_fill_style_str("var(--bg, #0d1117)");
+    // Inner circle — solid stage color so the wheel hole matches the page.
+    let is_dark = super::theme::is_dark();
+    let (sr, sg, sb) = super::theme::stage_rgb(is_dark);
+    ctx.set_fill_style_str(&super::rgb_str(sr, sg, sb));
     ctx.begin_path();
     ctx.arc(cx, cy, INNER_R - 1.0, 0.0, std::f64::consts::TAU)
         .ok();
     ctx.fill();
 
     // Center label
-    ctx.set_fill_style_str("rgba(139,148,158,0.5)");
+    let (mr, mg, mb) = super::theme::muted_rgb(is_dark);
+    ctx.set_fill_style_str(&super::rgba_str(mr, mg, mb, 0.9));
     ctx.set_font("11px system-ui");
     ctx.set_text_align("center");
     ctx.set_text_baseline("middle");

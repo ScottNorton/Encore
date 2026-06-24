@@ -1,5 +1,6 @@
 //! Assistant page — Wyoming Voice + Home Assistant config.
 
+use crate::components::section_header;
 use crate::components::TextField;
 use crate::dom;
 use encore_common::protocol::ClientMsg;
@@ -10,6 +11,8 @@ pub fn render(container: &web_sys::Element) {
     crate::ws::send_msg(&ClientMsg::RequestConfig);
 
     let cfg = crate::state::with(|s| s.config.clone().unwrap_or_default());
+
+    dom::append(container, &section_header("Voice and home"));
 
     // ── Wyoming Voice Satellite card ──
     let wy_card = dom::create_div();
@@ -101,7 +104,7 @@ pub fn render(container: &web_sys::Element) {
     );
     dom::append(
         &ha_card,
-        &TextField::create(
+        &TextField::password(
             "ast-mqtt-pass",
             "Password",
             cfg.mqtt_password.as_deref().unwrap_or(""),
@@ -221,5 +224,5 @@ fn save_assistant_config() {
         cfg
     });
     crate::ws::send_msg(&ClientMsg::SaveConfig(Box::new(config)));
-    web_sys::console::log_1(&"Assistant config saved".into());
+    crate::components::toast::success("Integration settings saved");
 }

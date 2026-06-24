@@ -252,6 +252,12 @@ impl Subsystem for LedSubsystem {
                             Ok(Some(McuEvent::ResetShort)) | Ok(Some(McuEvent::ResetLong)) => {
                                 debug!("MCU: reset button (hardware handles this)");
                             }
+                            Ok(Some(McuEvent::BtMicCombo)) => {
+                                // Developer gesture: stock ran `send-bugreport DSP_MEM_DUMP`.
+                                // That binary does not exist here; wire to AudioCmd::DspDumpToFile
+                                // if an on-device dump is ever wanted. For now, make it observable.
+                                info!("MCU: [BT+MIC] long-press combo (developer diagnostic gesture)");
+                            }
                             Ok(Some(event)) => {
                                 debug!("MCU event: {:?}", event);
                             }

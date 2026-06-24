@@ -14,13 +14,13 @@ pub fn render(container: &web_sys::Element) {
     let banner = dom::create_div();
     banner.set_id("safe-mode-banner");
     dom::set_class(&banner, "card");
-    dom::set_style(&banner, "border-left", "4px solid #FFA030");
-    dom::set_style(&banner, "background", "rgba(255, 160, 48, 0.08)");
+    dom::set_style(&banner, "border-left", "4px solid var(--warning)");
+    dom::set_style(&banner, "background", "var(--warning-soft)");
     dom::set_style(&banner, "display", "none");
     dom::set_style(&banner, "margin-bottom", "16px");
 
     let banner_title = dom::el("div", "card-title", Some("Safe Mode"));
-    dom::set_style(&banner_title, "color", "#FFA030");
+    dom::set_style(&banner_title, "color", "var(--warning)");
     dom::append(&banner, &banner_title);
 
     let banner_body = dom::el(
@@ -53,7 +53,7 @@ pub fn render(container: &web_sys::Element) {
             if let Some(el) = dom::get_el("safe-mode-banner") {
                 dom::clear(&el);
                 let msg = dom::el("div", "card-title", Some("Restarting..."));
-                dom::set_style(&msg, "color", "#FFA030");
+                dom::set_style(&msg, "color", "var(--warning)");
                 dom::append(&el, &msg);
             }
         });
@@ -188,6 +188,10 @@ fn render_cpu_skeleton(parent: &web_sys::Element) {
     // Load averages
     let load = dom::el("div", "stat-row mt-8", None);
     let lbl = dom::el("span", "stat-label", Some("Load"));
+    dom::append(
+        &lbl,
+        &dom::hint("Processes waiting to run, averaged over 1, 5, and 15 minutes."),
+    );
     let val = dom::el("span", "stat-value text-sm", Some("--"));
     val.set_id("dash-cpu-load");
     dom::append(&load, &lbl);

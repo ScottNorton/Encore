@@ -140,7 +140,7 @@ could brick the device (recovery only via USB boot mode, if the bootloader itsel
 | **NAND** | 512 MB Toshiba (single chip, flash ID da98). Page 2048, OOB 64, 128KB erase blocks (single-plane) |
 | **WiFi/BT** | Marvell 88W8887 (SDIO), dual-band 802.11ac + BT 4.1 |
 | **Audio DSP** | AD91210Z (Analog Devices ADSP-21489 SHARC), SPI upload |
-| **Audio DAC** | TAS5756M (I2C 0x4C) → Class-D amp → 3x speakers |
+| **Audio DAC** | PCM5121 (I2C 0x4C) → TPA3116 Class-D amp → 3x speakers |
 | **MCU** | TI MSP430FR5739 (I2C 0x36), 16KB FRAM |
 | **LEDs** | 15 RGB total (13 controlled by MCU, 2 didn't touch) |
 | **Watchdog** | DesignWare WDT @ 0xF7FC2000 |

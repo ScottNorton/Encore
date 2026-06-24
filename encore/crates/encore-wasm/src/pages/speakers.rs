@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
+use crate::components::section_header;
 use crate::components::segmented::{SegmentedControl, SegmentedMode};
 use crate::components::text_field::TextField;
 use crate::components::toggle::Toggle;
@@ -21,6 +22,7 @@ pub fn render(container: &web_sys::Element) {
     crate::ws::send_msg(&ClientMsg::RequestGroupStatus);
 
     // ── This Speaker card ──
+    dom::append(container, &section_header("This speaker"));
     let status_card = dom::create_div();
     dom::set_class(&status_card, "card");
     let title = dom::el("div", "card-title", Some("This Speaker"));
@@ -34,6 +36,7 @@ pub fn render(container: &web_sys::Element) {
     dom::append(container, &status_card);
 
     // ── Controls card ──
+    dom::append(container, &section_header("Controls"));
     let ctrl_card = dom::create_div();
     dom::set_class(&ctrl_card, "card");
     let ctrl_title = dom::el("div", "card-title", Some("Controls"));
@@ -59,6 +62,12 @@ pub fn render(container: &web_sys::Element) {
     let ch_row = dom::create_div();
     dom::set_class(&ch_row, "flex justify-between items-center mb-12");
     let ch_label = dom::el("span", "", Some("Channel"));
+    dom::append(
+        &ch_label,
+        &dom::hint(
+            "Which stereo channel this speaker plays when grouped: full stereo, left, or right.",
+        ),
+    );
     dom::append(&ch_row, &ch_label);
 
     let current_ch = crate::state::with(|s| {
@@ -101,56 +110,10 @@ pub fn render(container: &web_sys::Element) {
     });
     dom::append(&ctrl_card, &save_btn);
 
-    // Buffer depth slider
-    let buf_ms = crate::state::with(|s| s.group_status.as_ref().map_or(80, |g| g.buffer_ms));
-    let buf_row = dom::create_div();
-    dom::set_class(&buf_row, "flex justify-between items-center mt-12");
-    let buf_label = dom::el("span", "", Some("Buffer"));
-    dom::append(&buf_row, &buf_label);
-
-    let buf_right = dom::create_div();
-    dom::set_class(&buf_right, "flex items-center gap-8");
-
-    let buf_value = dom::el("span", "text-muted", Some(&format!("{} ms", buf_ms)));
-    buf_value.set_id("group-buffer-value");
-    dom::append(&buf_right, &buf_value);
-
-    let buf_slider = dom::create_el("input");
-    buf_slider.set_id("group-buffer-slider");
-    dom::set_attr(&buf_slider, "type", "range");
-    dom::set_attr(&buf_slider, "min", "20");
-    dom::set_attr(&buf_slider, "max", "500");
-    dom::set_attr(&buf_slider, "step", "10");
-    dom::set_attr(&buf_slider, "value", &buf_ms.to_string());
-    dom::set_class(&buf_slider, "slider");
-
-    let buf_cb = Closure::wrap(Box::new(|e: web_sys::Event| {
-        use wasm_bindgen::JsCast;
-        if let Some(target) = e
-            .target()
-            .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
-        {
-            if let Ok(ms) = target.value().parse::<u16>() {
-                if let Some(el) = dom::get_el("group-buffer-value") {
-                    el.set_text_content(Some(&format!("{} ms", ms)));
-                }
-                crate::ws::send_msg(&ClientMsg::SetGroupBufferMs(ms));
-            }
-        }
-    }) as Box<dyn FnMut(_)>);
-    buf_slider
-        .add_event_listener_with_callback("input", buf_cb.as_ref().unchecked_ref())
-        .ok();
-    buf_cb.forget();
-
-    dom::append(&buf_right, &buf_slider);
-    dom::append(&buf_row, &buf_right);
-    dom::append(&ctrl_card, &buf_row);
-
     // Group volume slider
     let vol_row = dom::create_div();
     dom::set_class(&vol_row, "flex justify-between items-center mt-12");
-    let vol_label = dom::el("span", "", Some("Volume"));
+    let vol_label = dom::el("span", "", Some("Group volume"));
     dom::append(&vol_row, &vol_label);
 
     let vol_right = dom::create_div();
@@ -195,6 +158,7 @@ pub fn render(container: &web_sys::Element) {
     dom::append(container, &ctrl_card);
 
     // ── Bootstrap Peers card ──
+    dom::append(container, &section_header("Discovery"));
     let boot_card = dom::create_div();
     dom::set_class(&boot_card, "card");
     let boot_title = dom::el("div", "card-title", Some("Bootstrap Peers"));
@@ -230,6 +194,7 @@ pub fn render(container: &web_sys::Element) {
     dom::append(container, &boot_card);
 
     // ── Connected Peers card ──
+    dom::append(container, &section_header("Connected peers"));
     let peers_card = dom::create_div();
     dom::set_class(&peers_card, "card");
     let peers_title = dom::el("div", "card-title", Some("Connected Peers"));
@@ -266,16 +231,6 @@ pub fn update() {
             }
             if let Some(el) = dom::get_el("group-vol-value") {
                 el.set_text_content(Some(&format!("{}%", status.volume)));
-            }
-
-            // ── Update buffer slider + label ──
-            if let Some(el) = dom::get_el("group-buffer-slider") {
-                if let Some(input) = el.dyn_ref::<web_sys::HtmlInputElement>() {
-                    input.set_value(&status.buffer_ms.to_string());
-                }
-            }
-            if let Some(el) = dom::get_el("group-buffer-value") {
-                el.set_text_content(Some(&format!("{} ms", status.buffer_ms)));
             }
 
             // ── Update channel segmented control ──
@@ -325,9 +280,8 @@ pub fn update() {
                     "div",
                     "text-muted text-sm",
                     Some(&format!(
-                        "Channel: {} | Buffer: {} ms | {} peer(s)",
+                        "Channel: {} | {} peer(s)",
                         status.channel,
-                        status.buffer_ms,
                         status.peers.len()
                     )),
                 );
@@ -437,11 +391,7 @@ pub fn update() {
                             if is_expanded { "block" } else { "none" },
                         );
                         dom::set_style(&detail, "border-top", "1px solid var(--border)");
-                        dom::set_style(
-                            &detail,
-                            "background",
-                            "var(--bg-card-alt, rgba(255,255,255,0.02))",
-                        );
+                        dom::set_style(&detail, "background", "var(--surface-2)");
 
                         // Detail grid
                         let grid = dom::create_div();

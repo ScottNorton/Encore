@@ -53,8 +53,12 @@ fi
 mkdir -p /lsync/data1/wifi /lsync/encore
 
 # ── 3. Infrastructure services ──
+# Load the WiFi driver (creates wlan0/p2p0). Encore is the sole AP owner while
+# running and brings the AP up itself, so we do NOT launch start_ap.sh here —
+# that previously raced Encore for the single radio. start_ap.sh remains only as
+# the supervisor's crash/safe-mode fallback (encore_supervisor.sh), where Encore
+# is not running and cannot race.
 cd /sbin/ && ./wpa_supplicant_setup.sh & cd /
-/sbin/start_ap.sh &
 /sbin/auto_wifi_firewall.sh &
 # USB RNDIS gadget: SSH/terminal/web over the USB cable, independent of WiFi.
 # Backgrounded and fully non-fatal — never blocks boot or WiFi recovery.

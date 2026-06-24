@@ -92,7 +92,6 @@ persistent_keepalive = 25
 enabled = false
 group_name = "Home"
 channel = "stereo"
-buffer_ms = 80
 # peer_id is auto-generated on first boot
 
 [debug]
@@ -179,23 +178,33 @@ q_x10 = 10
 filter_type = "highshelf"
 ```
 
-EQ changes take effect immediately.
+The `[eq]` block is applied at boot. If you set `[[eq.bands]]` here (or set
+`enabled = false`), they take precedence over the `[audio]` `eq_boot_preset`
+convenience. Dashboard EQ changes apply immediately but are runtime-only: they
+are not written back to this file, so edit `[eq]` here to make a custom EQ
+persist across reboots.
 
 ---
 
 ### `[drc]`
 
-3-band dynamic range compressor. Crossover frequencies split the signal into low, mid,
-and high bands, each with independent compression settings.
+Single-band dynamic range compressor. The dashboard exposes one set of
+threshold/ratio/attack/release controls.
 
 | Field        | Type            | Default | Description |
 |--------------|-----------------|---------|-------------|
 | `enabled`    | bool            | `false` | Enable/disable DRC processing. |
-| `low_mid_hz` | u16            | `200`   | Crossover frequency between low and mid bands (Hz). |
-| `mid_high_hz`| u16            | `2000`  | Crossover frequency between mid and high bands (Hz). |
-| `bands`      | array of tables | `[]`    | Per-band compressor settings (see below). |
+| `bands`      | array of tables | `[]`    | Compressor settings. Provide one entry; it is applied as the single-band compressor (see below). |
+| `low_mid_hz` | u16             | `200`   | Reserved. Persisted but not used by the single-band engine. |
+| `mid_high_hz`| u16             | `2000`  | Reserved. Persisted but not used by the single-band engine. |
 
-Each entry in `[[drc.bands]]` (typically 3 entries for low, mid, high):
+The compressor is single-band: only the middle band's settings reach the audio
+path. The `low_mid_hz`/`mid_high_hz` crossover frequencies and any low/high band
+entries are kept for wire and config compatibility and as scaffolding for a
+possible future multiband engine, but they have no audible effect today.
+
+Provide one entry in `[[drc.bands]]` (the single-band compressor). If you give
+several, the engine applies the second:
 
 | Field          | Type | Default | Description |
 |----------------|------|---------|-------------|
@@ -204,7 +213,10 @@ Each entry in `[[drc.bands]]` (typically 3 entries for low, mid, high):
 | `attack_ms`    | u16  | `10`    | Attack time in milliseconds. |
 | `release_ms`   | u16  | `200`   | Release time in milliseconds. |
 
-DRC changes take effect immediately.
+The `[drc]` block is applied at boot, so edits here take effect on startup.
+Dashboard DRC changes apply immediately but are runtime-only: they are not
+written back to this file, so set `[drc]` here to make a compressor persist
+across reboots.
 
 ---
 
@@ -320,7 +332,6 @@ synchronized audio playback.
 | `enabled`    | bool           | `false`     | Enable multi-speaker group sync. |
 | `group_name` | string         | `"Home"`    | Name of the speaker group. All devices with the same group name sync together. |
 | `channel`    | string         | `"stereo"` | Channel assignment: `"stereo"`, `"left"`, or `"right"`. |
-| `buffer_ms`  | u16            | `80`        | Sync buffer size in milliseconds. Higher values improve sync stability at the cost of latency. |
 | `peer_id`    | string or null | *unset*     | Unique peer identifier (UUID v4). Auto-generated on first boot -- do not edit manually. |
 | `peers`      | string[]       | `[]`        | Bootstrap peer IPs for cross-subnet discovery (where mDNS doesn't reach). |
 | `party_mode` | bool           | `false`     | Accept audio streams from any group name, not just the configured one. |

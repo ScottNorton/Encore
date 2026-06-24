@@ -14,7 +14,7 @@ use crate::mcu::io_expander::IoExpander;
 use crate::subsystem::{Subsystem, SubsystemContext};
 use anyhow::{Context, Result};
 use encore_common::protocol::SubsystemState;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
@@ -170,6 +170,32 @@ impl SharedDrcParams {
     }
 }
 
+/// Shared EQ state for the real-time mixer thread. The command loop publishes a
+/// new `EqState` and bumps `generation`; the mixer thread reloads (via a
+/// non-blocking `try_lock`) only when the generation changes, keeping the audio
+/// hot path lock-free.
+pub struct SharedEq {
+    generation: AtomicU64,
+    state: Mutex<encore_common::protocol::EqState>,
+}
+
+impl SharedEq {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            generation: AtomicU64::new(0),
+            state: Mutex::new(encore_common::protocol::EqState::default()),
+        })
+    }
+
+    /// Publish a new EQ state (called from the command loop).
+    fn update_from_state(&self, st: &encore_common::protocol::EqState) {
+        if let Ok(mut guard) = self.state.lock() {
+            *guard = st.clone();
+        }
+        self.generation.fetch_add(1, Ordering::Release);
+    }
+}
+
 /// Audio commands sent to the subsystem.
 #[derive(Debug)]
 pub enum AudioCmd {
@@ -187,10 +213,6 @@ pub enum AudioCmd {
     SetDrc {
         band: encore_common::protocol::DrcBand,
         config: encore_common::protocol::DrcBandConfig,
-    },
-    SetDrcCrossover {
-        low_mid_hz: u16,
-        mid_high_hz: u16,
     },
     SetDrcEnabled(bool),
     SetDrcPreset(encore_common::protocol::DrcPreset),
@@ -228,6 +250,8 @@ pub enum AudioCmd {
     // Mic test
     StartMicTest,
     StopMicTest,
+    /// Re-broadcast EQ, DRC, and DSP state to dashboards (cold-start resync).
+    BroadcastState,
 }
 
 /// Handles returned when registering an audio source.
@@ -247,11 +271,18 @@ pub struct AudioSubsystem {
     dsp_volume: u8,
     dsp_version: String,
     ws_tx: Option<tokio::sync::broadcast::Sender<String>>,
+    /// LED command channel — drives the ring for the mic-mute indicator.
+    led_tx: Option<mpsc::Sender<crate::led::LedCmd>>,
     shared_drc: Arc<SharedDrcParams>,
-    /// Network tap: post-DRC audio is pushed here when active (for group leader streaming).
+    /// Shared software-EQ state published to the mixer thread.
+    shared_eq: Arc<SharedEq>,
+    /// Network tap: post-EQ/DRC audio is pushed here when active (for group leader streaming).
     network_tap: Option<Arc<MixerSlot>>,
     /// Controls whether the network tap is active.
     tap_active: Option<Arc<AtomicBool>>,
+    /// Group follower input: the leader's already-EQ/DRC'd audio arrives here. When it
+    /// has audio, the mixer plays it straight through and skips local EQ/DRC.
+    network_in: Option<Arc<MixerSlot>>,
     /// Cross-thread bridge for power state management.
     bridge: Arc<MixerBridge>,
     /// Seconds of silence before transitioning Active → Idle.
@@ -262,6 +293,19 @@ pub struct AudioSubsystem {
     dsp_power_gate: bool,
     /// Shared flag: mic test active (mic monitor task reads this).
     mic_test_active: Arc<AtomicBool>,
+    /// Shared flag: any playback source active (the sense idle gate reads this).
+    playback_active: Arc<AtomicBool>,
+    /// How far to duck music while the voice/TTS source plays, as a percent
+    /// (music drops to (100 - duck)%). Read by the mixer thread. From config.
+    duck_percent: Arc<AtomicU8>,
+    /// Set by the thermal-protection task on overheat: the command loop forces the
+    /// amp muted and skips power-state transitions until it clears.
+    thermal_throttle: Arc<AtomicBool>,
+    /// Optional EQ preset applied once to the software EQ engine at boot.
+    /// None = start flat (the default).
+    eq_boot_preset: Option<encore_common::protocol::EqPreset>,
+    /// Loudest DAC register the volume knob may reach (loudness cap, from config).
+    max_volume_reg: u8,
 }
 
 impl AudioSubsystem {
@@ -277,15 +321,30 @@ impl AudioSubsystem {
             dsp_volume: 50,
             dsp_version: String::new(),
             ws_tx: None,
+            led_tx: None,
             shared_drc: SharedDrcParams::new(),
+            shared_eq: SharedEq::new(),
             network_tap: None,
             tap_active: None,
+            network_in: None,
             bridge: MixerBridge::new(),
             idle_timeout_secs: 5,
             standby_timeout_secs: 60,
             dsp_power_gate: false,
             mic_test_active: Arc::new(AtomicBool::new(false)),
+            playback_active: Arc::new(AtomicBool::new(false)),
+            duck_percent: Arc::new(AtomicU8::new(80)),
+            thermal_throttle: Arc::new(AtomicBool::new(false)),
+            eq_boot_preset: None,
+            // Overwritten by apply_power_config at boot; this fallback matches the
+            // calibrated config default (0x37) so it's never louder than intended.
+            max_volume_reg: 0x37,
         }
+    }
+
+    /// Shared flag the thermal-protection task sets to force the amp muted on overheat.
+    pub fn thermal_flag(&self) -> Arc<AtomicBool> {
+        self.thermal_throttle.clone()
     }
 
     /// Apply power management config from EncoreConfigFile.
@@ -293,17 +352,74 @@ impl AudioSubsystem {
         self.idle_timeout_secs = audio.idle_timeout_secs;
         self.standby_timeout_secs = audio.standby_timeout_secs;
         self.dsp_power_gate = audio.dsp_power_gate;
+        self.duck_percent
+            .store(audio.tts_duck_percent, Ordering::Relaxed);
+        self.eq_boot_preset = audio.eq_boot_preset.as_deref().and_then(|s| {
+            use encore_common::protocol::EqPreset::*;
+            match s.to_ascii_lowercase().as_str() {
+                "flat" => Some(Flat),
+                "bass_boost" | "bassboost" | "bass" => Some(BassBoost),
+                "vocal_clarity" | "vocal" => Some(VocalClarity),
+                "warm" => Some(Warm),
+                "late_night" | "latenight" => Some(LateNight),
+                other => {
+                    warn!("Audio: unknown eq_boot_preset '{}', ignoring", other);
+                    None
+                }
+            }
+        });
+        // Loudness cap: clamp the configured ceiling to the firmware hard floor so
+        // config can only ever make the device quieter than the safe limit.
+        self.max_volume_reg = audio
+            .max_volume_reg
+            .max(crate::mcu::dac::MIN_SAFE_VOLUME_REG);
+    }
+
+    /// Load the persisted `[drc]` config into runtime state so dynamics settings
+    /// survive a reboot. Published to the mixer at boot in `run()`. The default
+    /// (empty, disabled) config maps to the same state as before, so a normal
+    /// boot is unchanged.
+    pub fn apply_drc_config(&mut self, drc: &encore_common::config::DrcConfig) {
+        self.drc_state = drc.to_state();
+    }
+
+    /// Load the persisted `[eq]` config into runtime state so a custom EQ
+    /// survives a reboot. An explicit config — custom bands, or an explicit
+    /// disable — takes precedence over the named `eq_boot_preset` convenience,
+    /// which is cleared so it cannot override at boot. The default config
+    /// (enabled, no bands) leaves `eq_boot_preset` and the flat default in
+    /// place, so a normal boot is unchanged.
+    pub fn apply_eq_config(&mut self, eq: &encore_common::config::EqConfig) {
+        if !eq.bands.is_empty() || !eq.enabled {
+            self.eq_state = eq.to_state();
+            self.eq_boot_preset = None;
+        }
     }
 
     /// Set the network tap for group audio streaming.
-    pub fn set_network_tap(&mut self, tap: Arc<MixerSlot>, active: Arc<AtomicBool>) {
+    ///
+    /// `tap` receives the leader's post-EQ/DRC mix for broadcast, `active` gates it,
+    /// and `network_in` is the follower-input slot the mixer inspects to decide whether
+    /// to bypass local EQ/DRC (play leader audio straight through).
+    pub fn set_network_tap(
+        &mut self,
+        tap: Arc<MixerSlot>,
+        active: Arc<AtomicBool>,
+        network_in: Arc<MixerSlot>,
+    ) {
         self.network_tap = Some(tap);
         self.tap_active = Some(active);
+        self.network_in = Some(network_in);
     }
 
     /// Set the WebSocket broadcast channel for state updates to dashboard.
     pub fn set_ws_tx(&mut self, tx: tokio::sync::broadcast::Sender<String>) {
         self.ws_tx = Some(tx);
+    }
+
+    /// Set the LED command channel (for the mic-mute ring indicator).
+    pub fn set_led_tx(&mut self, tx: mpsc::Sender<crate::led::LedCmd>) {
+        self.led_tx = Some(tx);
     }
 
     /// Register an audio source and get a MixerSlot for pushing samples.
@@ -316,6 +432,11 @@ impl AudioSubsystem {
     /// Get a clone of the mic test active flag (shared with mic monitor task).
     pub fn mic_test_flag(&self) -> Arc<AtomicBool> {
         self.mic_test_active.clone()
+    }
+
+    /// Get a clone of the playback-active flag (shared with the sense idle gate).
+    pub fn playback_active_flag(&self) -> Arc<AtomicBool> {
+        self.playback_active.clone()
     }
 
     /// Register a capture consumer for a specific mic channel.
@@ -364,7 +485,7 @@ impl AudioSubsystem {
     /// Stock firmware never mutes amp/DAC after silence — it stays fully
     /// active at all times. We keep the state for dashboard reporting but
     /// do NOT touch hardware (no amp mute, no DAC standby). This matches
-    /// stock behavior and avoids the TAS5756M standby register (0x02)
+    /// stock behavior and avoids the PCM5121 standby register (0x02)
     /// which the stock firmware never writes.
     fn transition_to_idle(&self, _io: &mut IoExpander) {
         info!("Audio: Active → Idle");
@@ -375,7 +496,7 @@ impl AudioSubsystem {
     /// Transition: Idle → Standby.
     ///
     /// DOES NOT put the DAC in standby or mute amp/DAC. Stock firmware
-    /// never uses TAS5756M register 0x02 (power/standby), and writing it
+    /// never uses PCM5121 register 0x02 (power/standby), and writing it
     /// can leave the DAC in a state it cannot recover from. We only
     /// power-gate the DSP if explicitly configured.
     fn transition_to_standby(&self, io: &mut IoExpander, _dac: &mut Dac, dsp: &mut Dsp) {
@@ -419,6 +540,9 @@ impl AudioSubsystem {
         // Ensure DAC is active (undo any prior standby from older firmware)
         dac.exit_standby().ok();
 
+        // No DAC EQ restore needed across sleep/wake: EQ runs in software in the
+        // mixer thread, whose filter state persists. The DAC has no EQ program.
+
         self.bridge.set_state(AudioPowerState::Active);
         self.bridge.silence_count.store(0, Ordering::Release);
         self.broadcast_power_state();
@@ -429,7 +553,7 @@ impl AudioSubsystem {
         self.broadcast(&encore_common::protocol::ServerMsg::DspInfo(
             encore_common::protocol::DspInfo {
                 version: self.dsp_version.clone(),
-                hybridflow: 6,
+                hybridflow: 1, // DAC stays on Program 1 (reconstruction only); EQ is software. Legacy field name.
                 mic_muted: self.mic_muted,
                 dsp_volume: self.dsp_volume,
             },
@@ -453,9 +577,9 @@ impl Subsystem for AudioSubsystem {
         let mut dac = Dac::open().context("DAC init failed")?;
         dac.init()?;
 
-        // NOTE: dac.init_eq() NOT called at boot — selecting HybridFlow 6
-        // causes a CPU hang on some boots (I2C bus contention with DSP).
-        // DAC EQ can be enabled at runtime via dashboard command.
+        // The DAC has no usable EQ engine (see mcu::dac); all EQ/tone shaping is
+        // done in software in the mixer thread. The DAC stays on its default
+        // Program 1 (reconstruction filter only).
 
         // Enable the SoC audio PLL/MCLK early.
         Dsp::enable_audio_clock()?;
@@ -482,6 +606,19 @@ impl Subsystem for AudioSubsystem {
             }
         };
 
+        // Optional DSP event draining (bootup/trigger/dac-gain/error events).
+        // Off by default: enabling exports the DSP flow-control GPIOs and changes the
+        // SPI handshake, which needs on-device validation before it can be the default.
+        // ponytail: env flag, not config — promote to config + bootup-gated unmute once
+        // verified on hardware. Set ENCORE_DSP_EVENTS=1 to drain events into the log.
+        let dsp_events_enabled = std::env::var("ENCORE_DSP_EVENTS").is_ok();
+        if dsp_events_enabled {
+            match dsp.init_gpio() {
+                Ok(()) => info!("Audio: DSP event draining enabled (GPIO 12 data-ready)"),
+                Err(e) => warn!("Audio: DSP init_gpio failed; events disabled: {}", e),
+            }
+        }
+
         // Configure WM8904 codec mixer levels before unmuting.
         init_wm8904_mixer();
 
@@ -506,6 +643,18 @@ impl Subsystem for AudioSubsystem {
         self.broadcast_eq();
         self.broadcast_drc();
         self.broadcast_dsp();
+
+        // Apply the configured boot EQ preset (if any) to the software EQ engine.
+        if let Some(preset) = self.eq_boot_preset {
+            info!("Audio: applying boot EQ preset {:?} (software)", preset);
+            self.eq_state = eq_preset_to_state(preset);
+            self.broadcast_eq();
+        }
+        // Publish the initial EQ state to the mixer thread's software engine.
+        self.shared_eq.update_from_state(&self.eq_state);
+        // Publish the boot DRC state (loaded from `[drc]` config) to the mixer's
+        // compressor, so a configured compressor is active from the first sample.
+        self.shared_drc.update_from_state(&self.drc_state);
 
         let period_size = pcm.period_size();
         let channels = pcm.channels();
@@ -554,9 +703,12 @@ impl Subsystem for AudioSubsystem {
         }
 
         let shared_drc = self.shared_drc.clone();
+        let shared_eq = self.shared_eq.clone();
         let network_tap = self.network_tap.clone();
         let tap_active = self.tap_active.clone();
+        let network_in = self.network_in.clone();
         let mixer_bridge = self.bridge.clone();
+        let duck_percent = self.duck_percent.clone();
         let mixer_handle = std::thread::Builder::new()
             .name("encore-mixer".into())
             .spawn(move || {
@@ -567,9 +719,12 @@ impl Subsystem for AudioSubsystem {
                     samples_per_period,
                     levels_tx,
                     shared_drc,
+                    shared_eq,
                     network_tap,
                     tap_active,
+                    network_in,
                     mixer_bridge,
+                    duck_percent,
                 );
             })
             .context("failed to spawn mixer thread")?;
@@ -607,6 +762,18 @@ impl Subsystem for AudioSubsystem {
         loop {
             tokio::select! {
                 _ = power_tick.tick() => {
+                    // Drain any unsolicited DSP events (opt-in; see ENCORE_DSP_EVENTS).
+                    if dsp_events_enabled {
+                        while let Ok(Some(ev)) = dsp.poll_event() {
+                            info!("Audio: DSP event {:?}", ev);
+                        }
+                    }
+                    // Thermal protection: while overheating, hold the amp muted and skip
+                    // power-state transitions (the only paths that would unmute it).
+                    if self.thermal_throttle.load(Ordering::Relaxed) {
+                        let _ = io.mute();
+                        continue;
+                    }
                     let current_state = self.bridge.state();
 
                     // Check for wake request from mixer (audio detected)
@@ -622,6 +789,9 @@ impl Subsystem for AudioSubsystem {
                     // This prevents power-down transitions while a source is active,
                     // even if the mixer hasn't seen data yet (codec warmup latency).
                     let any_source_active = self.sources.iter().any(|s| s.is_active());
+                    // Publish playback state for the sense idle gate (shared Arc).
+                    self.playback_active
+                        .store(any_source_active, Ordering::Relaxed);
 
                     // In Standby, wake up if any source is active
                     if current_state == AudioPowerState::Standby {
@@ -666,7 +836,7 @@ impl Subsystem for AudioSubsystem {
                             // Volume control uses DAC hardware registers (0x3D/0x3E),
                             // NOT the DSP SPI volume command. This matches the stock
                             // Python driver which adjusts DAC registers 0x00-0xA0.
-                            let reg = crate::mcu::dac::volume_to_reg(level);
+                            let reg = crate::mcu::dac::volume_to_reg(level, self.max_volume_reg);
                             if let Err(e) = dac.set_volume(reg) {
                                 warn!("Audio: DAC volume failed: {}", e);
                             }
@@ -690,26 +860,20 @@ impl Subsystem for AudioSubsystem {
                             if (band as usize) < 10 {
                                 self.eq_state.bands[band as usize] = config;
                                 self.eq_state.preset = None;
-                                if let Err(e) = dac.program_eq(&self.eq_state.bands, self.eq_state.enabled) {
-                                    warn!("Audio: EQ program failed: {}", e);
-                                }
+                                self.shared_eq.update_from_state(&self.eq_state);
                                 self.broadcast_eq();
                             }
                             ctx.health.inc_msg();
                         }
                         Some(AudioCmd::SetEqPreset(preset)) => {
                             self.eq_state = eq_preset_to_state(preset);
-                            if let Err(e) = dac.program_eq(&self.eq_state.bands, self.eq_state.enabled) {
-                                warn!("Audio: EQ preset failed: {}", e);
-                            }
+                            self.shared_eq.update_from_state(&self.eq_state);
                             self.broadcast_eq();
                             ctx.health.inc_msg();
                         }
                         Some(AudioCmd::SetEqEnabled(enabled)) => {
                             self.eq_state.enabled = enabled;
-                            if let Err(e) = dac.program_eq(&self.eq_state.bands, self.eq_state.enabled) {
-                                warn!("Audio: EQ enable toggle failed: {}", e);
-                            }
+                            self.shared_eq.update_from_state(&self.eq_state);
                             self.broadcast_eq();
                             ctx.health.inc_msg();
                         }
@@ -723,13 +887,6 @@ impl Subsystem for AudioSubsystem {
                             self.drc_state.preset = None;
                             self.shared_drc.update_from_state(&self.drc_state);
                             info!("Audio: DRC band {:?} updated", band);
-                            self.broadcast_drc();
-                            ctx.health.inc_msg();
-                        }
-                        Some(AudioCmd::SetDrcCrossover { low_mid_hz, mid_high_hz }) => {
-                            self.drc_state.low_mid_hz = low_mid_hz;
-                            self.drc_state.mid_high_hz = mid_high_hz;
-                            info!("Audio: DRC crossover = {}/{} Hz", low_mid_hz, mid_high_hz);
                             self.broadcast_drc();
                             ctx.health.inc_msg();
                         }
@@ -747,6 +904,14 @@ impl Subsystem for AudioSubsystem {
                             self.broadcast_drc();
                             ctx.health.inc_msg();
                         }
+                        Some(AudioCmd::BroadcastState) => {
+                            // Cold-start resync: re-emit current audio state so a
+                            // dashboard that connected after boot isn't stuck on defaults.
+                            self.broadcast_eq();
+                            self.broadcast_drc();
+                            self.broadcast_dsp();
+                            ctx.health.inc_msg();
+                        }
                         Some(AudioCmd::SetDspVolume(level)) => {
                             self.dsp_volume = level;
                             if let Err(e) = dsp.set_volume(level) {
@@ -759,6 +924,22 @@ impl Subsystem for AudioSubsystem {
                             self.mic_muted = muted;
                             if let Err(e) = dsp.set_mic_mute(muted) {
                                 warn!("Audio: DSP mic mute failed: {}", e);
+                            }
+                            // Mirror stock's "microphone:mute" UI state on the ring: hold the
+                            // mic-off animation while muted, clear it on unmute. Covers both
+                            // the hardware mic button and the dashboard toggle (both land here).
+                            if let Some(ref led) = self.led_tx {
+                                let cmd = if muted {
+                                    crate::led::LedCmd::PlayBin {
+                                        name: "L_301_d_micoff".into(),
+                                        repeat: true,
+                                    }
+                                } else {
+                                    crate::led::LedCmd::Animate(
+                                        encore_common::protocol::LedAnimation::Off,
+                                    )
+                                };
+                                let _ = led.try_send(cmd);
                             }
                             self.broadcast_dsp();
                             ctx.health.inc_msg();
@@ -1155,6 +1336,16 @@ impl DrcProcessor {
 /// Dedicated mixer thread — reads from all active slots, sums, writes to ALSA.
 /// Runs on a real OS thread (not tokio) for deterministic timing.
 /// Supports parking (standby mode): closes PCM and waits on condvar until unparked.
+/// Move a Q16 gain toward `target` by at most `step` (click-free ducking ramp).
+fn ramp_gain(cur: u32, target: u32, step: u32) -> u32 {
+    if cur < target {
+        (cur + step).min(target)
+    } else {
+        cur.saturating_sub(step).max(target)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn mixer_thread(
     pcm: AlsaPcm,
     sources: Vec<Arc<MixerSlot>>,
@@ -1162,9 +1353,12 @@ fn mixer_thread(
     samples_per_period: usize,
     levels_tx: mpsc::Sender<MixerMsg>,
     shared_drc: Arc<SharedDrcParams>,
+    shared_eq: Arc<SharedEq>,
     network_tap: Option<Arc<MixerSlot>>,
     tap_active: Option<Arc<AtomicBool>>,
+    network_in: Option<Arc<MixerSlot>>,
     bridge: Arc<MixerBridge>,
+    duck_percent: Arc<AtomicU8>,
 ) {
     info!(
         "Mixer thread started (period={} samples)",
@@ -1179,6 +1373,10 @@ fn mixer_thread(
     let mut drc = DrcProcessor::new();
     let mut drc_sync_counter = 0u32;
 
+    // Software parametric EQ (reloaded from shared state on generation change).
+    let mut eq = encore_common::dsp::StereoEq::new(48000.0);
+    let mut eq_generation = 0u64;
+
     // VU meter state: accumulate over ~100ms (~10 periods at 512 frames/period)
     // then send a levels update. 48000 / 512 ≈ 94 periods/sec → every 9 periods ≈ 10Hz.
     // Send levels every ~47 periods ≈ 2Hz (was 9 ≈ 10Hz, which flooded
@@ -1191,10 +1389,20 @@ fn mixer_thread(
     let mut peak_r = 0.0f32;
     let mut sample_count = 0u32;
 
-    // FFT state: accumulate 512 mono samples, run FFT every ~24 periods (~4Hz)
-    const FFT_INTERVAL: u32 = 24;
-    let mut fft_buf: [f32; 512] = [0.0; 512];
-    let mut fft_pos: usize = 0;
+    // Spectrum analyzer state. We keep a ring of the most-recent FFT_N mono samples
+    // and transform a fresh window every FFT_INTERVAL periods. A 2048-sample window
+    // buys real low-frequency resolution (bin_hz = 48000/2048 ≈ 23.4 Hz vs 93.75 Hz
+    // for a single 512-period). The send rate stays modest on purpose: high WS
+    // message rates cause WiFi backpressure (see LEVELS_INTERVAL above), so the
+    // dashboard smooths/interpolates this ~8 Hz spectrum at display framerate rather
+    // than us flooding the socket. FFT_N must match the rfft_*() call below.
+    const FFT_N: usize = 2048;
+    const FFT_INTERVAL: u32 = 12; // ~94 periods/s / 12 ≈ 8 spectra/s
+    let mut fft_ring = vec![0.0f32; FFT_N]; // heap ring buffer
+    let mut fft_mags = vec![0.0f32; FFT_N / 2]; // heap magnitude scratch
+    let mut fft_work = [0.0f32; FFT_N]; // 8 KB stack; microfft needs a fixed array
+    let mut fft_widx: usize = 0; // ring write cursor (oldest sample sits here)
+    let mut fft_filled = false; // seen at least FFT_N samples
     let mut fft_counter: u32 = 0;
     let mut waveform_snap: [f32; 256] = [0.0; 256];
 
@@ -1238,9 +1446,31 @@ fn mixer_thread(
             *s = 0;
         }
 
+        // Duck music under the voice/TTS source (wires the tts_duck_percent setting).
+        let voice_active = sources
+            .iter()
+            .any(|s| s.is_voice() && s.is_active() && s.available() >= samples_per_period);
+        let duck = duck_percent.load(Ordering::Relaxed).min(100) as u32;
+        let duck_q16 = crate::audio::mixer::GAIN_UNITY * (100 - duck) / 100;
+        // Ramp toward target each period (~0.5s full transition) so ducking is click-free.
+        const GAIN_STEP: u32 = crate::audio::mixer::GAIN_UNITY / 48;
+
+        // When this speaker is a group follower, the leader's already-EQ/DRC'd
+        // audio arrives in `network_in`. Play it straight through — re-applying
+        // EQ/DRC here would double-process it and desync it from the leader.
+        let follower_playthrough = network_in
+            .as_ref()
+            .map_or(false, |s| s.is_active() && s.available() >= samples_per_period);
+
         // Sum all active sources
         let mut any_active = false;
         for slot in &sources {
+            let target = if slot.is_voice() || !voice_active {
+                crate::audio::mixer::GAIN_UNITY
+            } else {
+                duck_q16
+            };
+            slot.set_gain(ramp_gain(slot.gain(), target, GAIN_STEP));
             if slot.is_active() && slot.available() >= samples_per_period {
                 slot.read_add(&mut mix_buf);
                 any_active = true;
@@ -1275,10 +1505,27 @@ fn mixer_thread(
                 }
             }
 
-            // Apply software DRC (in-place, before VU metering)
-            drc.process(&mut mix_buf);
+            // Reload the software EQ when the command loop publishes a change
+            // (cheap atomic check every period; recompute only on change).
+            let eq_gen = shared_eq.generation.load(Ordering::Acquire);
+            if eq_gen != eq_generation {
+                if let Ok(st) = shared_eq.state.try_lock() {
+                    eq.set_bands(&st.bands, st.enabled);
+                    eq.apply_headroom(); // anti-clip: reserve headroom for any boost
+                    eq_generation = eq_gen;
+                }
+            }
 
-            // Push post-DRC audio to the network tap for group streaming (leader mode)
+            // Apply software EQ + DRC (in-place). Skipped on a follower: the leader
+            // already applied them and broadcast the result, so reprocessing would
+            // double the curve/compression and shift this speaker out of sync.
+            if !follower_playthrough {
+                eq.process_interleaved(&mut mix_buf);
+                drc.process(&mut mix_buf);
+            }
+
+            // Leader broadcast tap: push the FULLY-PROCESSED mix so every follower
+            // inherits the leader's exact EQ/DRC and plays it straight through.
             if let (Some(ref tap), Some(ref active)) = (&network_tap, &tap_active) {
                 if active.load(Ordering::Relaxed) {
                     tap.push(&mix_buf);
@@ -1301,15 +1548,14 @@ fn mixer_thread(
                     peak_r = ar;
                 }
 
-                // Accumulate mono samples for FFT
+                // Feed the spectrum ring with the most-recent mono samples; the
+                // waveform/oscilloscope snapshot is taken from this window at FFT time.
                 let mono = (l + r) * 0.5;
-                if fft_pos < 512 {
-                    fft_buf[fft_pos] = mono;
-                    fft_pos += 1;
-                }
-                // Also capture waveform snapshot (first 256 samples of accumulation)
-                if fft_pos <= 256 {
-                    waveform_snap[fft_pos.saturating_sub(1)] = mono;
+                fft_ring[fft_widx] = mono;
+                fft_widx += 1;
+                if fft_widx >= FFT_N {
+                    fft_widx = 0;
+                    fft_filled = true;
                 }
             }
             sample_count += frames as u32;
@@ -1329,60 +1575,38 @@ fn mixer_thread(
                 levels_counter = 0;
             }
 
-            // FFT processing (~4Hz)
+            // Spectrum (~8 Hz): transform the most-recent FFT_N samples.
             fft_counter += 1;
-            if fft_counter >= FFT_INTERVAL && fft_pos >= 512 {
-                // Apply Hann window
-                for i in 0..512 {
-                    let w = 0.5 * (1.0 - (std::f32::consts::TAU * i as f32 / 512.0).cos());
-                    fft_buf[i] *= w;
+            if fft_counter >= FFT_INTERVAL && fft_filled {
+                fft_counter = 0;
+
+                // Copy the ring into the work buffer in time order (oldest -> newest):
+                // the write cursor points at the oldest sample.
+                let (head, tail) = fft_ring.split_at(fft_widx);
+                fft_work[..tail.len()].copy_from_slice(tail);
+                fft_work[tail.len()..].copy_from_slice(head);
+
+                // Oscilloscope snapshot: the newest 256 samples, before windowing.
+                waveform_snap.copy_from_slice(&fft_work[FFT_N - 256..]);
+
+                // Hann window, then real FFT (FFT_N samples -> FFT_N/2 complex bins).
+                for (i, s) in fft_work.iter_mut().enumerate() {
+                    let w = 0.5 * (1.0 - (std::f32::consts::TAU * i as f32 / FFT_N as f32).cos());
+                    *s *= w;
+                }
+                let spectrum = microfft::real::rfft_2048(&mut fft_work);
+                for (mag, c) in fft_mags.iter_mut().zip(spectrum.iter()) {
+                    *mag = (c.re * c.re + c.im * c.im).sqrt();
                 }
 
-                // Run real FFT (512 samples → 257 complex bins)
-                let spectrum = microfft::real::rfft_512(&mut fft_buf);
-
-                // Map 257 bins to 32 log-spaced magnitude bins (20Hz–20kHz)
-                let bin_hz = 48000.0_f32 / 512.0; // 93.75 Hz per bin
-                let mut bins_32 = [0.0f32; 32];
-                // Log-spaced center frequencies from 20Hz to 20kHz
-                let log_min = 20.0_f32.ln();
-                let log_max = 20000.0_f32.ln();
-                for b in 0..32 {
-                    let t0 = b as f32 / 32.0;
-                    let t1 = (b + 1) as f32 / 32.0;
-                    let f0 = (log_min + t0 * (log_max - log_min)).exp();
-                    let f1 = (log_min + t1 * (log_max - log_min)).exp();
-                    let bin_start = (f0 / bin_hz).floor() as usize;
-                    let bin_end = (f1 / bin_hz).ceil() as usize;
-                    let bin_start = bin_start.clamp(1, 256);
-                    let bin_end = bin_end.max(bin_start + 1).min(257);
-
-                    let mut max_mag = 0.0f32;
-                    for i in bin_start..bin_end {
-                        let re = spectrum[i].re;
-                        let im = spectrum[i].im;
-                        let mag = (re * re + im * im).sqrt();
-                        if mag > max_mag {
-                            max_mag = mag;
-                        }
-                    }
-
-                    // Convert to dBFS and map [-90, 0] to [0.0, 1.0]
-                    let db = if max_mag > 1e-10 {
-                        20.0 * max_mag.log10()
-                    } else {
-                        -90.0
-                    };
-                    bins_32[b] = ((db + 90.0) / 90.0).clamp(0.0, 1.0);
-                }
+                // Normalize + map to log-spaced display bands (pure, unit-tested).
+                let bin_hz = 48_000.0_f32 / FFT_N as f32;
+                let bins_32 = encore_common::dsp::map_log_bins(&fft_mags, bin_hz, FFT_N);
 
                 let _ = levels_tx.try_send(MixerMsg::Spectrum {
                     bins: bins_32,
                     waveform: waveform_snap,
                 });
-
-                fft_pos = 0;
-                fft_counter = 0;
             }
 
             // Write i32 samples directly as S32_LE to PCM

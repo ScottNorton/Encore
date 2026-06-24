@@ -61,9 +61,10 @@ current leader's score is within 20% of the best candidate.
 | **Leader** | Taps the audio mixer, sends 10ms audio chunks (480 stereo frames at 48 kHz) to all followers with a `play_at` timestamp. |
 | **Follower** | Receives audio chunks, buffers them in a jitter buffer, and feeds them to the local mixer. Local sources (Spotify, Bluetooth) continue playing alongside group audio -- they are not suspended. |
 
-The leader adds the configured buffer time to the current clock when setting
-each chunk's `play_at` timestamp. This gives followers time to receive, buffer,
-and schedule playback.
+The leader sets each chunk's `play_at` timestamp by adding a playout lead to
+the current clock. This lead gives followers time to receive, buffer, and
+schedule playback. The lead is owned internally by the buffer controller, not a
+user-configurable value.
 
 When all local audio sources stop on the leader, it releases leadership and
 broadcasts a `LeaderRelease` to all peers. All speakers return to standalone or to their original groups if [Party Mode](groups.md#party-mode) was in use and is disabled.
@@ -90,25 +91,27 @@ releases them at the correct local time (converted from the leader's clock
 using the computed offset). Chunks are inserted in sorted order by play time;
 out-of-order packets are handled by binary-search insertion.
 
-The buffer applies drift correction to prevent long-term clock drift:
+The buffer keeps the beat aligned without altering playback speed:
 
-- If the buffer is overfull (more than 10ms above half the target depth): skips
-  1 stereo frame per 1000 frames (~0.1% speedup)
-- If the buffer is underfull (more than 10ms below half the target depth):
-  duplicates 1 stereo frame per 1000 frames (~0.1% slowdown)
+- On packet loss, the follower inserts exact-length silence so the timeline
+  never slips. The next real chunk lands at the same play time it would have
+  without the loss.
+- Duplicate chunks are dropped and stale ones are rejected by sequence number,
+  so a late or repeated packet never plays twice or out of order.
+- There is no time-stretching or compression. Audio is never sped up or slowed
+  down to chase buffer fullness, so there is no audible wobble.
 
 Buffer health (0-100%) is reported to the leader via periodic health pings
 every 5 seconds.
 
 ### Relay Topology
 
-For larger groups, well-connected speakers can relay audio to
-poorly-connected peers. The leader computes the optimal relay tree based on
-RTT measurements. A relay is used only when the total latency via relay
-(leader-to-relay + relay-to-target) saves at least 30% compared to the
-direct leader-to-target link.
-
-Maximum hop count is 3.
+The wire protocol carries a relay tree so that, for larger groups,
+well-connected speakers could rebroadcast audio to poorly-connected peers
+(leader at the root, maximum hop count 3). This is inactive in v1: the leader
+does not currently compute or send relay assignments, so all followers receive
+audio directly from the leader. The receive-side handler and wire codec exist,
+but nothing produces a relay tree yet.
 
 ### Volume Sync
 
@@ -131,7 +134,6 @@ Add a `[group]` section to `/lsync/encore/config.toml`:
 enabled = true
 group_name = "Home"
 channel = "stereo"
-buffer_ms = 80
 # peer_id is auto-generated on first boot -- do not edit
 # peers = ["192.168.1.50", "10.0.0.5"]
 # party_mode = false
@@ -144,7 +146,6 @@ buffer_ms = 80
 | `enabled`    | bool     | `false`    | Enable multi-speaker group sync. |
 | `group_name` | string   | `"Home"`   | Group name. Speakers with the same name sync together. |
 | `channel`    | string   | `"stereo"` | Channel assignment: `"stereo"`, `"left"`, or `"right"`. |
-| `buffer_ms`  | u16      | `80`       | Jitter buffer size in milliseconds. Higher values improve sync stability at the cost of latency. |
 | `peer_id`    | string   | *auto*     | UUID v4 generated on first boot. Do not edit. |
 | `peers`      | string[] | `[]`       | Bootstrap peer IP addresses for cross-subnet discovery. |
 | `party_mode` | bool     | `false`    | Accept audio streams from leaders in any group, not just your own. |
@@ -233,22 +234,6 @@ peers = ["192.168.1.100"]
 
 ---
 
-## Buffer Tuning
-
-The `buffer_ms` setting controls the tradeoff between sync accuracy and
-perceived latency:
-
-| Value | Use Case |
-|-------|----------|
-| 40-60 ms | Low-latency, best for speakers in the same room (stereo pair). Requires a stable, low-jitter network. |
-| 80 ms | Default. Good balance for most home networks. |
-| 100-150 ms | High reliability. Use when speakers are on different access points, or you hear occasional glitches. |
-
-All speakers in the group should use the same `buffer_ms` value. The leader
-uses this value to set the `play_at` timestamp on outgoing audio chunks.
-
----
-
 ## Troubleshooting
 
 **Speakers don't discover each other**
@@ -261,10 +246,10 @@ uses this value to set the `play_at` timestamp on outgoing audio chunks.
   which blocks device-to-device traffic.
 
 **Audio stutters or glitches on followers**
-- Increase `buffer_ms` (try 120-150). The default 80ms may not be enough
-  for congested or high-jitter networks.
 - Check buffer health in the web dashboard (Speakers page). Healthy buffers
-  stay at 80-100%. Below 50% indicates network issues.
+  stay at 80-100%. Below 50% indicates network issues. On packet loss the
+  follower fills the gap with silence rather than slipping the beat, so a low
+  buffer health reading points at the network rather than at a tuning value.
 - 5 GHz WiFi is preferred over 2.4 GHz for lower jitter. Note that running
   the AP on 2.4 GHz alongside a 5 GHz WiFi connection can cause interference
   on the single-radio chip.

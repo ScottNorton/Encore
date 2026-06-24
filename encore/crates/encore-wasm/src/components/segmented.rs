@@ -34,6 +34,10 @@ impl SegmentedControl {
         dom::set_class(&wrap, "seg-control");
         wrap.set_id(id);
 
+        if let SegmentedMode::Single(_) = &mode {
+            dom::set_attr(&wrap, "role", "radiogroup");
+        }
+
         let mode = Rc::new(mode);
 
         for &(value, label) in options {
@@ -51,25 +55,51 @@ impl SegmentedControl {
             );
             dom::set_text(&btn, label);
 
+            // ARIA: Single is a radiogroup (role=radio + aria-checked); Multi is
+            // independent toggles (aria-pressed). Roving tabindex: only the
+            // active button (or the first, if none) is tab-reachable.
+            match mode.as_ref() {
+                SegmentedMode::Single(_) => {
+                    dom::set_attr(&btn, "role", "radio");
+                    dom::set_attr(
+                        &btn,
+                        "aria-checked",
+                        if is_active { "true" } else { "false" },
+                    );
+                }
+                SegmentedMode::Multi(_) => {
+                    dom::set_attr(
+                        &btn,
+                        "aria-pressed",
+                        if is_active { "true" } else { "false" },
+                    );
+                }
+            }
+            dom::set_attr(&btn, "tabindex", if is_active { "0" } else { "-1" });
+
             let mode_rc = Rc::clone(&mode);
             let value_str = value.to_string();
             let parent_id = id.to_string();
             dom::on_click(&btn, move || {
                 match mode_rc.as_ref() {
                     SegmentedMode::Single(cb) => {
-                        // Deactivate all siblings
+                        // Deactivate all siblings (class + ARIA + tabindex).
                         if let Some(parent) = dom::get_el(&parent_id) {
                             let children = parent.children();
                             for i in 0..children.length() {
                                 if let Some(child) = children.item(i) {
                                     dom::set_class(&child, "seg-btn");
+                                    dom::set_attr(&child, "aria-checked", "false");
+                                    dom::set_attr(&child, "tabindex", "-1");
                                 }
                             }
                         }
-                        // Activate clicked
+                        // Activate clicked.
                         let btn_id = format!("{}-{}", parent_id, value_str);
                         if let Some(el) = dom::get_el(&btn_id) {
                             dom::set_class(&el, "seg-btn active");
+                            dom::set_attr(&el, "aria-checked", "true");
+                            dom::set_attr(&el, "tabindex", "0");
                         }
                         cb(&value_str);
                     }
@@ -86,6 +116,12 @@ impl SegmentedControl {
                                     "seg-btn"
                                 },
                             );
+                            dom::set_attr(
+                                &el,
+                                "aria-pressed",
+                                if now_active { "true" } else { "false" },
+                            );
+                            dom::set_attr(&el, "tabindex", if now_active { "0" } else { "-1" });
                             cb(&value_str, now_active);
                         }
                     }
@@ -93,6 +129,14 @@ impl SegmentedControl {
             });
 
             dom::append(&wrap, &btn);
+        }
+
+        // Guarantee one tab stop: if nothing was active, make the first reachable.
+        if active.is_empty() {
+            let children = wrap.children();
+            if let Some(first) = children.item(0) {
+                dom::set_attr(&first, "tabindex", "0");
+            }
         }
 
         wrap

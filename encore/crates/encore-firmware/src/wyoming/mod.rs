@@ -94,6 +94,35 @@ impl WyomingSubsystem {
     }
 }
 
+/// Enable TCP keepalive on an accepted satellite connection so a silently dead
+/// peer (half-open: the HA host vanished with no FIN/RST — e.g. the satellite's
+/// link flips from USB-RNDIS to Wi-Fi) is detected by the kernel within ~35s.
+/// Without this the single-session accept loop blocks forever in `read_event` on
+/// the dead socket and never accepts HA's reconnect — the socket sits LISTEN with
+/// a stuck backlog while HA retries every 10s in vain.
+#[cfg(target_os = "linux")]
+fn set_tcp_keepalive(stream: &tokio::net::TcpStream) {
+    use std::os::unix::io::AsRawFd;
+    let fd = stream.as_raw_fd();
+    let on: libc::c_int = 1;
+    let idle: libc::c_int = 20; // begin probing after 20s idle
+    let intvl: libc::c_int = 5; // probe every 5s
+    let cnt: libc::c_int = 3; // drop after 3 missed probes (~35s total)
+    let set = |level: libc::c_int, name: libc::c_int, val: &libc::c_int| unsafe {
+        libc::setsockopt(
+            fd,
+            level,
+            name,
+            val as *const libc::c_int as *const libc::c_void,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        )
+    };
+    set(libc::SOL_SOCKET, libc::SO_KEEPALIVE, &on);
+    set(libc::IPPROTO_TCP, libc::TCP_KEEPIDLE, &idle);
+    set(libc::IPPROTO_TCP, libc::TCP_KEEPINTVL, &intvl);
+    set(libc::IPPROTO_TCP, libc::TCP_KEEPCNT, &cnt);
+}
+
 #[cfg(target_os = "linux")]
 #[async_trait::async_trait]
 impl Subsystem for WyomingSubsystem {
@@ -123,6 +152,8 @@ impl Subsystem for WyomingSubsystem {
                     match accept {
                         Ok((stream, addr)) => {
                             info!("Wyoming: client connected from {}", addr);
+                            // Detect a half-open HA connection in ~35s instead of never.
+                            set_tcp_keepalive(&stream);
                             let (read_half, write_half) = stream.into_split();
                             let mut reader = BufReader::new(read_half);
 
@@ -228,12 +259,13 @@ impl Session {
         }
 
         // Phase 2: Streaming loop
-        self.streaming_loop(reader, &mut writer, ctx).await?;
+        let result = self.streaming_loop(reader, &mut writer, ctx).await;
 
-        // Phase 3: Cleanup
+        // Phase 3: Cleanup — always runs, even if the streaming loop errored, so the
+        // mixer slot / LED / voice-cmd state never leaks into the next session.
         self.cleanup();
 
-        Ok(())
+        result
     }
 
     // ── Handshake ──
@@ -277,6 +309,14 @@ impl Session {
             json!({
                 "satellite": {
                     "name": self.name,
+                    // HA's wyoming `Satellite` dataclass requires these (verified via
+                    // Info.from_event introspection + a parse test): without
+                    // attribution/installed, Info.from_event raises and the integration
+                    // setup fails ("missing required arguments 'attribution' and 'installed'").
+                    "attribution": { "name": "Encore", "url": "https://github.com/ScottNorton/Encore" },
+                    "installed": true,
+                    "description": null,
+                    "version": null,
                     "area": "",
                     "has_vad": false,
                     "active_wake_words": null,
@@ -357,7 +397,14 @@ impl Session {
                 event = read_event(reader) => {
                     match event {
                         Ok(Some(ev)) => {
-                            self.handle_event(ev, writer, ctx).await?;
+                            // Never `?` out here: that would skip the mic_rx/trigger_rx
+                            // restore below and leave the satellite permanently deaf on
+                            // every future reconnect. Log and break so cleanup + restore
+                            // run and the accept loop can take a fresh connection.
+                            if let Err(e) = self.handle_event(ev, writer, ctx).await {
+                                warn!("Wyoming: handle_event error: {}, disconnecting", e);
+                                break;
+                            }
                         }
                         Ok(None) => {
                             info!("Wyoming: client disconnected");
@@ -537,9 +584,12 @@ impl Session {
                 warn!("Wyoming: HA error: {}", text);
                 self.muted = false;
                 self.send_voice_cmd(VoiceCmd::Abort);
-                self.send_led(crate::led::LedCmd::Animate(
-                    encore_common::protocol::LedAnimation::Off,
-                ));
+                // Play the dedicated error animation once (stock state "voice:error"),
+                // then playback ends and the ring falls back to the idle animation.
+                self.send_led(crate::led::LedCmd::PlayBin {
+                    name: "L_108_c_error".into(),
+                    repeat: false,
+                });
             }
 
             other => {

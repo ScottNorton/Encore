@@ -72,18 +72,18 @@ by Encore for DSP bidirectional SPI messaging.
 
 ```
 7x MEMS Mics → DSP (ADSP-21489 SHARC) → WM8904 Codec → SoC I2S → ALSA
-SoC I2S → WM8904 → DSP → TAS5756M DAC (I2C 0x4C) → Amp → 3x Speakers
+SoC I2S → WM8904 → DSP → PCM5121 DAC (I2C 0x4C) → TPA3116 Amp → 3x Speakers
 ```
 
 ### Components
 
 | Component | Chip | Interface | Purpose |
 |-----------|------|-----------|---------|
-| **DSP** | Analog Devices ADSP-21489 (SHARC) | SPI (spidev0.0) | 7-mic beamforming, wake word, volume, mic mute |
-| **DAC** | TI TAS5756M (PCM512x family) | I2C 0x4C | Audio DAC with miniDSP (10-band parametric EQ, 3-band DRC) |
-| **Codec** | Wolfson WM8904 | I2C 0x1A (kernel) | I2S interface between SoC and DSP, ALSA card 1 |
+| **DSP** | Analog Devices ADSP-21489 SHARC (marked AD91210Z) | SPI (spidev0.0) | 7-mic beamforming, wake word, volume, mic mute |
+| **DAC** | TI PCM5121 (PCM512x family) | I2C 0x4C | Audio DAC: digital volume + reconstruction filter (Program 1). Has an on-chip miniDSP (Program 5) but it is **unused** — using it needs the full PurePath flow coefficient image we don't have; EQ/DRC run in software on the SoC |
+| **Codec** | Wolfson WM8904 | I2C 0x1A (kernel) | I2S interface between SoC and DSP, ALSA card 1 (on compute daughterboard) |
 | **IO Expander** | TI PCA9538 | I2C 0x20 | Amp mute, DAC mute, DSP reset |
-| **Amplifier** | (on amp board) | Via IO Expander | 3-channel speaker driver |
+| **Amplifier** | TI TPA3116(D2) Class-D | Via IO Expander mute | 3-channel speaker driver (amp board 40-HKTANA-MAE4G) |
 | **Microphones** | 7x MEMS | DSP SPORT inputs (TDM) | Circular array for 360-degree beamforming |
 
 ### ALSA Devices
@@ -174,8 +174,8 @@ Findings indicate it includes it's own DAC, but the GPU does not support compute
 | 0x1A | Wolfson WM8904 | Kernel-managed | Audio codec (ALSA driver) |
 | 0x20 | TI PCA9538 IO Expander | Fully controlled | Amp mute (bit 1), DAC mute (bit 2), DSP reset (bit 0), DSP power (bits 3-4) |
 | 0x36 | TI MSP430FR5739 MCU | Fully controlled | LED ring, buttons, volume ring, touch, proximity |
-| 0x48 | (pad exists) | Low priority | Temperature sensor footprint, needs hwmon driver tsen-adc33.c |
-| 0x4C | TI TAS5756M DAC | Fully controlled | Audio DAC with miniDSP EQ/DRC |
+| 0x48 | (pad exists) | Unpopulated | Spare I2C temperature-sensor footprint, not fitted. The real die-temp sensor is NOT on I2C: it is the on-die SoC TSEN ADC (MMIO F7FCD000), driver-backed by `tsen-adc33.c` (`CONFIG_SENSORS_TSEN_ADC33=y`), exposed via hwmon at `/sys/class/hwmon/hwmon0/device/tsen_temp`. See [feature-and-hardware-gaps.md](feature-and-hardware-gaps.md) findings 1-2. |
+| 0x4C | TI PCM5121 DAC | Volume + reconstruction (Program 1) | On-chip miniDSP (Program 5) present but **unused** — needs the full PurePath flow image we lack; EQ/DRC run in software |
 | 0x64 | — | **Unused** | Zero references in any decompiled binary. Absent or unpopulated. |
 
 ### IO Expander (0x20) — Mute & Power Control
@@ -185,12 +185,11 @@ Findings indicate it includes it's own DAC, but the GPU does not support compute
 | 0 | 0x01 | 0x01 | DSP reset | Released (normal) | Held in reset |
 | 1 | 0x02 | 0x01 | Amp mute | **MUTED** | **UNMUTED** |
 | 2 | 0x04 | 0x01 | DAC mute | **UNMUTED** | **MUTED** |
-| 3 | 0x08 | 0x02 | DSP power 2 | Power off | **Power on** |
-| 4 | 0x10 | 0x01 | DSP power 1 | Power off | **Power on** |
+| 3 | 0x08 | 0x01 | DSP power 2 | **Power on** | Power off |
+| 4 | 0x10 | 0x01 | DSP power 1 | **Power on** | Power off |
 
-**DSP power bits are active-low**: clear the bit to enable power, set to disable.
-Confirmed from `mcu-interface.c` at 0x000b3a7c (`com.harman.vui.powerdspcontrol` WAMP handler). Bits 3 and 4 span two IO Expander registers (0x01 and 0x02) — the stock code does read-modify-write
-on both registers.
+**DSP power bits 3+4 are both in register 0x01 and are active-HIGH**: set the bit to enable power, clear to disable.
+Confirmed from `mcu-interface.c` `FUN_000b3a7c` (`com.harman.vui.powerdspcontrol`): the power-ON path reads reg 0x01 and ORs 0x10 (bit 4) then 0x08 (bit 3); the power-OFF path reads reg 0x01 and ANDs 0xF7 then 0xEF. Both bits live in register 0x01 (not 0x02), and 1 = powered on. These are two active-high enable lines (likely the SHARC's core + I/O rails), not the PCM5121 miniDSP.
 
 **Unmute sequence** (order matters — DAC first to avoid full-power white noise):
 1. Read reg 0x01, OR 0x04 (unmute DAC), write back

@@ -10,6 +10,7 @@
 #[cfg(target_os = "linux")]
 mod aptx;
 mod avdtp;
+mod avrcp;
 mod l2cap;
 mod mgmt;
 #[cfg(target_os = "linux")]
@@ -23,7 +24,6 @@ use crate::subsystem::{Subsystem, SubsystemContext};
 use anyhow::{Context, Result};
 use encore_common::protocol::SubsystemState;
 use std::os::fd::AsRawFd;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::{interval, Duration};
@@ -54,8 +54,74 @@ const BT_MODULE_PATH: &str =
 const HCI_SYSFS_PATH: &str = "/sys/class/bluetooth/hci0";
 /// WiFi MAC sysfs path — used to derive BT MAC.
 const WIFI_MAC_PATH: &str = "/sys/class/net/wlan0/address";
+/// Remembers the last connected source so the speaker can re-page it on boot.
+#[cfg(target_os = "linux")]
+const BT_LAST_PATH: &str = "/lsync/encore/bt_last";
 
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Persist the address of the source we just connected to (atomic write).
+#[cfg(target_os = "linux")]
+fn save_last_device(addr: &str) {
+    let tmp = format!("{}.tmp", BT_LAST_PATH);
+    if std::fs::write(&tmp, addr).is_ok() {
+        let _ = std::fs::rename(&tmp, BT_LAST_PATH);
+    }
+}
+
+/// Persist a new "visible as" Bluetooth name to the config so it survives reboot.
+#[cfg(target_os = "linux")]
+fn persist_device_name(name: &str) {
+    let path = std::path::Path::new("/lsync/encore/config.toml");
+    let mut cfg = encore_common::config::EncoreConfigFile::load(path).unwrap_or_default();
+    cfg.device.name = name.to_string();
+    if let Err(e) = cfg.save(path) {
+        warn!("Bluetooth: failed to persist device name: {}", e);
+    }
+}
+
+/// The address of the last source we connected to, if any.
+#[cfg(target_os = "linux")]
+fn load_last_device() -> Option<String> {
+    std::fs::read_to_string(BT_LAST_PATH)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+const BT_NAMES_PATH: &str = "/lsync/encore/bt_names";
+
+/// Load the persisted MAC -> friendly-name map (tab-separated `MAC\tname` lines)
+/// so the paired list can show readable names across reboots.
+fn load_paired_names() -> std::collections::HashMap<String, String> {
+    let mut m = std::collections::HashMap::new();
+    if let Ok(s) = std::fs::read_to_string(BT_NAMES_PATH) {
+        for line in s.lines() {
+            if let Some((addr, name)) = line.split_once('\t') {
+                if !addr.is_empty() && !name.is_empty() {
+                    m.insert(addr.to_string(), name.to_string());
+                }
+            }
+        }
+    }
+    m
+}
+
+/// Persist the MAC -> friendly-name map (atomic write so an interrupted save
+/// can't truncate the file).
+fn save_paired_names(map: &std::collections::HashMap<String, String>) {
+    let mut out = String::new();
+    for (addr, name) in map {
+        out.push_str(addr);
+        out.push('\t');
+        out.push_str(name);
+        out.push('\n');
+    }
+    let tmp = format!("{}.tmp", BT_NAMES_PATH);
+    if std::fs::write(&tmp, out).is_ok() {
+        let _ = std::fs::rename(&tmp, BT_NAMES_PATH);
+    }
+}
 
 /// Bluetooth connection state.
 #[derive(Debug, Clone, PartialEq)]
@@ -70,6 +136,32 @@ pub struct BluetoothSubsystem {
     slot: Arc<MixerSlot>,
     device_name: String,
     state: BtState,
+    /// Codec negotiated for the active stream (for dashboard status).
+    cur_codec: Option<A2dpCodec>,
+    /// True while audio is actively streaming (false when paused).
+    playing: bool,
+    /// Bonded devices (address + persisted friendly name), mirrored from mgmt
+    /// for dashboard status.
+    paired: Vec<encore_common::protocol::BtPairedDevice>,
+    /// Persisted MAC -> friendly-name map, so the paired list shows readable
+    /// names across reboots (link keys store only the address).
+    paired_names: std::collections::HashMap<String, String>,
+    /// Remaining boot-time auto-reconnect attempts (the source may not be ready
+    /// the instant we boot). Counts down on the poll ticker, zeroed on connect.
+    auto_reconnect_retries: u8,
+    /// Mesh name override: `Some(group_name)` when grouped and mesh is on, else
+    /// `None` (advertise our own `device_name`).
+    mesh_name: Option<String>,
+    /// Last name applied via SET_LOCAL_NAME, to skip redundant updates.
+    applied_name: String,
+    /// Name sent to SET_LOCAL_NAME but not yet confirmed by CMD_COMPLETE;
+    /// `applied_name` is only updated once the controller accepts it.
+    pending_bt_name: Option<String>,
+    /// Receives mesh-name updates from the group subsystem.
+    bt_name_rx: Option<mpsc::Receiver<Option<String>>>,
+    /// AVRCP absolute volume: the controller (source) sets our master volume
+    /// (0..=100) through this; main.rs forwards it to the LED volume authority.
+    avrcp_vol_tx: Option<mpsc::Sender<u8>>,
     cmd_rx: Option<mpsc::Receiver<encore_common::protocol::BtAction>>,
     ws_tx: Option<tokio::sync::broadcast::Sender<String>>,
     suspend_rx: Option<mpsc::Receiver<bool>>,
@@ -83,15 +175,36 @@ impl BluetoothSubsystem {
         cmd_rx: Option<mpsc::Receiver<encore_common::protocol::BtAction>>,
         ws_tx: Option<tokio::sync::broadcast::Sender<String>>,
     ) -> Self {
+        let device_name = device_name.unwrap_or_else(|| "Encore".to_string());
         Self {
             slot,
-            device_name: device_name.unwrap_or_else(|| "Encore".to_string()),
+            applied_name: device_name.clone(),
+            pending_bt_name: None,
+            device_name,
             state: BtState::Off,
+            cur_codec: None,
+            playing: false,
+            paired: Vec::new(),
+            paired_names: load_paired_names(),
+            auto_reconnect_retries: 0,
+            mesh_name: None,
+            bt_name_rx: None,
+            avrcp_vol_tx: None,
             cmd_rx,
             ws_tx,
             suspend_rx: None,
             group_cmd_tx: None,
         }
+    }
+
+    /// Set the channel that receives mesh-name updates from the group subsystem.
+    pub fn set_bt_name_rx(&mut self, rx: mpsc::Receiver<Option<String>>) {
+        self.bt_name_rx = Some(rx);
+    }
+
+    /// Set the channel AVRCP uses to push absolute-volume changes (0..=100).
+    pub fn set_avrcp_vol_tx(&mut self, tx: mpsc::Sender<u8>) {
+        self.avrcp_vol_tx = Some(tx);
     }
 
     /// Set the suspend channel for group sync (follower mode pauses BT).
@@ -110,6 +223,97 @@ impl BluetoothSubsystem {
             if let Ok(json) = serde_json::to_string(&msg) {
                 let _ = tx.send(json);
             }
+        }
+    }
+
+    /// Broadcast the current connection + streaming status to dashboards.
+    /// Sent on every state change and rebroadcast periodically so a
+    /// late-joining client sees the live codec/playing state, not just events.
+    fn broadcast_bt_status(&self) {
+        let connected = if let BtState::Connected { name, address } = &self.state {
+            Some(encore_common::protocol::BtConnectedDevice {
+                name: name.clone(),
+                addr: address.clone(),
+                codec: self.cur_codec.map(|c| c.to_string()).unwrap_or_default(),
+            })
+        } else {
+            None
+        };
+        let status = encore_common::protocol::BtStatus {
+            connected,
+            playing: self.playing,
+            paired: self.paired.clone(),
+            name: self.applied_name.clone(),
+        };
+        if let Some(ref tx) = self.ws_tx {
+            let msg = encore_common::protocol::ServerMsg::BluetoothStatus(status);
+            if let Ok(json) = serde_json::to_string(&msg) {
+                let _ = tx.send(json);
+            }
+        }
+    }
+
+    /// Mirror the bonded-device list out of the mgmt socket so dashboard status
+    /// reflects pairings (call after setup and whenever link keys change).
+    #[cfg(target_os = "linux")]
+    fn refresh_paired(&mut self, mgmt: &mgmt::MgmtSocket) {
+        self.paired = mgmt
+            .paired_addrs()
+            .iter()
+            .map(|a| {
+                let addr = l2cap::bdaddr_to_string(a);
+                let name = self.paired_names.get(&addr).cloned().unwrap_or_default();
+                encore_common::protocol::BtPairedDevice { addr, name }
+            })
+            .collect();
+        // Keep the name cache aligned to bonded devices (plus the live
+        // connection, which may not be bonded yet) so names a scan once cached
+        // for transient/foreign devices don't linger — and existing cruft from
+        // before the DeviceFound fix is dropped on the next refresh.
+        let keep: std::collections::HashSet<String> =
+            self.paired.iter().map(|p| p.addr.clone()).collect();
+        let connected = match &self.state {
+            BtState::Connected { address, .. } => Some(address.clone()),
+            _ => None,
+        };
+        let before = self.paired_names.len();
+        self.paired_names
+            .retain(|addr, _| keep.contains(addr) || connected.as_deref() == Some(addr));
+        if self.paired_names.len() != before {
+            save_paired_names(&self.paired_names);
+        }
+    }
+
+    /// Record a device's friendly name (learned on connect) so the paired list
+    /// shows it across reboots. Returns true if the map changed.
+    #[cfg(target_os = "linux")]
+    fn remember_name(&mut self, addr: &str, name: &str) -> bool {
+        if name.is_empty() || name == "Unknown" || name == addr {
+            return false;
+        }
+        if self.paired_names.get(addr).map(String::as_str) == Some(name) {
+            return false;
+        }
+        self.paired_names.insert(addr.to_string(), name.to_string());
+        save_paired_names(&self.paired_names);
+        true
+    }
+
+    /// Apply the effective BT name — the mesh group name when set, else our own
+    /// device name — via SET_LOCAL_NAME, skipping redundant updates.
+    #[cfg(target_os = "linux")]
+    async fn apply_bt_name(&mut self, mgmt: &mgmt::MgmtSocket) {
+        let desired = self
+            .mesh_name
+            .clone()
+            .unwrap_or_else(|| self.device_name.clone());
+        // Send only if it's not already on air and not already in flight; commit
+        // `applied_name` (and report it) from the SET_LOCAL_NAME CMD_COMPLETE, so a
+        // controller-rejected name isn't reported as the live one.
+        if desired != self.applied_name && self.pending_bt_name.as_deref() != Some(&desired) {
+            info!("Bluetooth: advertised name -> {} (pending)", desired);
+            mgmt.set_local_name(&desired).await;
+            self.pending_bt_name = Some(desired);
         }
     }
 }
@@ -163,12 +367,28 @@ impl Subsystem for BluetoothSubsystem {
                         l2cap::bdaddr_to_string(&bdaddr)
                     );
                     self.state = BtState::Discoverable;
+                    self.refresh_paired(&mgmt);
                 }
                 Err(e) => {
                     return Err(e).context("adapter setup failed");
                 }
             }
         }
+
+        // Shared owning handle to the active AVCTP socket, for subsystem-driven
+        // AVRCP transport keys / volume notifications. An Arc<OwnedFd> (not a raw
+        // int) so a writer holding a clone keeps the fd alive across its write —
+        // the session can't close it mid-write (SEQPACKET keeps writes atomic).
+        #[cfg(target_os = "linux")]
+        let avrcp_fd = std::sync::Arc::new(std::sync::Mutex::new(
+            None::<std::sync::Arc<std::os::fd::OwnedFd>>,
+        ));
+        // Volume-changed notification registration (controller -> us): the label
+        // it registered on, and whether a notification is currently armed.
+        #[cfg(target_os = "linux")]
+        let avrcp_vol_label = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
+        #[cfg(target_os = "linux")]
+        let avrcp_vol_registered = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         // ── Phase 3: Open SDP and AVDTP sockets ──
         #[cfg(target_os = "linux")]
@@ -193,6 +413,27 @@ impl Subsystem for BluetoothSubsystem {
 
             let rx = avdtp::spawn_avdtp(avdtp_fd, self.slot.clone());
             info!("Bluetooth: AVDTP listening on PSM 25");
+
+            // AVCTP (AVRCP control) on L2CAP PSM 23. Permissive link mode for
+            // now — some sources connect AVRCP without encryption, and the
+            // audio path is independent, so accept whatever connects and log.
+            let avctp_fd = l2cap::l2cap_socket().context("AVCTP: socket")?;
+            l2cap::l2cap_bind(avctp_fd.as_raw_fd(), avrcp::PSM_AVCTP).context("AVCTP: bind")?;
+            l2cap::l2cap_listen(avctp_fd.as_raw_fd(), 2).context("AVCTP: listen")?;
+            // AVRCP target: absolute volume -> master volume. Seed current volume
+            // at mid-scale; the controller overwrites it on connect.
+            let avrcp_cur_vol = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(50));
+            avrcp::spawn_avctp(
+                avctp_fd,
+                self.avrcp_vol_tx.clone(),
+                avrcp_cur_vol,
+                self.ws_tx.clone(),
+                avrcp_fd.clone(),
+                avrcp_vol_label.clone(),
+                avrcp_vol_registered.clone(),
+            );
+            info!("Bluetooth: AVCTP target listening on PSM {}", avrcp::PSM_AVCTP);
+
             rx
         };
 
@@ -200,7 +441,18 @@ impl Subsystem for BluetoothSubsystem {
         #[cfg(target_os = "linux")]
         {
             let mut ticker = interval(POLL_INTERVAL);
-            let mut reader_stop: Option<Arc<AtomicBool>> = None;
+
+            // Auto-reconnect: A2DP sinks wait for the source, so a reboot left
+            // the speaker silent until a manual reconnect. Page the last-used
+            // source (if still bonded) on the poll ticker for a short window —
+            // retries cover the case where the source isn't ready the instant
+            // we boot. Zeroed once any device connects.
+            let auto_reconnect_addr = load_last_device()
+                .filter(|a| self.paired.iter().any(|p| p.addr == *a));
+            if auto_reconnect_addr.is_some() {
+                self.auto_reconnect_retries = 3;
+            }
+
             let has_cmds = self.cmd_rx.is_some();
             let (_dummy_tx, dummy_rx) = mpsc::channel::<encore_common::protocol::BtAction>(1);
             let mut cmd_rx = self.cmd_rx.take().unwrap_or(dummy_rx);
@@ -208,6 +460,19 @@ impl Subsystem for BluetoothSubsystem {
             let (_suspend_dummy_tx, suspend_dummy_rx) = mpsc::channel::<bool>(1);
             let mut suspend_rx = self.suspend_rx.take().unwrap_or(suspend_dummy_rx);
             let mut suspended = false;
+            let has_bt_name = self.bt_name_rx.is_some();
+            let (_btname_dummy_tx, btname_dummy_rx) = mpsc::channel::<Option<String>>(1);
+            let mut bt_name_rx = self.bt_name_rx.take().unwrap_or(btname_dummy_rx);
+
+            // Watch the dashboard broadcast for VolumeChanged so we can tell a
+            // registered AVRCP controller (the source) when our volume moves.
+            let has_ws = self.ws_tx.is_some();
+            let (_ws_dummy_tx, ws_dummy_rx) = tokio::sync::broadcast::channel::<String>(1);
+            let mut ws_rx = self
+                .ws_tx
+                .as_ref()
+                .map(|t| t.subscribe())
+                .unwrap_or(ws_dummy_rx);
 
             loop {
                 tokio::select! {
@@ -216,34 +481,58 @@ impl Subsystem for BluetoothSubsystem {
                         self.handle_mgmt_event(&mut mgmt, event).await;
                     }
 
-                    // AVDTP events (streaming start/stop/disconnect)
+                    // AVDTP events (start/pause/resume/stop/disconnect).
+                    // The AVDTP loop owns the reader thread; these events only
+                    // drive mixer-slot, group and UI state.
                     Some(event) = avdtp_rx.recv() => {
                         match event {
-                            avdtp::AvdtpEvent::Streaming { codec, stop } => {
-                                if let Some(old) = reader_stop.take() {
-                                    old.store(true, Ordering::Relaxed);
-                                }
-                                reader_stop = Some(stop);
+                            avdtp::AvdtpEvent::Streaming { codec } => {
+                                self.slot.set_active(true);
+                                self.cur_codec = Some(codec);
+                                self.playing = true;
+                                // A live stream proves the source is connected even
+                                // if mgmt's DeviceConnected was missed (e.g. an Encore
+                                // restart over a surviving ACL); cancel auto-reconnect.
+                                self.auto_reconnect_retries = 0;
                                 info!("Bluetooth: A2DP {} streaming", codec);
+                                self.broadcast_bt_status();
                                 if let Some(ref tx) = self.group_cmd_tx {
                                     let _ = tx.try_send(crate::group::GroupCmd::LocalAudioStarted { source: "bluetooth".into() });
                                 }
                             }
-                            avdtp::AvdtpEvent::Stopped => {
-                                if let Some(stop) = reader_stop.take() {
-                                    stop.store(true, Ordering::Relaxed);
+                            avdtp::AvdtpEvent::Resumed { codec } => {
+                                self.slot.set_active(true);
+                                self.cur_codec = Some(codec);
+                                self.playing = true;
+                                self.auto_reconnect_retries = 0;
+                                info!("Bluetooth: A2DP {} resumed", codec);
+                                self.broadcast_bt_status();
+                                if let Some(ref tx) = self.group_cmd_tx {
+                                    let _ = tx.try_send(crate::group::GroupCmd::LocalAudioStarted { source: "bluetooth".into() });
                                 }
+                            }
+                            avdtp::AvdtpEvent::Paused => {
+                                // Reader stays alive for a fast resume; just mute.
                                 self.slot.set_active(false);
+                                self.playing = false;
+                                self.broadcast_bt_status();
+                                if let Some(ref tx) = self.group_cmd_tx {
+                                    let _ = tx.try_send(crate::group::GroupCmd::LocalAudioStopped { source: "bluetooth".into() });
+                                }
+                            }
+                            avdtp::AvdtpEvent::Stopped => {
+                                self.slot.set_active(false);
+                                self.playing = false;
+                                self.broadcast_bt_status();
                                 if let Some(ref tx) = self.group_cmd_tx {
                                     let _ = tx.try_send(crate::group::GroupCmd::LocalAudioStopped { source: "bluetooth".into() });
                                 }
                             }
                             avdtp::AvdtpEvent::Disconnected => {
-                                if let Some(stop) = reader_stop.take() {
-                                    stop.store(true, Ordering::Relaxed);
-                                }
                                 self.slot.set_active(false);
                                 self.slot.clear();
+                                self.cur_codec = None;
+                                self.playing = false;
                                 if let Some(ref tx) = self.group_cmd_tx {
                                     let _ = tx.try_send(crate::group::GroupCmd::LocalAudioStopped { source: "bluetooth".into() });
                                 }
@@ -254,33 +543,114 @@ impl Subsystem for BluetoothSubsystem {
                                         encore_common::protocol::BtEvent::DeviceDisconnected { addr },
                                     );
                                     self.state = BtState::Discoverable;
+                                    // Re-advertise here too: an AVDTP teardown can be
+                                    // the only disconnect we see, and once state has
+                                    // left Connected the mgmt DeviceDisconnected arm
+                                    // skips its own set_discoverable(true).
+                                    mgmt.set_discoverable(true).await;
                                 }
+                                self.broadcast_bt_status();
                             }
                         }
                     }
 
                     // Dashboard commands
                     Some(action) = cmd_rx.recv(), if has_cmds => {
-                        if let encore_common::protocol::BtAction::Forget { ref addr } = action {
-                            if let Some(bdaddr) = l2cap::string_to_bdaddr(addr) {
-                                mgmt.remove_link_key(&bdaddr);
+                        match action {
+                            encore_common::protocol::BtAction::SetName { name } => {
+                                info!("Bluetooth: visible-as name -> {}", name);
+                                self.device_name = name.clone();
+                                persist_device_name(&name);
+                                // Applies now if not meshed; if meshed, the mesh
+                                // name stays on air and this takes effect later.
+                                self.apply_bt_name(&mgmt).await;
+                            }
+                            encore_common::protocol::BtAction::Forget { addr } => {
+                                if let Some(bdaddr) = l2cap::string_to_bdaddr(&addr) {
+                                    mgmt.remove_link_key(&bdaddr);
+                                }
+                                // Drop the persisted friendly name too, so a
+                                // forgotten device doesn't leave a stale entry.
+                                if self.paired_names.remove(&addr).is_some() {
+                                    save_paired_names(&self.paired_names);
+                                }
+                                mgmt.handle_action(
+                                    encore_common::protocol::BtAction::Forget { addr },
+                                )
+                                .await;
+                                self.refresh_paired(&mgmt);
+                                self.broadcast_bt_status();
+                            }
+                            encore_common::protocol::BtAction::RequestStatus => {
+                                self.broadcast_bt_status();
+                            }
+                            encore_common::protocol::BtAction::Transport { key } => {
+                                // Clone the owning fd handle; holding the Arc keeps
+                                // the socket alive for the duration of the write.
+                                let session = avrcp_fd.lock().unwrap().clone();
+                                match (avrcp::passthrough_op(&key), session) {
+                                    (Some(op), Some(fd)) => {
+                                        info!("Bluetooth: AVRCP transport '{}'", key);
+                                        avrcp::send_passthrough(fd.as_raw_fd(), op);
+                                    }
+                                    (Some(_), None) => info!(
+                                        "Bluetooth: transport '{}' ignored (no AVRCP session)",
+                                        key
+                                    ),
+                                    (None, _) => {
+                                        info!("Bluetooth: unknown transport key '{}'", key)
+                                    }
+                                }
+                            }
+                            other => {
+                                mgmt.handle_action(other).await;
                             }
                         }
-                        mgmt.handle_action(action).await;
                     }
 
                     // Group suspend/resume
                     Some(suspend) = suspend_rx.recv(), if has_suspend => {
+                        // Follower mode mutes local BT output but keeps the
+                        // reader running, so unfollowing resumes instantly
+                        // without re-handshaking the source.
                         if suspend && !suspended {
                             info!("Bluetooth: suspended by group (follower mode)");
                             suspended = true;
-                            if let Some(stop) = reader_stop.take() {
-                                stop.store(true, Ordering::Relaxed);
-                            }
                             self.slot.set_active(false);
                         } else if !suspend && suspended {
                             info!("Bluetooth: resumed by group");
                             suspended = false;
+                            self.slot.set_active(true);
+                        }
+                    }
+
+                    // Mesh name updates from the group subsystem.
+                    Some(mesh) = bt_name_rx.recv(), if has_bt_name => {
+                        self.mesh_name = mesh;
+                        self.apply_bt_name(&mgmt).await;
+                    }
+
+                    // Local volume changed → tell a registered AVRCP controller.
+                    res = ws_rx.recv(), if has_ws => {
+                        if let Ok(json) = res {
+                            if json.contains("VolumeChanged") {
+                                if let Ok(encore_common::protocol::ServerMsg::VolumeChanged { level, .. }) =
+                                    serde_json::from_str::<encore_common::protocol::ServerMsg>(&json)
+                                {
+                                    use std::sync::atomic::Ordering;
+                                    if avrcp_vol_registered.swap(false, Ordering::Relaxed) {
+                                        // Clone the owning fd handle so it stays
+                                        // alive across the write (no use-after-close).
+                                        if let Some(fd) = avrcp_fd.lock().unwrap().clone() {
+                                            let label = avrcp_vol_label.load(Ordering::Relaxed);
+                                            let _ = l2cap::raw_write(
+                                                fd.as_raw_fd(),
+                                                &avrcp::build_volume_changed(label, level),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -291,6 +661,30 @@ impl Subsystem for BluetoothSubsystem {
                             .unwrap_or_default()
                             .as_secs();
                         ctx.health.beat(now);
+                        // Rebroadcast BT status so dashboards that connected
+                        // mid-stream pick up the live codec/playing state.
+                        self.broadcast_bt_status();
+                        // Boot-time auto-reconnect: page the last source until
+                        // it connects or the retry budget runs out.
+                        if self.auto_reconnect_retries > 0
+                            && matches!(self.state, BtState::Discoverable)
+                            && self.cur_codec.is_none()
+                            && !self.playing
+                        {
+                            if let Some(ref addr) = auto_reconnect_addr {
+                                info!(
+                                    "Bluetooth: auto-reconnect attempt ({} left) -> {}",
+                                    self.auto_reconnect_retries, addr
+                                );
+                                mgmt.handle_action(
+                                    encore_common::protocol::BtAction::Connect {
+                                        addr: addr.clone(),
+                                    },
+                                )
+                                .await;
+                            }
+                            self.auto_reconnect_retries -= 1;
+                        }
                     }
 
                     // Shutdown
@@ -301,10 +695,8 @@ impl Subsystem for BluetoothSubsystem {
                 }
             }
 
-            // Clean shutdown
-            if let Some(stop) = reader_stop.take() {
-                stop.store(true, Ordering::Relaxed);
-            }
+            // Clean shutdown — the detached AVDTP thread and its reader exit
+            // with the process; just silence the slot here.
             self.slot.set_active(false);
         }
 
@@ -325,17 +717,34 @@ impl BluetoothSubsystem {
         match event {
             mgmt::MgmtEvent::DeviceConnected { addr, name, .. } => {
                 let addr_str = l2cap::bdaddr_to_string(&addr);
-                let name_str = name.unwrap_or_else(|| "Unknown".to_string());
+                // Prefer the EIR name; if the source didn't send one, fall back to
+                // a name we learned on a past connection, then to "Unknown".
+                let name_str = name
+                    .filter(|n| !n.is_empty())
+                    .or_else(|| self.paired_names.get(&addr_str).cloned())
+                    .unwrap_or_else(|| "Unknown".to_string());
                 info!("Bluetooth: CONNECTED: {} ({})", name_str, addr_str);
 
                 self.state = BtState::Connected {
                     name: name_str.clone(),
                     address: addr_str.clone(),
                 };
+                // Remember the friendly name so the paired list can show it
+                // later (link keys store only the address).
+                if self.remember_name(&addr_str, &name_str) {
+                    self.refresh_paired(mgmt);
+                }
+                save_last_device(&addr_str);
+                // Connected — stop any pending boot auto-reconnect retries.
+                self.auto_reconnect_retries = 0;
+                // Hide from new-device scans while in use (paired devices can
+                // still reconnect — connectable stays on).
+                mgmt.set_discoverable(false).await;
                 self.broadcast_bt_event(encore_common::protocol::BtEvent::DeviceConnected {
                     name: name_str,
                     addr: addr_str,
                 });
+                self.broadcast_bt_status();
             }
             mgmt::MgmtEvent::DeviceDisconnected { addr, .. } => {
                 let addr_str = l2cap::bdaddr_to_string(&addr);
@@ -345,10 +754,17 @@ impl BluetoothSubsystem {
                         addr: addr_str,
                     });
                     self.state = BtState::Discoverable;
+                    self.cur_codec = None;
+                    self.playing = false;
+                    // Advertise again now that we're free.
+                    mgmt.set_discoverable(true).await;
+                    self.broadcast_bt_status();
                 }
             }
             mgmt::MgmtEvent::NewLinkKey { .. } => {
                 mgmt.handle_new_link_key(&event);
+                self.refresh_paired(mgmt);
+                self.broadcast_bt_status();
             }
             mgmt::MgmtEvent::UserConfirmRequest {
                 addr,
@@ -373,6 +789,17 @@ impl BluetoothSubsystem {
                     "Bluetooth: discovered {} ({}) rssi={}",
                     name_str, addr_str, rssi
                 );
+                // A scan doubles as a name probe for our *bonded* devices: only
+                // cache the name (and refresh the list) when this is a device we're
+                // paired with. The bonded check must short-circuit first — otherwise
+                // remember_name persists a name for every passing phone, growing
+                // /lsync/encore/bt_names without bound.
+                if self.paired.iter().any(|p| p.addr == addr_str)
+                    && self.remember_name(&addr_str, &name_str)
+                {
+                    self.refresh_paired(mgmt);
+                    self.broadcast_bt_status();
+                }
                 self.broadcast_bt_event(encore_common::protocol::BtEvent::DiscoveryResult {
                     name: name_str,
                     addr: addr_str,
@@ -380,13 +807,28 @@ impl BluetoothSubsystem {
                 });
             }
             mgmt::MgmtEvent::CmdComplete { opcode, status, .. } => {
-                if status != 0 {
+                // Commit a pending advertised-name change only once the controller
+                // confirms it; a rejected name never became the live name.
+                if opcode == mgmt::MGMT_OP_SET_LOCAL_NAME {
+                    if let Some(name) = self.pending_bt_name.take() {
+                        if status == 0 {
+                            self.applied_name = name;
+                            self.broadcast_bt_status();
+                        } else {
+                            warn!(
+                                "Bluetooth: SET_LOCAL_NAME rejected (status=0x{:02x})",
+                                status
+                            );
+                        }
+                    }
+                } else if status != 0 {
                     debug!(
                         "Bluetooth: cmd 0x{:04x} completed with status=0x{:02x}",
                         opcode, status
                     );
                 }
             }
+
             mgmt::MgmtEvent::Other { opcode } => {
                 debug!("Bluetooth: unhandled mgmt event 0x{:04x}", opcode);
             }

@@ -4,6 +4,7 @@
 use std::cell::RefCell;
 use wasm_bindgen::JsCast;
 
+use crate::components::section_header;
 use crate::dom;
 use encore_common::protocol::{ClientMsg, LedAnimation, LedFrame};
 
@@ -57,6 +58,9 @@ impl Default for DesignerData {
 }
 
 pub fn render(container: &web_sys::Element) {
+    // Gold Center Stage eyebrow over the ring/color group.
+    dom::append(container, &section_header("Ring and color"));
+
     // LED Ring preview
     let ring_card = dom::create_div();
     dom::set_class(&ring_card, "card text-center");
@@ -137,8 +141,12 @@ pub fn render(container: &web_sys::Element) {
     dom::set_style(&grid, "grid-template-columns", "repeat(6, 1fr)");
     dom::set_style(&grid, "gap", "8px");
 
-    for &(_name, r, g, b) in PRESETS {
+    for &(name, r, g, b) in PRESETS {
         let swatch = dom::create_div();
+        // Screen readers can't see the color, so name each swatch.
+        dom::set_attr(&swatch, "role", "button");
+        dom::set_attr(&swatch, "aria-label", name);
+        dom::set_attr(&swatch, "title", name);
         dom::set_style(&swatch, "width", "100%");
         dom::set_style(&swatch, "aspect-ratio", "1");
         dom::set_style(&swatch, "border-radius", "8px");
@@ -285,6 +293,14 @@ fn render_designer(container: &web_sys::Element) {
     body.set_id("designer-body");
     dom::set_style(&body, "display", if expanded { "block" } else { "none" });
 
+    // Signpost the two interaction models: instant above, build-then-send here.
+    let note = dom::el(
+        "div",
+        "text-muted text-sm mb-12",
+        Some("Build a multi-frame animation, then Send to Device. The wheel and presets above apply to the ring instantly."),
+    );
+    dom::append(&body, &note);
+
     // Toggle expand/collapse
     {
         let header_c = header.clone();
@@ -339,9 +355,9 @@ fn render_designer(container: &web_sys::Element) {
             let (r, g, b) = d.frames[d.current].colors[i];
             dom::set_style(&sq, "background", &crate::graphics::rgb_str(r, g, b));
             let border = if d.selected[i] {
-                "2px solid #fff"
+                "2px solid var(--accent)"
             } else {
-                "2px solid #333"
+                "2px solid var(--border-strong)"
             };
             dom::set_style(&sq, "border", border);
         });
@@ -359,9 +375,9 @@ fn render_designer(container: &web_sys::Element) {
                         &el,
                         "border",
                         if sel {
-                            "2px solid #fff"
+                            "2px solid var(--accent)"
                         } else {
-                            "2px solid #333"
+                            "2px solid var(--border-strong)"
                         },
                     );
                 }
@@ -391,9 +407,9 @@ fn render_designer(container: &web_sys::Element) {
         let (r, g, b) = d.frames[d.current].colors[12];
         dom::set_style(&csq, "background", &crate::graphics::rgb_str(r, g, b));
         let border = if d.selected[12] {
-            "2px solid #fff"
+            "2px solid var(--accent)"
         } else {
-            "2px solid #333"
+            "2px solid var(--border-strong)"
         };
         dom::set_style(&csq, "border", border);
     });
@@ -409,9 +425,9 @@ fn render_designer(container: &web_sys::Element) {
                 &el,
                 "border",
                 if sel {
-                    "2px solid #fff"
+                    "2px solid var(--accent)"
                 } else {
-                    "2px solid #333"
+                    "2px solid var(--border-strong)"
                 },
             );
         }
@@ -683,9 +699,9 @@ fn update_designer_led_borders() {
                     &el,
                     "border",
                     if d.selected[i] {
-                        "2px solid #fff"
+                        "2px solid var(--accent)"
                     } else {
-                        "2px solid #333"
+                        "2px solid var(--border-strong)"
                     },
                 );
             }
@@ -706,9 +722,9 @@ fn refresh_designer_leds() {
                     &el,
                     "border",
                     if d.selected[i] {
-                        "2px solid #fff"
+                        "2px solid var(--accent)"
                     } else {
-                        "2px solid #333"
+                        "2px solid var(--border-strong)"
                     },
                 );
             }
@@ -740,7 +756,7 @@ fn refresh_timeline_strip(strip: &web_sys::Element) {
             );
 
             if idx == d.current {
-                dom::set_style(&thumb, "border-color", "#58a6ff");
+                dom::set_style(&thumb, "border-color", "var(--accent)");
             }
 
             dom::set_text(&thumb, &format!("{}", idx + 1));
@@ -748,7 +764,7 @@ fn refresh_timeline_strip(strip: &web_sys::Element) {
             dom::set_style(&thumb, "display", "flex");
             dom::set_style(&thumb, "align-items", "center");
             dom::set_style(&thumb, "justify-content", "center");
-            dom::set_style(&thumb, "color", "#fff");
+            dom::set_style(&thumb, "color", "var(--text)");
 
             dom::on_click(&thumb, move || {
                 DESIGNER.with(|d| d.borrow_mut().current = idx);

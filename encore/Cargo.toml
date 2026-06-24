@@ -31,7 +31,11 @@ nix = { version = "0.29", features = ["ioctl", "fs", "mman", "term"] }
 librespot-core = { version = "0.8", default-features = false, features = ["rustls-tls-webpki-roots"] }
 librespot-playback = { version = "0.8", default-features = false }
 librespot-connect = { version = "0.8", default-features = false, features = ["rustls-tls-webpki-roots"] }
-librespot-discovery = { version = "0.8", default-features = false, features = ["rustls-tls-webpki-roots", "with-libmdns"] }
+# No mDNS backend feature: the vendored fork (see [patch.crates-io] below) ships
+# a no-op zeroconf backend so librespot brings up the :48144 HTTP server but
+# advertises nothing. Encore's own mDNS responder is the sole advertiser, which
+# the group-zone logic relies on to rename/suppress the Spotify Connect service.
+librespot-discovery = { version = "0.8", default-features = false, features = ["rustls-tls-webpki-roots"] }
 librespot-metadata = { version = "0.8", default-features = false }
 rumqttc = "0.24"
 axum = { version = "0.8", features = ["ws"] }
@@ -59,3 +63,19 @@ panic = "unwind"
 # web-sys is enormous — needs more codegen units to avoid rustc crash on Windows
 [profile.release.package.web-sys]
 codegen-units = 16
+
+# librespot-audio 0.8.0 patched with upstream PR #1722 (CDN failover). librespot
+# 0.8.0 tries only the first CDN URL Spotify returns for a track; when a node
+# answers with a transient non-206 (e.g. a Cloudflare 530), it bails instead of
+# trying the next URL, so every track load fails with StatusCode(530). The patch
+# (vendor/librespot-audio/src/fetch/mod.rs) breaks only on 206 and falls back to
+# the next URL otherwise. Drop this once #1722 ships in a librespot release.
+[patch.crates-io]
+librespot-audio = { path = "vendor/librespot-audio" }
+# Vendored fork of librespot-discovery that adds a no-op zeroconf backend: it
+# brings up the :48144 HTTP server (so the device stays claimable) while
+# advertising nothing, leaving Encore's own AD-bit-tolerant mDNS responder as the
+# single Spotify Connect advertiser. Dropping with-libmdns alone does not work —
+# Discovery::launch() returns Err without a compiled backend and tears the HTTP
+# server down with it.
+librespot-discovery = { path = "crates/vendored/librespot-discovery" }

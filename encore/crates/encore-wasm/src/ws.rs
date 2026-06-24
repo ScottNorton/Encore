@@ -4,7 +4,7 @@
 //! ServerMsg, sends ClientMsg. Reconnects with exponential backoff
 //! on disconnect/error (1s → 2s → 4s → ... → 30s cap).
 
-use encore_common::protocol::{ClientMsg, ServerMsg};
+use encore_common::protocol::{BtEvent, ClientMsg, ServerMsg};
 use std::cell::RefCell;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -70,9 +70,11 @@ fn do_connect(backoff_ms: i32) {
     let onopen = Closure::wrap(Box::new(|_: JsValue| {
         web_sys::console::log_1(&"WS: connected".into());
         crate::app::set_connection_status(true);
-        // Request current config + network state on connect
+        // Request current config + network + audio state on connect, so pages
+        // populate even when the dashboard opens after the subsystems booted.
         send_msg(&ClientMsg::RequestConfig);
         send_msg(&ClientMsg::RequestNetworkState);
+        send_msg(&ClientMsg::RequestAudioState);
     }) as Box<dyn FnMut(JsValue)>);
     ws.set_onopen(Some(onopen.as_ref().unchecked_ref()));
     onopen.forget();
@@ -155,6 +157,9 @@ fn dispatch(msg: ServerMsg) {
         ServerMsg::SubsystemStatus(_) => "SubsystemStatus",
         ServerMsg::TrackChanged(_) => "TrackChanged",
         ServerMsg::BluetoothEvent(_) => "BluetoothEvent",
+        ServerMsg::BluetoothStatus(_) => "BluetoothStatus",
+        ServerMsg::BluetoothTrack(_) => "BluetoothTrack",
+        ServerMsg::BluetoothPlayStatus(_) => "BluetoothPlayStatus",
         ServerMsg::VolumeChanged { .. } => "VolumeChanged",
         ServerMsg::NetworkChanged(_) => "NetworkChanged",
         ServerMsg::LedStateChanged(_) => "LedStateChanged",
@@ -251,7 +256,41 @@ fn dispatch(msg: ServerMsg) {
             crate::state::with_mut(|s| s.track = Some(track));
         }
         ServerMsg::BluetoothEvent(event) => {
-            crate::state::with_mut(|s| s.bt_devices.push(event));
+            crate::state::with_mut(|s| {
+                // Collapse repeated discovery hits for the same address (each scan
+                // re-emits every nearby device), and cap the log so it can't grow
+                // without bound across many scans on this constrained client.
+                if let BtEvent::DiscoveryResult { addr, .. } = &event {
+                    let addr = addr.clone();
+                    s.bt_devices.retain(
+                        |e| !matches!(e, BtEvent::DiscoveryResult { addr: a, .. } if *a == addr),
+                    );
+                }
+                s.bt_devices.push(event);
+                let len = s.bt_devices.len();
+                if len > 256 {
+                    s.bt_devices.drain(0..len - 256);
+                }
+            });
+        }
+        ServerMsg::BluetoothStatus(status) => {
+            crate::state::with_mut(|s| s.bt_status = Some(status));
+        }
+        ServerMsg::BluetoothTrack(track) => {
+            // An all-empty track means "cleared" (disconnect / nothing playing).
+            crate::state::with_mut(|s| {
+                s.bt_track = if track.is_empty() { None } else { Some(track) };
+            });
+        }
+        ServerMsg::BluetoothPlayStatus(ps) => {
+            // All-zero means cleared (disconnect).
+            crate::state::with_mut(|s| {
+                s.bt_playstatus = if ps.position_ms == 0 && ps.duration_ms == 0 {
+                    None
+                } else {
+                    Some(ps)
+                };
+            });
         }
         ServerMsg::VolumeChanged { level, .. } => {
             crate::state::with_mut(|s| {
@@ -276,7 +315,6 @@ fn dispatch(msg: ServerMsg) {
                 s.config_dirty = false;
                 s.boot_config_received = true;
             });
-            crate::app::update_tab_visibility();
         }
         ServerMsg::LogEntries(entries) => {
             crate::pages::logs::append_entries(&entries);
@@ -293,6 +331,10 @@ fn dispatch(msg: ServerMsg) {
                 s.audio_left_peak = left_peak;
                 s.audio_right_peak = right_peak;
             });
+            // Feed the Ovation bloom directly; its internal re-arm guard decides
+            // whether to wake the rAF loop (Stage + motion-ok + power-active +
+            // visible). No heavy page update() runs for level messages.
+            crate::graphics::ovation::note_levels(left_rms, right_rms, left_peak, right_peak);
         }
         ServerMsg::SpotifyStatus(status) => {
             crate::state::with_mut(|s| {
@@ -340,6 +382,9 @@ fn dispatch(msg: ServerMsg) {
                 let mut arr = [0.0f32; 32];
                 arr.copy_from_slice(&bins);
                 crate::state::with_mut(|s| s.audio_spectrum = Some(arr));
+                // Copy the spectrum into the bloom once per arrival (never per
+                // frame); the loop reads it for the fanned ray shape.
+                crate::graphics::ovation::note_spectrum(&arr);
             }
         }
         ServerMsg::AudioWaveform { samples } => {
@@ -347,6 +392,15 @@ fn dispatch(msg: ServerMsg) {
         }
         ServerMsg::GroupStatus(status) => {
             crate::state::with_mut(|s| {
+                // Keep the cached config in sync with live group state. SaveConfig
+                // builds its payload from s.config, so without this a stale
+                // group_enabled/name/channel would clobber a runtime toggle (e.g.
+                // silently re-enable a group the user turned off).
+                if let Some(cfg) = s.config.as_mut() {
+                    cfg.group_enabled = status.enabled;
+                    cfg.group_name = status.group_name.clone();
+                    cfg.group_channel = status.channel.clone();
+                }
                 s.group_status = Some(status);
             });
         }
@@ -392,37 +446,60 @@ fn dispatch(msg: ServerMsg) {
         }
     }
 
-    // Notify only the relevant page(s) instead of always refreshing the
-    // active page.  This prevents multi-Hz DOM thrashing (SystemStatus +
-    // SpotifyStatus + SubsystemStatus = 3+ updates/sec) that causes
-    // visible flickering and resets form inputs.
-    let relevant_page: Option<&str> = match msg_tag {
-        "SystemStatus" | "SubsystemStatus" => Some("dashboard"),
-        "TrackChanged" | "SpotifyStatus" => Some("spotify"),
-        "BluetoothEvent" => Some("bluetooth"),
-        "NetworkChanged" => Some("network"),
-        "GroupStatus" => Some("speakers"),
-        "BootMode" => Some("dashboard"),
-        "WifiConnectResult" => None, // network page + setup wizard both care
-        "TimeSynced" => None,
-        "LedStateChanged" => Some("lights"),
-        "VolumeChanged" => Some("audio"),
-        "AudioLevels" => Some("audio"),
-        "EqState" | "DrcState" | "DspInfo" | "DacRegValue" | "DspSpiResponse" | "AudioSpectrum"
-        | "AudioWaveform" | "AudioPowerState" | "MicLevels" => Some("audio"),
-        "ConfigLoaded" => None, // all pages may care about config
-        "LogEntries" => Some("logs"),
-        _ => None,
-    };
+    // Mini now-playing bar: surgical update independent of the page `cares` gate,
+    // so it stays correct on every tab. Keyed on the two now-playing messages;
+    // the state write already happened in the match above.
+    if matches!(msg_tag, "SpotifyStatus" | "TrackChanged") {
+        crate::app::mini_update();
+    }
 
-    crate::state::with(|s| {
-        let active = s.active_page.as_str();
-        let should_update = match relevant_page {
-            Some(page) => active == page,
-            None => true, // broadcast to whatever page is active
-        };
-        if should_update {
-            crate::pages::update(active);
-        }
-    });
+    // Refresh the active surface only when it cares about this message, to
+    // avoid multi-Hz DOM thrashing (SystemStatus + SpotifyStatus + AudioLevels =
+    // several updates/sec) that flickers and resets form inputs.
+    let active = crate::state::with(|s| s.active_page.clone());
+    let hash = crate::dom::window().location().hash().unwrap_or_default();
+    let segments = crate::router::parse_path(&hash);
+    let leaf = segments.last().map(|s| s.as_str());
+    // Devices page: ~1Hz now-playing updates (progress / volume / metadata) must
+    // not rebuild the whole page — that would leak a click closure per button
+    // every tick. Update only the now-playing card surgically and stop.
+    if active == "settings"
+        && leaf == Some("devices")
+        && matches!(msg_tag, "BluetoothPlayStatus" | "VolumeChanged" | "BluetoothTrack")
+    {
+        crate::pages::bluetooth::update_now_playing();
+        return;
+    }
+
+    let cares = match (active.as_str(), msg_tag) {
+        // Home: now-playing + device glance.
+        (
+            "home",
+            "SpotifyStatus" | "TrackChanged" | "SystemStatus" | "SubsystemStatus" | "GroupStatus"
+            | "VolumeChanged" | "BootMode" | "BluetoothStatus" | "BluetoothTrack"
+            | "BluetoothPlayStatus" | "BluetoothEvent",
+        ) => true,
+        // Sound: levels, visualizations, EQ/DRC/DSP, volume.
+        (
+            "sound",
+            "AudioLevels" | "AudioSpectrum" | "AudioWaveform" | "MicLevels" | "VolumeChanged"
+            | "EqState" | "DrcState" | "DspInfo" | "DacRegValue" | "DspSpiResponse"
+            | "AudioPowerState",
+        ) => true,
+        ("lights", "LedStateChanged") => true,
+        ("speakers", "GroupStatus") => true,
+        // Settings sub-pages, gated by the leaf route segment.
+        ("settings", "NetworkChanged" | "WifiConnectResult") if leaf == Some("network") => true,
+        ("settings", "BluetoothEvent" | "BluetoothStatus" | "GroupStatus") if leaf == Some("devices") => true,
+        ("settings", "LogEntries") if leaf == Some("logs") => true,
+        ("settings", "SystemStatus" | "SubsystemStatus") if leaf == Some("status") => true,
+        // Setup wizard cares about WiFi join results.
+        ("setup", "WifiConnectResult") => true,
+        // Config just loaded — let the active surface re-read it.
+        (_, "ConfigLoaded") => true,
+        _ => false,
+    };
+    if cares {
+        crate::app::update_active_page();
+    }
 }

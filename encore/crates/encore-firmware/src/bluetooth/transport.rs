@@ -17,10 +17,41 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
+/// Sets the reader's `running` flag false on drop, so the AVDTP state machine
+/// always learns when a reader thread exits — even on early return or panic.
+///
+/// The media read is a plain blocking read (full L2CAP SDUs, one RTP packet
+/// per read — do NOT add SO_RCVTIMEO, it fragments the SDU on this kernel and
+/// shreds the decode). A paused stream just parks the reader here harmlessly;
+/// CLOSE/disconnect close the channel, so the read returns EOF/error and the
+/// reader exits, clearing this flag.
+struct RunningGuard(Arc<AtomicBool>);
+impl Drop for RunningGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
 /// Bluetooth A2DP source sample rate (44100 Hz for virtually all phones/computers).
 const BT_SOURCE_RATE: u32 = 44100;
 /// Mixer/PCM output sample rate.
 const MIXER_RATE: u32 = 48000;
+
+/// Cap on buffered audio (interleaved stereo samples ≈ 0.75 s at 48 kHz).
+/// The BT source clock and the local DAC clock drift, and the fixed-ratio
+/// resampler doesn't track it, so the ring slowly fills over a long session.
+/// Past this cap we drop a decoded chunk to keep latency bounded instead of
+/// letting it grow to a hard ring-full glitch.
+// ponytail: chunk-drop on overflow (~15 ms gap, rare at real drift rates);
+// upgrade to adaptive resampling (vary output rate by buffer fill) only if the
+// drops ever become audible.
+const MAX_BUFFER_SAMPLES: usize = 72_000;
+
+/// Whether buffered audio has grown past the latency cap and a chunk should be
+/// dropped this round.
+fn over_latency_cap(available: usize) -> bool {
+    available > MAX_BUFFER_SAMPLES
+}
 
 /// RTP header size (12 bytes).
 const RTP_HEADER_SIZE: usize = 12;
@@ -74,22 +105,45 @@ fn parse_rtp_aptx(buf: &[u8], has_rtp: &mut Option<bool>) -> usize {
     0
 }
 
+/// Handle to a running A2DP reader thread.
+#[derive(Clone)]
+pub struct ReaderHandle {
+    /// Set to `true` to ask the reader to stop. A blocking read only observes
+    /// this once it returns, so in practice the reader exits when the media
+    /// channel closes (CLOSE/disconnect → EOF) rather than mid-read.
+    pub stop: Arc<AtomicBool>,
+    /// `true` while the reader thread is alive; cleared when it exits for any
+    /// reason. Lets the AVDTP state machine tell "paused but alive" (resume in
+    /// place) from "reader died" (must respawn).
+    pub running: Arc<AtomicBool>,
+}
+
+impl ReaderHandle {
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::Acquire)
+    }
+}
+
 /// Spawn a dedicated reader thread for the A2DP transport FD.
 ///
 /// Reads RTP packets, decodes audio frames, pushes PCM into the MixerSlot.
-/// Returns an `Arc<AtomicBool>` stop handle — set to `true` to stop the thread.
+/// Returns a [`ReaderHandle`] — set `stop` to true to halt the thread; check
+/// `running` to see whether it is still alive.
 pub fn spawn_reader(
     fd: OwnedFd,
     read_mtu: u16,
     slot: Arc<MixerSlot>,
     codec: A2dpCodec,
-) -> Result<Arc<AtomicBool>> {
+) -> Result<ReaderHandle> {
     let stop = Arc::new(AtomicBool::new(false));
+    let running = Arc::new(AtomicBool::new(true));
     let stop_clone = stop.clone();
+    let running_clone = running.clone();
 
     std::thread::Builder::new()
         .name("bt-a2dp-reader".into())
         .spawn(move || {
+            let _guard = RunningGuard(running_clone);
             info!(
                 "BT A2DP reader: started (codec={}, mtu={})",
                 codec, read_mtu
@@ -102,7 +156,7 @@ pub fn spawn_reader(
         })
         .context("failed to spawn BT A2DP reader thread")?;
 
-    Ok(stop)
+    Ok(ReaderHandle { stop, running })
 }
 
 /// SBC reader loop — original decode path.
@@ -154,10 +208,15 @@ fn reader_loop_sbc(fd: OwnedFd, read_mtu: u16, slot: Arc<MixerSlot>, stop: Arc<A
                         .collect();
                     // Resample 44100 → 48000 Hz
                     let resampled = resample_i32_stereo(&s32, BT_SOURCE_RATE, MIXER_RATE);
-                    let written = slot.push(&resampled);
+                    // Drop this chunk if buffering has run past the latency cap.
+                    let written = if over_latency_cap(slot.available()) {
+                        0
+                    } else {
+                        slot.push(&resampled)
+                    };
                     if written < resampled.len() {
                         debug!(
-                            "BT A2DP SBC: ring full, dropped {} samples",
+                            "BT A2DP SBC: dropped {} samples (latency cap or ring full)",
                             resampled.len() - written
                         );
                     }
@@ -258,10 +317,15 @@ fn reader_loop_aptx(
                     // Resample 44100 → 48000 Hz
                     let resampled =
                         resample_i32_stereo(&pcm_buf[..samples], BT_SOURCE_RATE, MIXER_RATE);
-                    let written = slot.push(&resampled);
+                    // Drop this chunk if buffering has run past the latency cap.
+                    let written = if over_latency_cap(slot.available()) {
+                        0
+                    } else {
+                        slot.push(&resampled)
+                    };
                     if written < resampled.len() {
                         debug!(
-                            "BT A2DP {}: ring full, dropped {} samples",
+                            "BT A2DP {}: dropped {} samples (latency cap or ring full)",
                             codec_name,
                             resampled.len() - written
                         );
@@ -301,6 +365,29 @@ fn reader_loop_aptx(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The latency cap must let normal buffering through and only trip once the
+    /// ring has grown past the threshold — guards against an off-by-one that
+    /// would either never drop (unbounded latency) or always drop (silence).
+    #[test]
+    fn latency_cap_trips_only_above_threshold() {
+        assert!(!over_latency_cap(0));
+        assert!(!over_latency_cap(MAX_BUFFER_SAMPLES - 1));
+        assert!(!over_latency_cap(MAX_BUFFER_SAMPLES));
+        assert!(over_latency_cap(MAX_BUFFER_SAMPLES + 1));
+    }
+
+    /// The running flag flips false on drop so the AVDTP loop learns a reader
+    /// died (and must respawn) rather than silently resuming a dead stream.
+    #[test]
+    fn running_guard_clears_flag_on_drop() {
+        let flag = Arc::new(AtomicBool::new(true));
+        {
+            let _g = RunningGuard(flag.clone());
+            assert!(flag.load(Ordering::Acquire));
+        }
+        assert!(!flag.load(Ordering::Acquire));
+    }
 
     /// RTP byte 0 with version field = 2 (top two bits), padding/extension/CSRC clear.
     const RTP_V2_BYTE0: u8 = 0x80; // 0b1000_0000 -> (>>6 & 0x03) == 2

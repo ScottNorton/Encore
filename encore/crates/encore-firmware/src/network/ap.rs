@@ -113,7 +113,10 @@ pub fn is_ap_running() -> bool {
         .map(|o| o.status.success())
         .unwrap_or(false);
 
-    if hostapd_alive && interface_has_ip(AP_IFACE, AP_IP) {
+    // Require the BSS to actually be beaconing (carrier up), not just hostapd
+    // alive + IP set. A hostapd whose BSS failed to start (e.g. a DFS channel)
+    // stays alive with the IP configured but never raises carrier.
+    if hostapd_alive && interface_has_ip(AP_IFACE, AP_IP) && interface_is_running(AP_IFACE) {
         return true;
     }
 
@@ -221,21 +224,19 @@ fn ensure_ap_inner() -> Result<()> {
             .args(["-B", "/data/wifi/hostapd_ap.conf"])
             .status();
 
-        // Poll for hostapd to come up instead of blind 3s sleep
-        let mut ready = false;
-        for _ in 0..6 {
+        // Set the AP IP up-front so the poll can break the instant the BSS beacons
+        // and is_ap_running reflects the AP as soon as it is up.
+        let _ = Command::new("ifconfig")
+            .args([AP_IFACE, AP_IP, "netmask", "255.255.255.0", "up"])
+            .status();
+
+        // Poll for the BSS to actually beacon (carrier up). Concurrent AP+STA
+        // bring-up beacons slower than AP-only — allow ~15s.
+        for _ in 0..30 {
             std::thread::sleep(std::time::Duration::from_millis(500));
-            if interface_has_ip(AP_IFACE, AP_IP) {
-                ready = true;
+            if interface_has_ip(AP_IFACE, AP_IP) && interface_is_running(AP_IFACE) {
                 break;
             }
-        }
-
-        if !ready {
-            // Set IP ourselves — hostapd may be up but ifconfig not done
-            let _ = Command::new("ifconfig")
-                .args([AP_IFACE, AP_IP, "netmask", "255.255.255.0", "up"])
-                .status();
         }
 
         ensure_dnsmasq();
@@ -363,8 +364,16 @@ fn ensure_dnsmasq() {
     }
 
     info!("AP: starting dnsmasq");
-    let _ = Command::new("/bin/dnsmasq")
-        .args(["-C", DNSMASQ_CONF])
+    // /bin/dnsmasq does NOT daemonize on this device (it runs in the foreground),
+    // so a plain .status() blocks forever in waitpid — which parked the network
+    // monitor that awaits the AP reconcile. Start it detached (background + own
+    // session) so it survives and the call returns immediately.
+    let _ = Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "/bin/dnsmasq -C {} </dev/null >/dev/null 2>&1 &",
+            DNSMASQ_CONF
+        ))
         .status();
 }
 
@@ -372,18 +381,13 @@ fn ensure_dnsmasq() {
 /// Writes a custom hostapd config with the appropriate hw_mode and channel,
 /// then starts hostapd.
 pub fn start_ap_on_band(sta_freq_mhz: u32) -> Result<()> {
-    // Acquire restart lock
-    if AP_RESTARTING
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        info!("AP: restart already in progress, skipping band switch");
-        return Ok(());
-    }
-
-    let result = start_ap_on_band_inner(sta_freq_mhz);
-    AP_RESTARTING.store(false, Ordering::SeqCst);
-    result
+    // Bounded-wait for any in-flight AP op, then proceed. Using the RAII lock
+    // (not a raw CAS that silently bails) means this is an explicit "bring the AP
+    // up on this band" request that always runs, and the guard clears the flag on
+    // return — so a flag left stuck by a previously-abandoned restart self-heals
+    // after the timeout instead of wedging every future bring-up.
+    let _lock = acquire_restart_lock(std::time::Duration::from_secs(12));
+    start_ap_on_band_inner(sta_freq_mhz)
 }
 
 fn start_ap_on_band_inner(sta_freq_mhz: u32) -> Result<()> {
@@ -443,23 +447,25 @@ fn start_ap_on_band_inner(sta_freq_mhz: u32) -> Result<()> {
         warn!("AP: hostapd exited with {}", status);
     }
 
-    // Poll for AP to come up
-    for _ in 0..6 {
+    // Set the AP IP up-front (release_radio brought p2p0 down, clearing it). Doing
+    // it before the poll means the poll can break the instant the BSS beacons, and
+    // is_ap_running (which checks the IP) reflects the AP as soon as it is up.
+    let _ = Command::new("ifconfig")
+        .args([AP_IFACE, AP_IP, "netmask", "255.255.255.0", "up"])
+        .status();
+
+    // Poll for the BSS to actually beacon (carrier up). Concurrent AP+STA bring-up
+    // beacons noticeably slower than AP-only, so allow up to ~15s.
+    for _ in 0..30 {
         std::thread::sleep(std::time::Duration::from_millis(500));
-        if interface_has_ip(AP_IFACE, AP_IP) {
+        if interface_has_ip(AP_IFACE, AP_IP) && interface_is_running(AP_IFACE) {
             break;
         }
     }
 
-    if !interface_has_ip(AP_IFACE, AP_IP) {
-        let _ = Command::new("ifconfig")
-            .args([AP_IFACE, AP_IP, "netmask", "255.255.255.0", "up"])
-            .status();
-    }
-
     ensure_dnsmasq();
 
-    if interface_has_ip(AP_IFACE, AP_IP) {
+    if interface_has_ip(AP_IFACE, AP_IP) && interface_is_running(AP_IFACE) {
         info!("AP: started on hw_mode={} ch{}", hw_mode, channel);
         HOSTAPD_FAILURES.store(0, Ordering::Relaxed);
         // Cache AP frequency for NetworkState reporting
@@ -595,6 +601,21 @@ pub fn reset_interface() {
     std::thread::sleep(std::time::Duration::from_secs(1));
     let _ = Command::new("ifconfig").args([AP_IFACE, "up"]).status();
     std::thread::sleep(std::time::Duration::from_secs(1));
+}
+
+/// True if the interface's netif carrier is up — for a uAP this means the BSS is
+/// actually beaconing, not merely that hostapd is alive. A hostapd that started
+/// but whose BSS never came up (e.g. a DFS channel) leaves carrier down.
+///
+/// We read `carrier` (not the IFF_RUNNING flag bit): the Marvell driver does NOT
+/// set IFF_RUNNING on the uAP interface in concurrent AP+STA mode — only in
+/// AP-only mode — so the flag is a false negative when an STA is also up. The
+/// netif carrier (and operstate) reflect a live beaconing BSS in both modes.
+/// `carrier` reads as "1" when up; a down interface returns an error → not up.
+fn interface_is_running(iface: &str) -> bool {
+    std::fs::read_to_string(format!("/sys/class/net/{iface}/carrier"))
+        .map(|s| s.trim() == "1")
+        .unwrap_or(false)
 }
 
 /// Check if a network interface has a specific IP address.

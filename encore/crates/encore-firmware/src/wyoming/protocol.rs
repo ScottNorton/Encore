@@ -22,13 +22,27 @@ pub struct WyomingEvent {
 }
 
 /// Wire header.
+///
+/// Home Assistant's `wyoming` library omits `data_length`/`payload_length` when
+/// they are zero and may omit `version` — e.g. its handshake `describe` is just
+/// `{"type":"describe","version":"..."}` with no length fields. These MUST default
+/// on read, or `serde_json::from_str::<Header>` fails on HA's events, the handshake
+/// errors, and the connection is dropped (the cause of the satellite never pairing).
+/// Serialization is unaffected, so Encore keeps emitting all three (HA tolerates them).
 #[derive(Serialize, Deserialize)]
 struct Header {
     #[serde(rename = "type")]
     event_type: String,
+    #[serde(default = "default_version")]
     version: String,
+    #[serde(default)]
     data_length: usize,
+    #[serde(default)]
     payload_length: usize,
+}
+
+fn default_version() -> String {
+    "1.0.0".to_string()
 }
 
 impl WyomingEvent {

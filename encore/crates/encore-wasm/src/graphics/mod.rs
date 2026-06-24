@@ -6,15 +6,18 @@ pub mod color_wheel;
 pub mod eq_curve;
 pub mod knob;
 pub mod led_ring;
+pub mod ovation;
 pub mod scope;
+pub mod sound_viz;
 pub mod sparkline;
 pub mod spectrum;
+pub mod theme;
+pub mod tuner;
 pub mod vu_meter;
 
 use web_sys::HtmlCanvasElement;
 
 /// HSL to RGB conversion. h: 0-360, s: 0-1, l: 0-1.
-#[allow(dead_code)]
 pub fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (u8, u8, u8) {
     if s == 0.0 {
         let v = (l * 255.0) as u8;
@@ -33,7 +36,6 @@ pub fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (u8, u8, u8) {
     ((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8)
 }
 
-#[allow(dead_code)]
 fn hue_to_rgb(p: f64, q: f64, mut t: f64) -> f64 {
     if t < 0.0 {
         t += 1.0;

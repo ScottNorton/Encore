@@ -951,7 +951,7 @@ same order:
     likely enables power rails differently from the runtime toggle.)
 
 3. DAC init
-   - 10-register TAS5756M configuration via I2C 0x4C
+   - 10-register PCM5121 configuration via I2C 0x4C
 
 4. Stabilization delay
 

@@ -207,7 +207,7 @@ When audio starts playing on a speaker, it triggers a leader election. The elect
 
 ### Audio Streaming
 
-The leader captures audio from the mixer and sends it as `AudioChunk` packets (480 samples per chunk, 48kHz stereo S32_LE) to all followers via TCP port 48200. Followers use a jitter buffer with channel routing (stereo, left-only, or right-only) and clock-drift correction. A relay tree reduces bandwidth for distant peers — a follower can relay audio to peers that have better latency to it than to the leader directly.
+The leader captures audio from the mixer and sends it as `AudioChunk` packets (480 samples per chunk, 48kHz stereo S32_LE) to all followers via TCP port 48200. Followers use a jitter buffer with channel routing (stereo, left-only, or right-only). On packet loss the follower fills the gap with exact-length silence so the beat never slips, and chunks are de-duplicated and stale ones rejected by sequence number. There is no audio time-stretching. Clocks are kept in sync with a min-RTT plus skew estimator (offset and RTT smoothed across samples), so playback timing tracks the leader without resampling. A relay tree is present in the wire protocol but inactive in v1: the leader does not currently compute or send relay assignments.
 
 ### Limitations
 

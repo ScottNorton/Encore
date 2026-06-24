@@ -139,7 +139,7 @@ pub fn render(container: &web_sys::Element) {
             e.prevent_default();
             if let Some(area) = dom::get_el("upload-area") {
                 dom::set_style(&area, "border-color", "var(--accent)");
-                dom::set_style(&area, "background", "rgba(88, 166, 255, 0.08)");
+                dom::set_style(&area, "background", "var(--accent-soft)");
             }
         }) as Box<dyn FnMut(_)>);
         upload

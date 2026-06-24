@@ -5,7 +5,7 @@
 //! to the ALSA PCM device.
 
 use std::cell::UnsafeCell;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 /// Size of each ring buffer in samples (not frames).
@@ -13,6 +13,11 @@ use std::sync::Arc;
 /// Large buffer allows librespot to decode ahead without blocking,
 /// reducing CPU jitter and ensuring smooth playback on slow ARM cores.
 const RING_SIZE: usize = 192_000;
+
+/// Per-slot gain is a Q16 fixed-point multiplier applied in `read_add`.
+pub const GAIN_SHIFT: u32 = 16;
+/// Unity gain (1.0) — the default, applied exactly with no attenuation.
+pub const GAIN_UNITY: u32 = 1 << GAIN_SHIFT;
 
 /// Lock-free single-producer single-consumer ring buffer for i32 audio samples.
 ///
@@ -23,6 +28,10 @@ pub struct MixerSlot {
     read_pos: AtomicUsize,
     write_pos: AtomicUsize,
     active: AtomicBool,
+    /// Q16 gain applied in `read_add` (GAIN_UNITY = passthrough). Used for ducking.
+    gain: AtomicU32,
+    /// Marks the voice/TTS slot: it is never ducked, and its activity ducks others.
+    is_voice: AtomicBool,
 }
 
 // Safety: SPSC discipline — producer and consumer access disjoint regions,
@@ -37,6 +46,8 @@ impl MixerSlot {
             read_pos: AtomicUsize::new(0),
             write_pos: AtomicUsize::new(0),
             active: AtomicBool::new(false),
+            gain: AtomicU32::new(GAIN_UNITY),
+            is_voice: AtomicBool::new(false),
         })
     }
 
@@ -80,9 +91,19 @@ impl MixerSlot {
         let to_read = out.len().min(avail);
 
         let buf = unsafe { &*self.buf.get() };
+        let gain = self.gain.load(Ordering::Relaxed);
 
-        for i in 0..to_read {
-            out[i] = out[i].saturating_add(buf[(r + i) % RING_SIZE]);
+        if gain == GAIN_UNITY {
+            // Exact passthrough — the common case, no multiply.
+            for i in 0..to_read {
+                out[i] = out[i].saturating_add(buf[(r + i) % RING_SIZE]);
+            }
+        } else {
+            for i in 0..to_read {
+                // Q16 multiply in i64 to avoid overflow, then back to i32.
+                let scaled = ((buf[(r + i) % RING_SIZE] as i64 * gain as i64) >> GAIN_SHIFT) as i32;
+                out[i] = out[i].saturating_add(scaled);
+            }
         }
 
         self.read_pos.store(r + to_read, Ordering::Release);
@@ -115,6 +136,26 @@ impl MixerSlot {
     /// Check if this slot is actively producing audio.
     pub fn is_active(&self) -> bool {
         self.active.load(Ordering::Acquire)
+    }
+
+    /// Set the Q16 playback gain (GAIN_UNITY = passthrough).
+    pub fn set_gain(&self, gain_q16: u32) {
+        self.gain.store(gain_q16, Ordering::Relaxed);
+    }
+
+    /// Current Q16 playback gain.
+    pub fn gain(&self) -> u32 {
+        self.gain.load(Ordering::Relaxed)
+    }
+
+    /// Mark this slot as the voice/TTS source (never ducked; ducks others when active).
+    pub fn set_voice(&self, voice: bool) {
+        self.is_voice.store(voice, Ordering::Relaxed);
+    }
+
+    /// Whether this slot is the voice/TTS source.
+    pub fn is_voice(&self) -> bool {
+        self.is_voice.load(Ordering::Relaxed)
     }
 
     /// Clear the buffer and reset positions.
@@ -157,6 +198,27 @@ mod tests {
         let mut out = [1000i32, 2000, 3000];
         assert_eq!(slot.read_add(&mut out), 3);
         assert_eq!(out, [1100, 2200, 3300]);
+    }
+
+    #[test]
+    fn read_add_applies_q16_gain() {
+        let slot = MixerSlot::new();
+        slot.push(&[1000i32, -2000, 400]);
+        // Half gain (0.5 in Q16).
+        slot.set_gain(GAIN_UNITY / 2);
+        let mut out = [0i32; 3];
+        assert_eq!(slot.read_add(&mut out), 3);
+        assert_eq!(out, [500, -1000, 200]);
+    }
+
+    #[test]
+    fn unity_gain_is_exact_passthrough() {
+        let slot = MixerSlot::new();
+        slot.push(&[i32::MAX, i32::MIN, 12345, -6789]);
+        assert_eq!(slot.gain(), GAIN_UNITY);
+        let mut out = [0i32; 4];
+        slot.read_add(&mut out);
+        assert_eq!(out, [i32::MAX, i32::MIN, 12345, -6789]);
     }
 
     #[test]

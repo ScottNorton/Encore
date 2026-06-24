@@ -5,6 +5,7 @@
 //! binary (encore-firmware) and the WASM dashboard (encore-wasm).
 
 pub mod config;
+pub mod dsp;
 pub mod protocol;
 pub mod status;
 

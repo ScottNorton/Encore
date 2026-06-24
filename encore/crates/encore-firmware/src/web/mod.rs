@@ -270,6 +270,7 @@ impl Subsystem for WebSubsystem {
             )
             .route("/api/wifi/scan", get(api::wifi_scan_handler))
             .route("/api/reboot", post(api::reboot_handler))
+            .route("/api/factory-reset", post(api::factory_reset_handler))
             .route("/ca.crt", get(tls::ca_cert_handler))
             .route("/ws", get(ws::ws_handler))
             .fallback(static_handler)
@@ -429,7 +430,7 @@ fn build_acceptor_from_pem(cert_pem: &[u8], key_pem: &[u8]) -> Result<tokio_rust
 
     let config = ServerConfig::builder()
         .with_no_client_auth()
-        .with_single_cert(cert_chain, key.into())
+        .with_single_cert(cert_chain, key)
         .context("TLS single cert")?;
 
     Ok(tokio_rustls::TlsAcceptor::from(Arc::new(config)))
@@ -517,6 +518,7 @@ async fn run_http_portal(
         )
         .route("/api/wifi/scan", get(api::wifi_scan_handler))
         .route("/api/reboot", post(api::reboot_handler))
+        .route("/api/factory-reset", post(api::factory_reset_handler))
         .route("/ca.crt", get(tls::ca_cert_handler))
         .route("/ws", get(ws::ws_handler))
         .fallback(move |req: axum::extract::Request| {

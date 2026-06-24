@@ -120,6 +120,60 @@ pub fn ensure_running() -> Result<()> {
     bail!("wpa_supplicant started but control socket did not appear within 5s")
 }
 
+/// Take exclusive control of wpa_supplicant by ADOPTING the stock init.rc
+/// instance rather than starting a competing one.
+///
+/// The stock Android `init.rc` runs its own `wpa_supplicant` service on wlan0
+/// (`class service`, not disabled) that auto-connects from the saved config. If
+/// Encore also starts one, two daemons fight over the single radio — the STA
+/// connects then instantly drops as they stomp each other's network list. And the
+/// service starts at a boot-timing we can't reliably pre-empt (stopping it before
+/// init's class_start runs is a no-op; init just launches a fresh one after us).
+///
+/// So instead: clean the persisted config (no saved networks → the stock instance
+/// can't auto-connect behind us; Encore adds the network at runtime and persists
+/// creds in config.toml), wait for the single stock instance + its control socket,
+/// and `reconfigure` it to the clean config. Encore then drives that one instance.
+/// Only if the stock instance never appears do we start our own as a fallback.
+///
+/// Called once at network startup, before any connect attempt.
+pub fn take_ownership() {
+    // Clean the persisted config first so the stock instance reads an empty
+    // network list (no auto-connect), whether it starts before or after us.
+    std::fs::create_dir_all(WPA_CTRL_DIR).ok();
+    if let Err(e) = std::fs::write(
+        WPA_SUPPLICANT_CONF,
+        "ctrl_interface=/data/wifi\nupdate_config=1\ncountry=US\n",
+    ) {
+        warn!("wpa: failed to write clean config: {}", e);
+    }
+
+    // Wait for the stock wpa_supplicant + its control socket (up to 20s at cold
+    // boot — it can start several seconds after us).
+    let ctrl_path = format!("{}/{}", WPA_CTRL_DIR, WPA_CTRL_IFACE);
+    let mut up = false;
+    for _ in 0..40 {
+        if is_process_running()
+            && (std::path::Path::new(&ctrl_path).exists()
+                || std::path::Path::new(WPA_CTRL_ANDROID).exists())
+        {
+            up = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+
+    if up {
+        info!("wpa: adopting stock wpa_supplicant, clearing any auto-connect");
+        // Re-read the clean config — drops any network it already auto-connected to
+        // and any that a later wpa_supplicant_setup.sh `reconfigure` would re-add.
+        let _ = WpaClient.cli(&["reconfigure"]);
+    } else {
+        warn!("wpa: stock wpa_supplicant absent after 20s — starting our own (clean config)");
+        let _ = ensure_running();
+    }
+}
+
 /// Client for wpa_supplicant control interface.
 /// Uses `wpa_cli` subprocess calls (reliable on this device).
 pub struct WpaClient;
@@ -259,8 +313,11 @@ impl WpaClient {
         Ok(results)
     }
 
-    /// Add a network and connect to it.
-    pub fn connect_network(&self, ssid: &str, psk: &str) -> Result<()> {
+    /// Add a network and connect to it. `freq_list` (if non-empty) restricts the
+    /// frequencies the STA may associate on — used to keep the STA off DFS
+    /// channels so the single-radio uAP can follow it onto a shared channel
+    /// (see [`freq_to_ap_channel`]).
+    pub fn connect_network(&self, ssid: &str, psk: &str, freq_list: &[u32]) -> Result<()> {
         // Remove all existing networks
         let list = self.cli(&["list_networks"])?;
         for line in list.lines().skip(1) {
@@ -288,18 +345,27 @@ impl WpaClient {
                 .context("set_network psk failed")?;
         }
 
+        // Restrict association to specific frequencies (e.g. non-DFS channels) so
+        // the single-radio uAP can coexist on the STA's channel. wpa_cli joins the
+        // trailing args into the value: `set_network <id> freq_list 2412 5180`.
+        if !freq_list.is_empty() {
+            let freqs = freq_list
+                .iter()
+                .map(|f| f.to_string())
+                .collect::<Vec<_>>()
+                .join(" ");
+            self.cli_ok(&["set_network", net_id, "freq_list", &freqs])
+                .context("set_network freq_list failed")?;
+        }
+
         self.cli_ok(&["enable_network", net_id])
             .context("enable_network failed")?;
 
-        // save_config is best-effort: on this device, wpa_supplicant uses the
-        // Android socket FD mechanism and may not have a writable config path.
-        // WiFi credential persistence is handled via config.toml instead.
-        if let Err(e) = self.cli_ok(&["save_config"]) {
-            debug!(
-                "wpa: save_config failed (expected on Android socket): {}",
-                e
-            );
-        }
+        // Deliberately do NOT save_config: the network must NOT be persisted to
+        // wpa_supplicant.conf, or a supplicant (re)start would auto-connect from
+        // it behind our back and race our explicit management (the dual-instance
+        // bug). Encore is the sole driver; creds persist in config.toml and the
+        // network is re-added at runtime. take_ownership() keeps the conf clean.
 
         info!(
             "wpa: network {} configured and enabled (ssid={})",
@@ -327,22 +393,115 @@ impl WpaClient {
         }
         None
     }
+
+    /// Force wpa_supplicant to re-evaluate BSS selection (after changing
+    /// freq_list) — used to re-home the STA onto a non-DFS channel.
+    pub fn reassociate(&self) -> Result<()> {
+        self.cli_ok(&["reassociate"])
+    }
+
+    /// Set `freq_list` on the active (first-listed) network. `freqs` is a
+    /// space-separated frequency list, e.g. "2412 5180".
+    pub fn set_active_freq_list(&self, freqs: &str) -> Result<()> {
+        let list = self.cli(&["list_networks"])?;
+        if let Some(id) = list.lines().nth(1).and_then(|l| l.split('\t').next()) {
+            self.cli_ok(&["set_network", id, "freq_list", freqs])?;
+        }
+        Ok(())
+    }
 }
 
-/// Map a STA frequency to a suitable AP channel on the same band.
+/// 5 GHz DFS channels (US): UNII-2A (52-64, 5260-5320 MHz) and UNII-2C
+/// (100-144, 5500-5720 MHz). The single-radio SD8887 uAP cannot beacon on these,
+/// so the STA must avoid them whenever the AP needs to coexist.
+pub fn is_dfs_freq(freq_mhz: u32) -> bool {
+    (5260..=5320).contains(&freq_mhz) || (5500..=5720).contains(&freq_mhz)
+}
+
+/// Map a STA frequency to the EXACT AP channel for single-radio AP+STA
+/// coexistence. The SD8887 runs the uAP and STA on one shared channel, so the
+/// uAP must be on the STA's exact channel — not merely the same band.
 /// Returns (hw_mode, channel) for hostapd config.
 pub fn freq_to_ap_channel(freq_mhz: u32) -> (&'static str, u8) {
     if freq_mhz >= 5000 {
-        // 5GHz — pick a common DFS-free channel in the same UNII band
-        let channel = match freq_mhz {
-            5180..=5240 => 36,
-            5260..=5320 => 44,
-            5500..=5700 => 100,
-            5745..=5825 => 149,
-            _ => 36,
-        };
-        ("a", channel)
+        ("a", ((freq_mhz - 5000) / 5) as u8)
+    } else if freq_mhz == 2484 {
+        ("g", 14)
     } else {
-        ("g", 6)
+        ("g", (freq_mhz.saturating_sub(2407) / 5) as u8)
+    }
+}
+
+/// Pick the frequencies (any band) the STA may associate on so the single-radio
+/// uAP can coexist: the SSID's non-DFS BSSes, sorted/deduped. Empty if the SSID
+/// is only reachable on DFS channels (then the AP cannot run co-channel).
+pub fn non_dfs_freqs(results: &[ScanResult], ssid: &str) -> Vec<u32> {
+    let mut freqs: Vec<u32> = results
+        .iter()
+        .filter(|r| r.ssid == ssid && !is_dfs_freq(r.frequency))
+        .map(|r| r.frequency)
+        .collect();
+    freqs.sort_unstable();
+    freqs.dedup();
+    freqs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dfs_freq_classification() {
+        // non-DFS: 2.4 GHz, UNII-1 (36-48), UNII-3 (149-165)
+        for f in [2412, 2437, 2472, 5180, 5240, 5745, 5825] {
+            assert!(!is_dfs_freq(f), "{f} should be non-DFS");
+        }
+        // DFS: UNII-2A (52-64), UNII-2C (100-144)
+        for f in [5260, 5320, 5500, 5660, 5720] {
+            assert!(is_dfs_freq(f), "{f} should be DFS");
+        }
+    }
+
+    #[test]
+    fn ap_channel_matches_sta_exactly() {
+        assert_eq!(freq_to_ap_channel(2412), ("g", 1));
+        assert_eq!(freq_to_ap_channel(2437), ("g", 6));
+        assert_eq!(freq_to_ap_channel(2462), ("g", 11));
+        assert_eq!(freq_to_ap_channel(2484), ("g", 14));
+        assert_eq!(freq_to_ap_channel(5180), ("a", 36));
+        assert_eq!(freq_to_ap_channel(5200), ("a", 40));
+        assert_eq!(freq_to_ap_channel(5745), ("a", 149));
+    }
+
+    #[test]
+    fn non_dfs_selection() {
+        let rs = vec![
+            ScanResult {
+                bssid: "a".into(),
+                frequency: 2412,
+                signal: -50,
+                ssid: "N".into(),
+            },
+            ScanResult {
+                bssid: "b".into(),
+                frequency: 5500,
+                signal: -57,
+                ssid: "N".into(),
+            }, // DFS
+            ScanResult {
+                bssid: "c".into(),
+                frequency: 5745,
+                signal: -70,
+                ssid: "N".into(),
+            },
+            ScanResult {
+                bssid: "d".into(),
+                frequency: 2412,
+                signal: -40,
+                ssid: "Other".into(),
+            },
+        ];
+        assert_eq!(non_dfs_freqs(&rs, "N"), vec![2412, 5745]);
+        assert!(non_dfs_freqs(&rs, "DfsOnly").is_empty());
     }
 }

@@ -78,7 +78,7 @@ via its `SubsystemManager`.
 | `visual-ui` | `/usr/bin/visual-ui` | 651 KB | :no_entry: | — (LED visual feedback; Encore has `led.rs`) |
 | `factory-test` | `/usr/bin/factory-test` | 1.1 MB | :no_entry: | — (factory testing; not needed) |
 | `crash-uploader-HK.sh` | `/usr/bin/crash-uploader-HK.sh` | script | :no_entry: | — (Harman telemetry; removed) |
-| `device_auto_recovery.sh` | script | script | :no_entry: | — (watchdog.rs handles recovery) |
+| `device_auto_recovery.sh` | script | script | :red_circle: | — Not ported. Encore's `watchdog.rs` handles process hangs only, NOT the stock overheat-protection reboot (90/95 C). See [feature-and-hardware-gaps.md](feature-and-hardware-gaps.md) finding 2. |
 
 ---
 
@@ -91,7 +91,7 @@ DesignWare I2C driver (`i2c-designware-platdrv.c`).
 |---------|-------|-------------|--------|-------------|-----------------|
 | `0x20` | IO Expander (PCA9538) | `mcu-interface` | :white_check_mark: | `mcu/io_expander.rs` | 100% — mute/unmute, DSP reset |
 | `0x36` | MCU (TI MSP430FR5739) | `mcu-interface` | :white_check_mark: | `mcu/mod.rs` | ~90% — commands, events, LED, volume |
-| `0x4C` | DAC (TI TAS5756M) | `audio-ui` / `mcu-interface` | :white_check_mark: | `mcu/dac.rs` | ~70% — init + volume; full register map unknown |
+| `0x4C` | DAC (TI PCM5121) | `audio-ui` / `mcu-interface` | :white_check_mark: | `mcu/dac.rs` | init + volume (Program 1 reconstruction). Program-5 EQ unusable without the PurePath flow image; EQ/DRC done in software. Datasheet SLAS763B |
 | `0x10` | **Not a device** | — | :no_entry: | — | Bitmask 0x10 on IO Expander 0x20, not separate IC |
 | `0x64` | Unknown | — | :no_entry: | — | Zero references in any stock binary; unused or absent |
 | `0x48` | Temp sensor (LM75?) | — | :no_entry: | — | Not populated on PCB |

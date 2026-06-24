@@ -10,7 +10,6 @@ use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
 use encore_common::protocol::*;
-use wasm_bindgen::JsValue;
 
 thread_local! {
     static STATE: RefCell<Option<Rc<RefCell<AppState>>>> = const { RefCell::new(None) };
@@ -29,15 +28,17 @@ pub struct AppState {
     pub led: Option<LedAnimation>,
     pub config: Option<EncoreConfig>,
     pub bt_devices: Vec<BtEvent>,
+    pub bt_status: Option<BtStatus>,
+    /// AVRCP now-playing metadata for the connected source (None when idle).
+    pub bt_track: Option<BtTrack>,
+    /// AVRCP playback position/duration (None when idle/unknown).
+    pub bt_playstatus: Option<BtPlayStatus>,
     pub master_volume: u8,
 
     // ── UI state ──
     pub active_page: String,
-    pub panel_open: Option<String>,
     pub config_dirty: bool,
     pub connected: bool,
-    /// Stored `beforeinstallprompt` event for PWA install.
-    pub install_prompt: Option<JsValue>,
 
     // ── Audio levels for VU meter ──
     pub audio_left_rms: f32,
@@ -107,6 +108,55 @@ pub struct AppState {
     pub boot_system_received: bool,
 }
 
+/// Derive the active audio source for the Tuner indicator and mini-bar.
+///
+/// Pure function of state — there is NO source-switch protocol message (see the
+/// design v2 resolution). Precedence: Spotify if playing, then a connected
+/// Bluetooth device (last event wins over `bt_devices`), then Voice if the
+/// `wyoming` subsystem is Running. Defaults to "spotify" when idle.
+pub fn active_source(s: &AppState) -> &'static str {
+    if s.spotify_status
+        .as_ref()
+        .map(|st| st.is_playing)
+        .unwrap_or(false)
+    {
+        return "spotify";
+    }
+    // Last-event-wins: a later DeviceConnected for a different addr replaces the
+    // current one; a DeviceDisconnected for the connected addr clears it.
+    let mut connected: Option<&str> = None;
+    for ev in &s.bt_devices {
+        match ev {
+            BtEvent::DeviceConnected { addr, .. } => connected = Some(addr.as_str()),
+            BtEvent::DeviceDisconnected { addr } => {
+                if connected == Some(addr.as_str()) {
+                    connected = None;
+                }
+            }
+            _ => {}
+        }
+    }
+    // Fall back to the authoritative live status: a dashboard opened (or WS-
+    // reconnected) mid-stream gets a BluetoothStatus with `connected` set but no
+    // DeviceConnected event, so the event log above is empty even though a device
+    // is connected. Mirrors the precedence the Bluetooth settings page uses.
+    if connected.is_some()
+        || s.bt_status
+            .as_ref()
+            .map_or(false, |st| st.connected.is_some())
+    {
+        return "bluetooth";
+    }
+    if s.subsystems
+        .get("wyoming")
+        .map(|sub| sub.state == SubsystemState::Running)
+        .unwrap_or(false)
+    {
+        return "voice";
+    }
+    "spotify"
+}
+
 impl Default for AppState {
     fn default() -> Self {
         Self {
@@ -118,12 +168,13 @@ impl Default for AppState {
             led: None,
             config: None,
             bt_devices: Vec::new(),
+            bt_status: None,
+            bt_track: None,
+            bt_playstatus: None,
             master_volume: 30,
-            active_page: "dashboard".into(),
-            panel_open: None,
+            active_page: "home".into(),
             config_dirty: false,
             connected: false,
-            install_prompt: None,
             audio_left_rms: 0.0,
             audio_right_rms: 0.0,
             audio_left_peak: 0.0,
@@ -194,4 +245,89 @@ where
         let mut inner = state.borrow_mut();
         f(&mut inner)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use encore_common::protocol::{
+        BtEvent, DebugMode, SpotifyStatus, SubsystemSnapshot, SubsystemState,
+    };
+
+    fn playing(is_playing: bool) -> SpotifyStatus {
+        SpotifyStatus {
+            is_playing,
+            shuffle: false,
+            repeat_context: false,
+            repeat_track: false,
+            volume: 50,
+            position_ms: 0,
+            duration_ms: 0,
+            track: None,
+            connected_user: None,
+        }
+    }
+
+    fn wyoming_running() -> SubsystemSnapshot {
+        SubsystemSnapshot {
+            name: "wyoming".into(),
+            state: SubsystemState::Running,
+            debug_mode: DebugMode::Production,
+            restart_count: 0,
+            msg_count: 0,
+            uptime_secs: 1,
+        }
+    }
+
+    #[test]
+    fn spotify_playing_wins() {
+        let mut s = AppState {
+            spotify_status: Some(playing(true)),
+            ..Default::default()
+        };
+        s.bt_devices.push(BtEvent::DeviceConnected {
+            name: "Phone".into(),
+            addr: "AA".into(),
+        });
+        assert_eq!(active_source(&s), "spotify");
+    }
+
+    #[test]
+    fn bluetooth_when_connected_and_not_playing() {
+        let mut s = AppState {
+            spotify_status: Some(playing(false)),
+            ..Default::default()
+        };
+        s.bt_devices.push(BtEvent::DeviceConnected {
+            name: "Phone".into(),
+            addr: "AA".into(),
+        });
+        assert_eq!(active_source(&s), "bluetooth");
+    }
+
+    #[test]
+    fn bluetooth_ignored_after_disconnect() {
+        let mut s = AppState::default();
+        s.bt_devices.push(BtEvent::DeviceConnected {
+            name: "Phone".into(),
+            addr: "AA".into(),
+        });
+        s.bt_devices
+            .push(BtEvent::DeviceDisconnected { addr: "AA".into() });
+        s.subsystems.insert("wyoming".into(), wyoming_running());
+        assert_eq!(active_source(&s), "voice");
+    }
+
+    #[test]
+    fn voice_when_wyoming_running() {
+        let mut s = AppState::default();
+        s.subsystems.insert("wyoming".into(), wyoming_running());
+        assert_eq!(active_source(&s), "voice");
+    }
+
+    #[test]
+    fn defaults_to_spotify_when_idle() {
+        let s = AppState::default();
+        assert_eq!(active_source(&s), "spotify");
+    }
 }

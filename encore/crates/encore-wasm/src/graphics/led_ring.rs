@@ -13,6 +13,37 @@ const NUM_TOTAL: usize = 13; // 12 ring + 1 center
 thread_local! {
     /// Epoch counter — incremented to cancel running animation loops.
     static ANIM_EPOCH: Cell<u32> = const { Cell::new(0) };
+    /// performance.now() of the last painted frame, for the fps cap.
+    static LAST_PAINT: Cell<f64> = const { Cell::new(0.0) };
+}
+
+/// Target frame interval in ms for a given fps cap.
+fn frame_interval_ms(fps: f64) -> f64 {
+    1000.0 / fps
+}
+
+/// fps cap for the current viewport: 30 on desktop (>640px), 20 on device/mobile.
+fn target_fps() -> f64 {
+    let wide = crate::dom::window()
+        .inner_width()
+        .ok()
+        .and_then(|v| v.as_f64())
+        .map(|w| w > 640.0)
+        .unwrap_or(false);
+    if wide {
+        30.0
+    } else {
+        20.0
+    }
+}
+
+/// True for animations that produce one fixed frame, so the loop can paint once
+/// and stop instead of rescheduling forever.
+fn is_static(anim: &LedAnimation) -> bool {
+    matches!(
+        anim,
+        LedAnimation::Off | LedAnimation::Solid { .. } | LedAnimation::VolumeArc { .. }
+    )
 }
 
 /// Draw a single frame of the LED ring.
@@ -27,6 +58,10 @@ pub fn draw_frame(ctx: &CanvasRenderingContext2d, size: f64, colors: &[(u8, u8, 
     let dot_r = 7.0;
     let center_r = 10.0;
 
+    // Off-LED well color tracks the theme so the ring reads on a light stage too.
+    let (wr, wg, wb) = super::theme::grid_rgb(super::theme::is_dark());
+    let off_well = super::rgba_str(wr, wg, wb, 0.18);
+
     // Draw 12 ring LEDs starting from 12 o'clock, clockwise
     for i in 0..NUM_RING {
         let angle =
@@ -37,11 +72,11 @@ pub fn draw_frame(ctx: &CanvasRenderingContext2d, size: f64, colors: &[(u8, u8, 
 
         if r > 0 || g > 0 || b > 0 {
             ctx.set_shadow_color(&super::rgba_str(r, g, b, 0.8));
-            ctx.set_shadow_blur(12.0);
+            ctx.set_shadow_blur(4.0);
             ctx.set_fill_style_str(&super::rgb_str(r, g, b));
         } else {
             ctx.set_shadow_blur(0.0);
-            ctx.set_fill_style_str("rgba(48,54,61,0.5)");
+            ctx.set_fill_style_str(&off_well);
         }
 
         ctx.begin_path();
@@ -53,11 +88,11 @@ pub fn draw_frame(ctx: &CanvasRenderingContext2d, size: f64, colors: &[(u8, u8, 
     let (cr, cg, cb) = colors[NUM_RING];
     if cr > 0 || cg > 0 || cb > 0 {
         ctx.set_shadow_color(&super::rgba_str(cr, cg, cb, 0.6));
-        ctx.set_shadow_blur(16.0);
+        ctx.set_shadow_blur(4.0);
         ctx.set_fill_style_str(&super::rgb_str(cr, cg, cb));
     } else {
         ctx.set_shadow_blur(0.0);
-        ctx.set_fill_style_str("rgba(48,54,61,0.4)");
+        ctx.set_fill_style_str(&off_well);
     }
     ctx.begin_path();
     ctx.arc(cx, cy, center_r, 0.0, std::f64::consts::TAU).ok();
@@ -189,24 +224,28 @@ fn compute_frame(anim: &LedAnimation, t_ms: f64) -> [(u8, u8, u8); NUM_TOTAL] {
 /// Start an animation loop on the LED ring canvas (by ID "led-ring-canvas").
 /// Cancels any previous animation via epoch counter.
 pub fn start_animation(anim: LedAnimation) {
-    // Bump epoch to cancel any running loop
+    // Bump epoch to cancel any running loop.
     let epoch = ANIM_EPOCH.with(|e| {
         let next = e.get().wrapping_add(1);
         e.set(next);
         next
     });
+    LAST_PAINT.with(|p| p.set(0.0));
+
+    // Static variants, and every variant under reduced motion, paint exactly one
+    // frame and never reschedule. Listen for the reduced-motion setting changing
+    // so toggling the OS preference restarts/stops the loop without a reload.
+    install_motion_listener();
+    if is_static(&anim) || super::theme::reduce_motion() {
+        draw_once(&anim);
+        return;
+    }
 
     run_anim_frame(anim, epoch);
 }
 
-fn run_anim_frame(anim: LedAnimation, epoch: u32) {
-    // Check if we've been cancelled
-    let current = ANIM_EPOCH.with(|e| e.get());
-    if current != epoch {
-        return;
-    }
-
-    // Get canvas and draw
+/// Paint a single static frame (no rescheduling).
+fn draw_once(anim: &LedAnimation) {
     if let Some(canvas_el) = crate::dom::get_el("led-ring-canvas") {
         if let Some(canvas) = canvas_el.dyn_ref::<web_sys::HtmlCanvasElement>() {
             if let Ok(Some(ctx)) = canvas.get_context("2d") {
@@ -215,13 +254,65 @@ fn run_anim_frame(anim: LedAnimation, epoch: u32) {
                     .performance()
                     .map(|p| p.now())
                     .unwrap_or(0.0);
-                let colors = compute_frame(&anim, now);
+                let colors = compute_frame(anim, now);
                 draw_frame(&ctx, 200.0, &colors);
             }
         }
     }
+}
 
-    // Schedule next frame
+/// Register a one-time `change` listener on the reduced-motion media query so a
+/// running loop stops (and a stopped one is not silently left animating) when
+/// the user toggles the OS setting. Idempotent via a thread-local guard.
+fn install_motion_listener() {
+    thread_local! {
+        static INSTALLED: Cell<bool> = const { Cell::new(false) };
+    }
+    if INSTALLED.with(|i| i.replace(true)) {
+        return;
+    }
+    if let Ok(Some(mql)) = crate::dom::window().match_media("(prefers-reduced-motion: reduce)") {
+        let cb = Closure::wrap(Box::new(move |_e: web_sys::Event| {
+            // On change, cancel the current loop. The next start_animation (route
+            // re-render) re-evaluates the gate; meanwhile a static frame remains.
+            stop_animation();
+        }) as Box<dyn FnMut(_)>);
+        mql.add_event_listener_with_callback("change", cb.as_ref().unchecked_ref())
+            .ok();
+        cb.forget();
+    }
+}
+
+fn run_anim_frame(anim: LedAnimation, epoch: u32) {
+    // Cancelled?
+    let current = ANIM_EPOCH.with(|e| e.get());
+    if current != epoch {
+        return;
+    }
+
+    let now = crate::dom::window()
+        .performance()
+        .map(|p| p.now())
+        .unwrap_or(0.0);
+
+    // fps cap: only repaint once the target interval has elapsed. We still wake
+    // on rAF, but we skip the expensive canvas work in between.
+    let interval = frame_interval_ms(target_fps());
+    let last = LAST_PAINT.with(|p| p.get());
+    if now - last >= interval {
+        LAST_PAINT.with(|p| p.set(now));
+        if let Some(canvas_el) = crate::dom::get_el("led-ring-canvas") {
+            if let Some(canvas) = canvas_el.dyn_ref::<web_sys::HtmlCanvasElement>() {
+                if let Ok(Some(ctx)) = canvas.get_context("2d") {
+                    let ctx: CanvasRenderingContext2d = ctx.unchecked_into();
+                    let colors = compute_frame(&anim, now);
+                    draw_frame(&ctx, 200.0, &colors);
+                }
+            }
+        }
+    }
+
+    // Schedule next frame.
     let anim_clone = anim.clone();
     let cb = Closure::once(move || {
         run_anim_frame(anim_clone, epoch);
@@ -423,5 +514,31 @@ mod tests {
         // Solid mirrors the legacy `draw(Some(color))` fill of all 13 LEDs.
         let frame = compute_frame(&LedAnimation::Solid { r: 255, g: 0, b: 0 }, 0.0);
         assert_eq!(frame, [(255, 0, 0); NUM_TOTAL]);
+    }
+
+    #[test]
+    fn frame_interval_caps_at_target_fps() {
+        // 20 fps -> 50 ms; 30 fps -> ~33.33 ms.
+        assert_eq!(frame_interval_ms(20.0), 50.0);
+        assert!((frame_interval_ms(30.0) - 33.3333).abs() < 0.01);
+    }
+
+    #[test]
+    fn static_variants_do_not_reschedule() {
+        assert!(is_static(&LedAnimation::Off));
+        assert!(is_static(&LedAnimation::Solid { r: 1, g: 2, b: 3 }));
+        assert!(is_static(&LedAnimation::VolumeArc { level: 50 }));
+        assert!(!is_static(&LedAnimation::Breathe {
+            r: 1,
+            g: 2,
+            b: 3,
+            period_ms: 1000
+        }));
+        assert!(!is_static(&LedAnimation::Spin {
+            r: 1,
+            g: 2,
+            b: 3,
+            speed: 1
+        }));
     }
 }

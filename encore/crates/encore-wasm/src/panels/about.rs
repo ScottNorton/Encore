@@ -119,7 +119,7 @@ Linux: chrome://settings/certificates \u{2192} Authorities \u{2192} Import",
     let cache_desc = dom::el(
         "div",
         "text-sm text-muted",
-        Some("Clear cached assets and reload. Useful after firmware updates."),
+        Some("Updates normally apply on their own. Use this only if the dashboard ever looks out of date."),
     );
     dom::append(&cache_card, &cache_desc);
 

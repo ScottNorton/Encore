@@ -9,13 +9,12 @@
 //! deterministic timing — it must not run on tokio's thread pool.
 
 use super::pcm::{
-    pcm_hw_params, pcm_prepare, pcm_sw_params, SndPcmHwParams, SndPcmSwParams,
-    ACCESS_RW_INTERLEAVED, FORMAT_S32_LE, INTERVAL_BUFFER_SIZE, INTERVAL_CHANNELS,
-    INTERVAL_PERIOD_SIZE, INTERVAL_RATE,
+    pcm_hw_params, pcm_prepare, pcm_readi, pcm_start, pcm_sw_params, SndPcmHwParams,
+    SndPcmSwParams, SndXferi, ACCESS_RW_INTERLEAVED, FORMAT_S32_LE, INTERVAL_BUFFER_SIZE,
+    INTERVAL_CHANNELS, INTERVAL_PERIOD_SIZE, INTERVAL_RATE,
 };
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use std::fs::OpenOptions;
-use std::io::Read;
 use std::os::unix::io::AsRawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -105,7 +104,7 @@ fn capture_thread(
     let path = format!("/dev/snd/pcmC{}D{}c", card, device);
     info!("Capture: opening {}", path);
 
-    let mut file = OpenOptions::new()
+    let file = OpenOptions::new()
         .read(true)
         .write(true)
         .open(&path)
@@ -161,6 +160,8 @@ fn capture_thread(
 
     unsafe {
         pcm_prepare(fd).context("Capture: PREPARE failed")?;
+        // Capture must be explicitly started before the ring buffer fills.
+        pcm_start(fd).context("Capture: START failed")?;
     }
 
     info!("Capture: ready, starting read loop");
@@ -169,7 +170,6 @@ fn capture_thread(
     let frames_per_period = actual_period as usize;
     let samples_per_period = frames_per_period * 2; // stereo
     let mut read_buf: Vec<i32> = vec![0i32; samples_per_period];
-    let period_bytes = samples_per_period * 4; // S32_LE = 4 bytes/sample
 
     // Downsampled output buffers (48kHz → 16kHz = 3:1)
     let out_frames = frames_per_period / 3;
@@ -188,49 +188,54 @@ fn capture_thread(
         .map(|(_, tx)| tx)
         .collect();
 
+    // Count consecutive READI failures so a transient stream error self-heals
+    // (re-prepare) while a truly wedged device backs off instead of hot-spinning.
+    let mut consecutive_errors = 0u32;
+
     while running.load(Ordering::Acquire) {
-        // Read one full period of interleaved stereo S32 frames via the read()
-        // syscall. The BG2CDP 3.8 kernel returns ENOTTY for the READI_FRAMES
-        // ioctl, so capture uses read() the same way playback uses write()
-        // (see AlsaPcm::write_frames). read() may return short, so accumulate
-        // until a full period is buffered.
-        let got_period = {
-            let byte_buf = unsafe {
-                std::slice::from_raw_parts_mut(read_buf.as_mut_ptr() as *mut u8, period_bytes)
-            };
-            let mut offset = 0usize;
-            loop {
-                if !running.load(Ordering::Acquire) {
-                    break false;
-                }
-                match file.read(&mut byte_buf[offset..]) {
-                    Ok(0) => std::thread::sleep(std::time::Duration::from_millis(1)),
-                    Ok(n) => {
-                        offset += n;
-                        if offset >= period_bytes {
-                            break true;
-                        }
-                    }
-                    Err(e) if e.raw_os_error() == Some(32) => {
-                        // EPIPE = overrun — re-prepare and refill from the next period
-                        warn!("Capture: overrun, recovering");
-                        unsafe {
-                            pcm_prepare(fd).ok();
-                        }
-                        break false;
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(std::time::Duration::from_millis(1));
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                    Err(e) => bail!("Capture: read failed: {}", e),
-                }
-            }
+        // Transfer one period of interleaved stereo S32 frames via the
+        // SNDRV_PCM_IOCTL_READI_FRAMES ioctl. The plain read() syscall returns
+        // ENOTTY for PCM capture on the BG2CDP 3.8 kernel; the READI ioctl is the
+        // working path (verified against stock arecord/libasound via strace).
+        // A blocking READI fills the full requested period before returning.
+        let mut xferi = SndXferi {
+            result: 0,
+            buf: read_buf.as_mut_ptr() as *mut core::ffi::c_void,
+            frames: frames_per_period,
         };
-        if !got_period {
+        match unsafe { pcm_readi(fd, &mut xferi) } {
+            Ok(_) => consecutive_errors = 0,
+            Err(nix::errno::Errno::EAGAIN) => {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                continue;
+            }
+            Err(nix::errno::Errno::EINTR) => continue,
+            Err(e) => {
+                // EPIPE (overrun), ESTRPIPE (stream suspended), EBADFD (stale stream
+                // state), or any other errno: re-prepare and restart rather than dying.
+                // This thread is the sole mic producer — a permanent exit here would
+                // silently end all wake-word and voice capture until reboot, so we never
+                // bail. We keep re-preparing with backoff so a transient DSP/power hiccup
+                // self-heals instead of bricking voice for the rest of the process life.
+                consecutive_errors = consecutive_errors.saturating_add(1);
+                if consecutive_errors == 1 || consecutive_errors.is_multiple_of(200) {
+                    warn!(
+                        "Capture: READI error ({}), re-preparing (attempt {})",
+                        e, consecutive_errors
+                    );
+                }
+                let recovered = unsafe { pcm_prepare(fd) }.and_then(|_| unsafe { pcm_start(fd) });
+                if recovered.is_err() {
+                    // Device not ready yet — back off so we don't hot-spin the CPU.
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                continue;
+            }
+        }
+        let frames_read = xferi.result.max(0) as usize;
+        if frames_read == 0 {
             continue;
         }
-        let frames_read = frames_per_period;
 
         // Deinterleave stereo S32 → two mono channels + downsample 3:1 + scale S32→S16
         let out_count = frames_read / 3;

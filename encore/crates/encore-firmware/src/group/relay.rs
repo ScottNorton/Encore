@@ -1,5 +1,10 @@
 //! Relay topology — well-connected speakers rebroadcast audio to
 //! poorly-connected peers, forming a tree rooted at the leader.
+//!
+//! INACTIVE in v1: the leader never computes or sends a relay tree. The
+//! receive-side handler and the wire codec exist, but there is no producer
+//! driving them in production. See
+//! docs/superpowers/specs/2026-06-17-group-sync-hardening-design.md.
 
 use std::collections::HashMap;
 

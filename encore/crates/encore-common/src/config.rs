@@ -32,6 +32,8 @@ pub struct EncoreConfigFile {
     pub group: GroupConfig,
     #[serde(default)]
     pub debug: DebugConfig,
+    #[serde(default)]
+    pub sense: SenseConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +75,19 @@ pub struct AudioConfig {
     /// Power-gate DSP in Standby (saves ~500 mW-1W, adds ~3.5s resume).
     #[serde(default)]
     pub dsp_power_gate: bool,
+    /// Optional EQ preset applied to the software EQ at boot, e.g. "bass_boost",
+    /// "warm", "flat". `None` = start flat. Runtime changes from the dashboard
+    /// always work regardless of this setting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eq_boot_preset: Option<String>,
+
+    /// Loudest permitted DAC digital-volume register (0x3D/0x3E). LOWER = louder;
+    /// 0x00 is the chip max. Volume 0..100 maps into `[max_volume_reg ..= 0xA0]`.
+    /// Default 0x37 = -27.5 dB (calibrated by ear). Lower it (toward the 0x18 hard
+    /// floor) only after the on-device SPL/excursion calibration in
+    /// docs/audio-overhaul.md. Values are clamped to the firmware's safe floor.
+    #[serde(default = "default_max_volume_reg")]
+    pub max_volume_reg: u8,
 }
 
 fn default_volume() -> u8 {
@@ -90,6 +105,12 @@ fn default_idle_timeout() -> u32 {
 fn default_standby_timeout() -> u32 {
     60
 }
+pub fn default_max_volume_reg() -> u8 {
+    // 0x37 = -27.5 dB. Calibrated by ear on-device (all sources at max, no EQ):
+    // the loudest the speaker runs cleanly without straining the driver. 3.5 dB
+    // more conservative than the stock 0x30; re-verify with bass-boost EQ active.
+    0x37
+}
 
 impl Default for AudioConfig {
     fn default() -> Self {
@@ -102,6 +123,8 @@ impl Default for AudioConfig {
             idle_timeout_secs: default_idle_timeout(),
             standby_timeout_secs: default_standby_timeout(),
             dsp_power_gate: false,
+            eq_boot_preset: None,
+            max_volume_reg: default_max_volume_reg(),
         }
     }
 }
@@ -141,6 +164,42 @@ impl Default for EqConfig {
         Self {
             enabled: true,
             bands: Vec::new(),
+        }
+    }
+}
+
+/// Parse a config `filter_type` string into the protocol enum, case- and
+/// separator-insensitive. Unknown values fall back to a peak filter.
+fn parse_filter_type(s: &str) -> crate::protocol::FilterType {
+    use crate::protocol::FilterType::*;
+    match s.to_ascii_lowercase().replace(['_', '-', ' '], "").as_str() {
+        "lowshelf" => LowShelf,
+        "highshelf" => HighShelf,
+        "notch" => Notch,
+        _ => Peak,
+    }
+}
+
+impl EqConfig {
+    /// Map the persisted `[eq]` config into the runtime `EqState` applied at
+    /// boot. Bands map by index into the 10-band array (extras past 10 are
+    /// dropped); unspecified bands stay flat. An explicit config is not a named
+    /// preset, so `preset` is `None`.
+    pub fn to_state(&self) -> crate::protocol::EqState {
+        use crate::protocol::{EqBand, EqState};
+        let mut bands = [EqBand::default(); 10];
+        for (slot, b) in bands.iter_mut().zip(self.bands.iter()) {
+            *slot = EqBand {
+                freq_hz: b.freq_hz,
+                gain_cb: b.gain_cb,
+                q_x10: b.q_x10,
+                filter_type: parse_filter_type(&b.filter_type),
+            };
+        }
+        EqState {
+            bands,
+            preset: None,
+            enabled: self.enabled,
         }
     }
 }
@@ -200,6 +259,38 @@ impl Default for DrcConfig {
     }
 }
 
+impl DrcConfig {
+    /// Map the persisted `[drc]` config into the runtime `DrcState` applied at
+    /// boot.
+    ///
+    /// The software compressor is single-band and applies `bands[1]` (Mid). A
+    /// single `[[drc.bands]]` entry is therefore replicated onto every state
+    /// band so it lands on the applied one; if several entries are given they
+    /// map by index, and the second is the one that takes effect.
+    pub fn to_state(&self) -> crate::protocol::DrcState {
+        use crate::protocol::{DrcBandConfig, DrcState};
+        let band_at = |i: usize| -> DrcBandConfig {
+            self.bands
+                .get(i)
+                .or_else(|| self.bands.first())
+                .map(|b| DrcBandConfig {
+                    threshold_db: b.threshold_db,
+                    ratio_x10: b.ratio_x10,
+                    attack_ms: b.attack_ms,
+                    release_ms: b.release_ms,
+                })
+                .unwrap_or_default()
+        };
+        DrcState {
+            bands: [band_at(0), band_at(1), band_at(2)],
+            low_mid_hz: self.low_mid_hz,
+            mid_high_hz: self.mid_high_hz,
+            preset: None,
+            enabled: self.enabled,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpotifyConfig {
     #[serde(default = "default_true")]
@@ -237,6 +328,11 @@ pub struct BluetoothConfig {
     pub enabled: bool,
     #[serde(default = "default_true")]
     pub discoverable: bool,
+    /// Mesh mode: when grouped, all members advertise the group name and only
+    /// the coordinator stays connectable, so the group looks like one BT
+    /// device. Off (default) = normal per-speaker Bluetooth.
+    #[serde(default)]
+    pub mesh_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -308,8 +404,6 @@ pub struct GroupConfig {
     pub group_name: String,
     #[serde(default = "default_channel")]
     pub channel: String,
-    #[serde(default = "default_buffer_ms")]
-    pub buffer_ms: u16,
     /// Unique peer ID (UUID v4), generated on first boot.
     pub peer_id: Option<String>,
     /// Bootstrap peers for cross-subnet discovery (e.g. ["192.168.43.1", "10.0.0.5"]).
@@ -326,9 +420,6 @@ fn default_group_name() -> String {
 fn default_channel() -> String {
     "stereo".into()
 }
-fn default_buffer_ms() -> u16 {
-    80
-}
 
 impl Default for GroupConfig {
     fn default() -> Self {
@@ -336,7 +427,6 @@ impl Default for GroupConfig {
             enabled: false,
             group_name: default_group_name(),
             channel: default_channel(),
-            buffer_ms: default_buffer_ms(),
             peer_id: None,
             peers: Vec::new(),
             party_mode: false,
@@ -350,6 +440,33 @@ pub struct DebugConfig {
     pub default_mode: String,
     #[serde(default)]
     pub overrides: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SenseConfig {
+    pub enabled: bool,
+    pub channels: String,      // "left" | "both"
+    pub activity_db: f32,      // dB over noise floor to call "activity"
+    pub attack_frames: u32,    // consecutive over-threshold frames before Activity
+    pub quiet_timeout_s: u32,  // sub-threshold seconds -> decay to Quiet
+    pub loud_ratio: f32,       // peak/floor ratio -> loud event
+    pub playback_tail_ms: u32, // ignore mic this long after playback stops
+    pub led_feedback: bool,
+}
+impl Default for SenseConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            channels: "left".into(),
+            activity_db: 12.0,
+            attack_frames: 6,
+            quiet_timeout_s: 30,
+            loud_ratio: 8.0,
+            playback_tail_ms: 800,
+            led_feedback: false,
+        }
+    }
 }
 
 fn default_true() -> bool {
@@ -379,6 +496,7 @@ impl Default for EncoreConfigFile {
             bluetooth: BluetoothConfig {
                 enabled: true,
                 discoverable: true,
+                mesh_enabled: false,
             },
             homeassistant: HomeAssistantConfig::default(),
             wyoming: WyomingConfig::default(),
@@ -392,6 +510,7 @@ impl Default for EncoreConfigFile {
                 default_mode: "production".into(),
                 ..Default::default()
             },
+            sense: SenseConfig::default(),
         }
     }
 }
@@ -423,6 +542,83 @@ impl EncoreConfigFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drc_config_to_state_applies_single_band() {
+        // A single configured band lands on the applied (Mid) band, and the
+        // enable flag and crossover values carry through.
+        let cfg = DrcConfig {
+            enabled: true,
+            low_mid_hz: 150,
+            mid_high_hz: 1800,
+            bands: vec![DrcBandSaveConfig {
+                threshold_db: -18,
+                ratio_x10: 40,
+                attack_ms: 5,
+                release_ms: 150,
+            }],
+        };
+        let st = cfg.to_state();
+        assert!(st.enabled);
+        assert_eq!(st.low_mid_hz, 150);
+        assert_eq!(st.mid_high_hz, 1800);
+        assert_eq!(st.bands[1].threshold_db, -18);
+        assert_eq!(st.bands[1].ratio_x10, 40);
+        assert_eq!(st.bands[1].attack_ms, 5);
+        assert_eq!(st.bands[1].release_ms, 150);
+
+        // The default config maps to a disabled, all-default state, so a normal
+        // boot (no [drc] edits) behaves exactly as before.
+        let d = DrcConfig::default().to_state();
+        assert!(!d.enabled);
+        assert_eq!(d.bands[1], crate::protocol::DrcBandConfig::default());
+    }
+
+    #[test]
+    fn eq_config_to_state_maps_bands_and_filter_types() {
+        use crate::protocol::{EqBand, FilterType};
+        let cfg = EqConfig {
+            enabled: true,
+            bands: vec![
+                EqBandConfig {
+                    freq_hz: 100,
+                    gain_cb: 30,
+                    q_x10: 7,
+                    filter_type: "lowshelf".into(),
+                },
+                EqBandConfig {
+                    freq_hz: 8000,
+                    gain_cb: -20,
+                    q_x10: 12,
+                    filter_type: "HighShelf".into(),
+                },
+            ],
+        };
+        let st = cfg.to_state();
+        assert!(st.enabled);
+        assert_eq!(st.preset, None);
+        assert_eq!(st.bands[0].freq_hz, 100);
+        assert_eq!(st.bands[0].filter_type, FilterType::LowShelf);
+        assert_eq!(st.bands[1].gain_cb, -20);
+        assert_eq!(st.bands[1].filter_type, FilterType::HighShelf);
+        // Bands past those configured stay flat.
+        assert_eq!(st.bands[2], EqBand::default());
+
+        // Disabled config with an unknown filter type: enabled carries through
+        // and the unknown type falls back to a peak filter.
+        let c2 = EqConfig {
+            enabled: false,
+            bands: vec![EqBandConfig {
+                freq_hz: 1000,
+                gain_cb: 0,
+                q_x10: 10,
+                filter_type: "bogus".into(),
+            }],
+        };
+        let s2 = c2.to_state();
+        assert!(!s2.enabled);
+        assert_eq!(s2.bands[0].filter_type, FilterType::Peak);
+    }
 
     #[test]
     fn defaults_are_sane() {
@@ -504,6 +700,8 @@ mqtt_port = 1883
                 idle_timeout_secs: 10,
                 standby_timeout_secs: 120,
                 dsp_power_gate: true,
+                eq_boot_preset: Some("bass_boost".into()),
+                max_volume_reg: 0x28,
             },
             eq: EqConfig::default(),
             drc: DrcConfig::default(),
@@ -519,6 +717,7 @@ mqtt_port = 1883
             bluetooth: BluetoothConfig {
                 enabled: true,
                 discoverable: false,
+                mesh_enabled: false,
             },
             homeassistant: HomeAssistantConfig {
                 enabled: true,
@@ -544,6 +743,7 @@ mqtt_port = 1883
                 default_mode: "trace".into(),
                 overrides: [("audio".to_string(), "hold".to_string())].into(),
             },
+            sense: SenseConfig::default(),
         };
 
         let toml_str = toml::to_string_pretty(&original).unwrap();
@@ -678,7 +878,6 @@ ap_keep_alive = false
         assert!(!group.enabled);
         assert_eq!(group.group_name, "Home");
         assert_eq!(group.channel, "stereo");
-        assert_eq!(group.buffer_ms, 80);
         assert!(group.peer_id.is_none());
         assert!(group.peers.is_empty());
         assert!(!group.party_mode);
@@ -694,9 +893,27 @@ ap_keep_alive = false
         assert!(!cfg.group.enabled);
         assert_eq!(cfg.group.group_name, "Home");
         assert_eq!(cfg.group.channel, "stereo");
-        assert_eq!(cfg.group.buffer_ms, 80);
         assert!(cfg.group.peers.is_empty());
         assert!(!cfg.group.party_mode);
+    }
+
+    #[test]
+    fn group_config_has_no_user_buffer_setting() {
+        // The playout buffer is no longer a user setting: the controller owns it.
+        // Parsing a [group] section that omits it must still succeed (no missing
+        // required field), and the field must not serialize back out.
+        let toml = "[group]\nenabled = true\ngroup_name = \"Home\"\n";
+        let cfg: EncoreConfigFile = toml::from_str(toml).unwrap();
+        assert!(cfg.group.enabled);
+
+        // Round-trip a default config and prove the knob is gone from the wire:
+        // while the field exists it serializes as `buffer_ms = 80`, so this fails
+        // until the field (and its serde default) are removed.
+        let serialized = toml::to_string_pretty(&EncoreConfigFile::default()).unwrap();
+        assert!(
+            !serialized.contains("buffer_ms"),
+            "GroupConfig must not serialize a buffer_ms knob:\n{serialized}"
+        );
     }
 
     #[test]
@@ -713,6 +930,18 @@ ap_keep_alive = false
         assert_eq!(drc.low_mid_hz, 200);
         assert_eq!(drc.mid_high_hz, 2000);
         assert!(drc.bands.is_empty());
+    }
+
+    #[test]
+    fn sense_config_defaults_and_parse() {
+        let cfg: EncoreConfigFile =
+            toml::from_str("[sense]\nenabled = true\nactivity_db = 10.0\n").unwrap();
+        assert!(cfg.sense.enabled);
+        assert_eq!(cfg.sense.activity_db, 10.0);
+        assert_eq!(cfg.sense.quiet_timeout_s, 30); // omitted -> default
+        let def = SenseConfig::default();
+        assert!(!def.enabled);
+        assert_eq!(def.channels, "left");
     }
 
     #[test]

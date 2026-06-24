@@ -25,7 +25,10 @@ BUILD_VERSION="${BUILD_VERSION:-$(date +%s 2>/dev/null || echo "0")}"
 SW_STAMPED=false
 ORIGINAL_VERSION=""
 if [ -f "web/sw.js" ]; then
-    ORIGINAL_VERSION=$(grep -oP "CACHE_VERSION = '\K[^']+" "web/sw.js" 2>/dev/null || echo "0")
+    # Portable extraction — Git Bash grep lacks -P/PCRE, which silently fell back
+    # to "0" and reset the committed base version on every build (dirtying the tree).
+    ORIGINAL_VERSION=$(sed -n "s/.*CACHE_VERSION = '\([^']*\)'.*/\1/p" "web/sw.js" | head -1)
+    [ -z "$ORIGINAL_VERSION" ] && ORIGINAL_VERSION="0"
     sed -i "s/CACHE_VERSION = '[^']*'/CACHE_VERSION = '$BUILD_VERSION'/" "web/sw.js"
     SW_STAMPED=true
     echo "=== Stamped sw.js with version $BUILD_VERSION ==="

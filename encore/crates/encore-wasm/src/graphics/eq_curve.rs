@@ -59,84 +59,27 @@ fn y_to_gain(y: f64) -> f64 {
     G_MAX + t * (G_MIN - G_MAX)
 }
 
-/// Compute biquad magnitude response at frequency `f` for a single band.
-/// Returns gain in dB. Same cookbook formulas as the firmware uses.
+/// Magnitude response in dB at frequency `f` for a single band, using the SAME
+/// canonical biquad math the firmware mixer applies (`encore_common::dsp`), so
+/// the preview can never drift from what the speaker actually does. (This used
+/// to hand-roll the RBJ cookbook formulas, which had silently diverged: it
+/// flattened a zero-gain notch and didn't clamp Q.)
 fn band_response_db(band: &EqBand, f: f64) -> f64 {
-    if band.gain_cb == 0 {
+    // A zero-gain peak/shelf is a flat unity filter and contributes nothing. A
+    // notch is defined by Q, not gain, so a zero-gain notch is still a real cut
+    // and must NOT be skipped — matches `dsp::StereoEq::set_bands`.
+    if band.gain_cb == 0 && band.filter_type != FilterType::Notch {
         return 0.0;
     }
-
-    let fs = 48000.0;
-    let freq = band.freq_hz as f64;
-    let gain_db = band.gain_cb as f64 / 10.0;
-    let q = band.q_x10 as f64 / 10.0;
-
-    let w0 = 2.0 * std::f64::consts::PI * freq / fs;
-    let cos_w0 = w0.cos();
-    let sin_w0 = w0.sin();
-    let alpha = sin_w0 / (2.0 * q);
-    let a_lin = 10.0_f64.powf(gain_db / 40.0);
-
-    let (b0, b1, b2, a0, a1, a2) = match band.filter_type {
-        FilterType::Peak => (
-            1.0 + alpha * a_lin,
-            -2.0 * cos_w0,
-            1.0 - alpha * a_lin,
-            1.0 + alpha / a_lin,
-            -2.0 * cos_w0,
-            1.0 - alpha / a_lin,
-        ),
-        FilterType::LowShelf => {
-            let tsa = 2.0 * a_lin.sqrt() * alpha;
-            (
-                a_lin * ((a_lin + 1.0) - (a_lin - 1.0) * cos_w0 + tsa),
-                2.0 * a_lin * ((a_lin - 1.0) - (a_lin + 1.0) * cos_w0),
-                a_lin * ((a_lin + 1.0) - (a_lin - 1.0) * cos_w0 - tsa),
-                (a_lin + 1.0) + (a_lin - 1.0) * cos_w0 + tsa,
-                -2.0 * ((a_lin - 1.0) + (a_lin + 1.0) * cos_w0),
-                (a_lin + 1.0) + (a_lin - 1.0) * cos_w0 - tsa,
-            )
-        }
-        FilterType::HighShelf => {
-            let tsa = 2.0 * a_lin.sqrt() * alpha;
-            (
-                a_lin * ((a_lin + 1.0) + (a_lin - 1.0) * cos_w0 + tsa),
-                -2.0 * a_lin * ((a_lin - 1.0) + (a_lin + 1.0) * cos_w0),
-                a_lin * ((a_lin + 1.0) + (a_lin - 1.0) * cos_w0 - tsa),
-                (a_lin + 1.0) - (a_lin - 1.0) * cos_w0 + tsa,
-                2.0 * ((a_lin - 1.0) - (a_lin + 1.0) * cos_w0),
-                (a_lin + 1.0) - (a_lin - 1.0) * cos_w0 - tsa,
-            )
-        }
-        FilterType::Notch => (
-            1.0,
-            -2.0 * cos_w0,
-            1.0,
-            1.0 + alpha,
-            -2.0 * cos_w0,
-            1.0 - alpha,
-        ),
-    };
-
-    // Evaluate transfer function H(e^jw) at frequency f
-    let w = 2.0 * std::f64::consts::PI * f / fs;
-    let cos1 = w.cos();
-    let cos2 = (2.0 * w).cos();
-    let sin1 = w.sin();
-    let sin2 = (2.0 * w).sin();
-
-    let num_re = (b0 / a0) + (b1 / a0) * cos1 + (b2 / a0) * cos2;
-    let num_im = -(b1 / a0) * sin1 - (b2 / a0) * sin2;
-    let den_re = 1.0 + (a1 / a0) * cos1 + (a2 / a0) * cos2;
-    let den_im = -(a1 / a0) * sin1 - (a2 / a0) * sin2;
-
-    let num_mag_sq = num_re * num_re + num_im * num_im;
-    let den_mag_sq = den_re * den_re + den_im * den_im;
-
-    if den_mag_sq < 1e-20 {
-        return 0.0;
-    }
-    10.0 * (num_mag_sq / den_mag_sq).log10()
+    const FS: f32 = 48_000.0;
+    let bq = encore_common::dsp::Biquad::design(
+        band.freq_hz as f32,
+        band.gain_cb as f32 / 10.0,
+        band.q_x10 as f32 / 10.0,
+        band.filter_type,
+        FS,
+    );
+    bq.magnitude_db(f as f32, FS) as f64
 }
 
 /// Compute combined response of all bands at frequency `f` (in dB).
@@ -159,15 +102,19 @@ pub fn draw(
     selected: Option<usize>,
 ) {
     ctx.clear_rect(0.0, 0.0, W, H);
+    let is_dark = super::theme::is_dark();
+    let (ar, ag, ab) = super::theme::accent_rgb(is_dark);
+    let (gr, gg, gb) = super::theme::grid_rgb(is_dark);
+    let (mr, mg, mb) = super::theme::muted_rgb(is_dark);
 
     // Background
-    ctx.set_fill_style_str("rgba(13,17,23,0.6)");
+    ctx.set_fill_style_str(super::theme::canvas_bg(is_dark));
     ctx.begin_path();
     round_rect(ctx, 0.0, 0.0, W, H, 8.0);
     ctx.fill();
 
     // Grid lines
-    ctx.set_stroke_style_str("rgba(48,54,61,0.4)");
+    ctx.set_stroke_style_str(&super::rgba_str(gr, gg, gb, 0.14));
     ctx.set_line_width(0.5);
 
     // Horizontal grid: -12, -6, 0, +6, +12 dB
@@ -180,7 +127,7 @@ pub fn draw(
     }
 
     // 0dB line slightly brighter
-    ctx.set_stroke_style_str("rgba(48,54,61,0.8)");
+    ctx.set_stroke_style_str(&super::rgba_str(gr, gg, gb, 0.30));
     ctx.set_line_width(1.0);
     let zero_y = gain_to_y(0.0);
     ctx.begin_path();
@@ -189,7 +136,7 @@ pub fn draw(
     ctx.stroke();
 
     // Vertical grid: 100, 1k, 10k Hz
-    ctx.set_stroke_style_str("rgba(48,54,61,0.4)");
+    ctx.set_stroke_style_str(&super::rgba_str(gr, gg, gb, 0.14));
     ctx.set_line_width(0.5);
     for &freq in &[100.0, 1000.0, 10000.0] {
         let x = freq_to_x(freq);
@@ -200,7 +147,7 @@ pub fn draw(
     }
 
     // Frequency labels
-    ctx.set_fill_style_str("rgba(139,148,158,0.5)");
+    ctx.set_fill_style_str(&super::rgba_str(mr, mg, mb, 0.9));
     ctx.set_font("9px system-ui");
     ctx.set_text_align("center");
     ctx.set_text_baseline("top");
@@ -233,7 +180,7 @@ pub fn draw(
         }
         ctx.line_to(W - PAD_R, zero_y);
         ctx.close_path();
-        ctx.set_fill_style_str("rgba(88,166,255,0.08)");
+        ctx.set_fill_style_str(&super::rgba_str(ar, ag, ab, 0.08));
         ctx.fill();
 
         // Curve line
@@ -251,7 +198,7 @@ pub fn draw(
                 ctx.line_to(x, y);
             }
         }
-        ctx.set_stroke_style_str("rgba(88,166,255,0.7)");
+        ctx.set_stroke_style_str(&super::rgba_str(ar, ag, ab, 0.7));
         ctx.set_line_width(2.0);
         ctx.stroke();
     }
@@ -271,7 +218,7 @@ pub fn draw(
 
         // Outer glow for selected
         if is_sel {
-            ctx.set_fill_style_str("rgba(88,166,255,0.2)");
+            ctx.set_fill_style_str(&super::rgba_str(ar, ag, ab, 0.2));
             ctx.begin_path();
             ctx.arc(x, y, r + 4.0, 0.0, std::f64::consts::TAU).ok();
             ctx.fill();
@@ -279,33 +226,36 @@ pub fn draw(
 
         // Dot fill
         let color = if !enabled {
-            "rgba(139,148,158,0.4)"
+            super::rgba_str(mr, mg, mb, 0.5)
         } else if is_sel {
-            "rgb(88,166,255)"
+            super::rgb_str(ar, ag, ab)
         } else if band.gain_cb != 0 {
-            "rgba(88,166,255,0.8)"
+            super::rgba_str(ar, ag, ab, 0.8)
         } else {
-            "rgba(139,148,158,0.6)"
+            super::rgba_str(mr, mg, mb, 0.7)
         };
-        ctx.set_fill_style_str(color);
+        ctx.set_fill_style_str(&color);
         ctx.begin_path();
         ctx.arc(x, y, r, 0.0, std::f64::consts::TAU).ok();
         ctx.fill();
 
         // Dot border
-        ctx.set_stroke_style_str(if is_sel {
-            "rgb(88,166,255)"
+        let (ir, ig, ib) = super::theme::ink_rgb(is_dark);
+        ctx.set_stroke_style_str(&if is_sel {
+            super::rgb_str(ar, ag, ab)
         } else {
-            "rgba(230,237,243,0.3)"
+            super::rgba_str(ir, ig, ib, 0.3)
         });
         ctx.set_line_width(if is_sel { 2.0 } else { 1.0 });
         ctx.stroke();
 
-        // Band number label inside dot
-        ctx.set_fill_style_str(if is_sel || band.gain_cb != 0 {
-            "rgba(255,255,255,0.9)"
+        // Band number label inside dot. On a gold (filled) dot use the near-black
+        // on-accent ink; on an empty dot use the muted theme ink.
+        ctx.set_fill_style_str(&if is_sel || band.gain_cb != 0 {
+            let (or, og, ob) = super::theme::ink_rgb(!is_dark);
+            super::rgba_str(or, og, ob, 0.95)
         } else {
-            "rgba(230,237,243,0.5)"
+            super::rgba_str(ir, ig, ib, 0.55)
         });
         ctx.set_font("bold 8px system-ui");
         ctx.set_text_align("center");
@@ -607,6 +557,26 @@ mod tests {
         };
         let at_center = band_response_db(&band, 1000.0);
         assert!(at_center < 0.0, "expected cut, got {}", at_center);
+    }
+
+    #[test]
+    fn zero_gain_notch_still_cuts() {
+        // A notch is defined by Q, not gain: a gain_cb==0 notch must still cut at
+        // its center in the preview, matching what the firmware applies. The old
+        // hand-rolled math short-circuited every gain_cb==0 band to flat (0 dB).
+        let notch = EqBand {
+            freq_hz: 1000,
+            gain_cb: 0,
+            q_x10: 50, // Q = 5
+            filter_type: FilterType::Notch,
+        };
+        assert!(
+            band_response_db(&notch, 1000.0) < -10.0,
+            "zero-gain notch should still cut at center, got {}",
+            band_response_db(&notch, 1000.0)
+        );
+        // Far from center the notch passes through ~flat.
+        assert!(band_response_db(&notch, 100.0).abs() < 1.0);
     }
 
     #[test]

@@ -120,6 +120,7 @@ pub fn render(container: &web_sys::Element) {
         "text-muted text-sm mb-12",
         Some("The name this speaker shows on phones when pairing."),
     );
+    name_hint.set_id("bt-name-hint");
     dom::append(&name_card, &name_hint);
     let name_row = dom::create_div();
     dom::set_class(&name_row, "flex justify-between items-center");
@@ -132,6 +133,7 @@ pub fn render(container: &web_sys::Element) {
     dom::set_style(&name_input, "flex", "1");
     dom::append(&name_row, &name_input);
     let name_save = dom::el("button", "btn", Some("Save"));
+    name_save.set_id("bt-name-save");
     dom::on_click(&name_save, || {
         let name = name_input_value();
         let name = name.trim().to_string();
@@ -237,6 +239,9 @@ pub fn update_now_playing() {
 
         // Reflect the current "Visible as" name unless the user is editing it
         // (focused), so an external rename shows up without clobbering typing.
+        // When meshed, `name` is the shared group name — make the field read-only
+        // so a user can't unknowingly rename only this speaker.
+        let meshed = s.bt_status.as_ref().is_some_and(|st| st.meshed);
         if let Some(el) = dom::get_el("bt-name-input") {
             if let Some(input) = el.dyn_ref::<web_sys::HtmlInputElement>() {
                 let focused = web_sys::window()
@@ -249,7 +254,29 @@ pub fn update_now_playing() {
                         input.set_value(&name);
                     }
                 }
+                if meshed {
+                    dom::set_attr(&el, "disabled", "true");
+                } else {
+                    el.remove_attribute("disabled").ok();
+                }
             }
+        }
+        if let Some(save) = dom::get_el("bt-name-save") {
+            if meshed {
+                dom::set_attr(&save, "disabled", "true");
+            } else {
+                save.remove_attribute("disabled").ok();
+            }
+        }
+        if let Some(hint) = dom::get_el("bt-name-hint") {
+            dom::set_text(
+                &hint,
+                if meshed {
+                    "Showing the group (mesh) name. Turn off Mesh Mode to rename this speaker."
+                } else {
+                    "The name this speaker shows on phones when pairing."
+                },
+            );
         }
     });
 }
@@ -383,6 +410,10 @@ pub fn update() {
                 }
             });
         let playing = s.bt_status.as_ref().map(|st| st.playing).unwrap_or(false);
+        let reconnecting = s
+            .bt_status
+            .as_ref()
+            .and_then(|st| st.reconnecting.clone());
 
         if let Some(el) = dom::get_el("bt-conn-status") {
             dom::clear(&el);
@@ -394,14 +425,25 @@ pub fn update() {
                 let name_el = dom::el("div", "", Some(&dev.name));
                 dom::set_style(&name_el, "font-weight", "600");
                 dom::append(&info, &name_el);
+                // The servo-held stream buffer: how far playback trails the
+                // source. Visible only while streaming (0 when idle/paused).
+                let latency_ms = s
+                    .bt_status
+                    .as_ref()
+                    .map(|st| st.latency_ms)
+                    .unwrap_or(0);
                 let detail = if dev.codec.is_empty() {
                     "Connected".to_string()
                 } else {
-                    format!(
+                    let mut d = format!(
                         "{} · {}",
                         dev.codec,
                         if playing { "Playing" } else { "Paused" }
-                    )
+                    );
+                    if playing && latency_ms > 0 {
+                        d.push_str(&format!(" · {latency_ms} ms buffer"));
+                    }
+                    d
                 };
                 let detail_el = dom::el("div", "text-muted text-sm", Some(&detail));
                 dom::append(&info, &detail_el);
@@ -416,6 +458,10 @@ pub fn update() {
                 });
                 dom::append(&row, &dc_btn);
                 dom::append(&el, &row);
+            } else if let Some(name) = &reconnecting {
+                // Boot-time paging window: tell the user it's actively trying,
+                // so the ~15s of silence doesn't read as a fault.
+                dom::set_text(&el, &format!("Reconnecting to {name}\u{2026}"));
             } else {
                 // Not connected: the paired list below carries the per-device
                 // Reconnect buttons, so don't duplicate one here.

@@ -333,6 +333,11 @@ pub struct BluetoothConfig {
     /// device. Off (default) = normal per-speaker Bluetooth.
     #[serde(default)]
     pub mesh_enabled: bool,
+    /// Target A2DP buffer depth in ms. The latency servo holds the stream this
+    /// far behind the source — low enough for lip sync, high enough to ride
+    /// out link jitter. 0 (or absent) = the built-in default.
+    #[serde(default)]
+    pub latency_target_ms: u16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -497,6 +502,7 @@ impl Default for EncoreConfigFile {
                 enabled: true,
                 discoverable: true,
                 mesh_enabled: false,
+                latency_target_ms: 0, // 0 = firmware default
             },
             homeassistant: HomeAssistantConfig::default(),
             wyoming: WyomingConfig::default(),
@@ -527,14 +533,34 @@ impl EncoreConfigFile {
         }
     }
 
-    /// Save config to TOML file
+    /// Save config to TOML file.
+    ///
+    /// Atomic: a plain truncate-in-place write (`std::fs::write`) leaves
+    /// config.toml empty or half-written if power is cut or the watchdog restarts
+    /// the process mid-write — and every loader falls back to `unwrap_or_default()`
+    /// on a parse error, so a truncated file silently wipes the WiFi credentials
+    /// and every other setting. Write a temp sibling, fsync it, then rename over
+    /// the target (atomic on the same filesystem), so a reader always sees either
+    /// the complete old file or the complete new one, never a partial one.
     #[cfg(feature = "toml")]
     pub fn save(&self, path: &std::path::Path) -> anyhow::Result<()> {
+        use std::io::Write;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let content = toml::to_string_pretty(self)?;
-        std::fs::write(path, content)?;
+        let tmp = path.with_extension("toml.tmp");
+        {
+            let mut f = std::fs::File::create(&tmp)?;
+            f.write_all(content.as_bytes())?;
+            f.sync_all()?;
+        }
+        std::fs::rename(&tmp, path)?;
+        // Best-effort: fsync the directory so the rename itself is durable across
+        // a power cut on flash. Not supported everywhere, so ignore failures.
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::File::open(parent).and_then(|d| d.sync_all());
+        }
         Ok(())
     }
 }
@@ -718,6 +744,7 @@ mqtt_port = 1883
                 enabled: true,
                 discoverable: false,
                 mesh_enabled: false,
+                latency_target_ms: 0,
             },
             homeassistant: HomeAssistantConfig {
                 enabled: true,
@@ -799,6 +826,31 @@ mqtt_port = 1883
         assert_eq!(loaded.device.name, "RoundTrip");
 
         // Cleanup
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn save_overwrites_atomically_without_leaving_temp() {
+        let dir = std::env::temp_dir().join("encore_test_config_atomic");
+        std::fs::remove_dir_all(&dir).ok();
+        let path = dir.join("config.toml");
+
+        let a = EncoreConfigFile {
+            device: DeviceConfig { name: "A".into() },
+            ..EncoreConfigFile::default()
+        };
+        a.save(&path).unwrap();
+        // Re-save over the existing file (the rename-over-existing path).
+        let b = EncoreConfigFile {
+            device: DeviceConfig { name: "B".into() },
+            ..EncoreConfigFile::default()
+        };
+        b.save(&path).unwrap();
+
+        assert_eq!(EncoreConfigFile::load(&path).unwrap().device.name, "B");
+        // The temp sibling must not linger after a successful save.
+        assert!(!path.with_extension("toml.tmp").exists());
+
         std::fs::remove_dir_all(&dir).ok();
     }
 

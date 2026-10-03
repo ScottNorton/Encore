@@ -296,8 +296,7 @@ impl Subsystem for NetworkSubsystem {
         // STA is usable it is up for setup/fallback; once the STA is connected it
         // is up only when something explicitly needs it (group host, manual).
         // Raised/lowered via NetworkCmd::SetApRequested. Replaces the old static
-        // `ap_keep_alive` policy (single radio decides at runtime, see
-        // docs/superpowers/specs/2026-06-17-wifi-silicon-operation-design.md).
+        // `ap_keep_alive` policy (the single radio decides at runtime).
         let explicit_ap_demand = Arc::new(AtomicBool::new(false));
 
         let has_wifi = cfg
@@ -312,6 +311,10 @@ impl Subsystem for NetworkSubsystem {
         // Reset to WIFI_RETRY_TICKS when WiFi connects successfully.
         let mut wifi_retry_ticks: u16 = WIFI_RETRY_TICKS;
         let mut poor_signal_ticks: u8 = 0;
+        // Set while the wifi-setup ring animation is being held (EnterApMode),
+        // so we clear it exactly once when provisioning connects — and never
+        // stomp the ring on a plain boot-with-creds connect.
+        let mut wifi_setup_led = false;
         // Guard flag: set during WiFi connect operations to prevent the
         // monitor loop from racing (restarting AP, false recovery transitions)
         let wifi_connecting = Arc::new(AtomicBool::new(false));
@@ -529,6 +532,16 @@ impl Subsystem for NetworkSubsystem {
                             // Check if WiFi connected
                             if let Some(ip) = read_interface_ip("wlan0") {
                                 info!("Network: WiFi connected to {} ({})", ssid, ip);
+                                // Provisioning is done — stop the looping wifi-setup
+                                // animation held on the ring since EnterApMode. Gated
+                                // on wifi_setup_led so a plain boot-with-creds connect
+                                // (also ApConnecting) doesn't blank the ring.
+                                if wifi_setup_led {
+                                    wifi_setup_led = false;
+                                    self.send_led(crate::led::LedCmd::Animate(
+                                        encore_common::protocol::LedAnimation::Off,
+                                    ));
+                                }
                                 connecting_ticks = 0;
                                 wifi_retry_ticks = WIFI_RETRY_TICKS; // reset backoff on success
                                 // Refresh RPS + DNS after initial connect
@@ -856,6 +869,7 @@ impl Subsystem for NetworkSubsystem {
                                 name: "L_302_d_wifisetup".into(),
                                 repeat: true,
                             });
+                            wifi_setup_led = true;
                             let _ = tokio::task::spawn_blocking(ap::ensure_ap).await;
                             self.ap_active.store(true, Ordering::Relaxed);
                             state = NetState::ApOnly;

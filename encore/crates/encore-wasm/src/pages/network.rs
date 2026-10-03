@@ -573,6 +573,13 @@ pub fn update() {
         }
 
         // ── Result Banner ──
+        // Arm the 10s auto-hide only once per result. update() runs for both
+        // WifiConnectResult and NetworkChanged while the result is still shown,
+        // so arming here unconditionally leaked a Closure per call and let a
+        // stale timer hide a newer banner early.
+        thread_local! {
+            static AUTOHIDE_ARMED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        }
         if let Some(ref banner_el) = dom::get_el("wifi-result-banner") {
             if let Some(ref result) = s.wifi_connect_result {
                 dom::remove_class(banner_el, "hidden");
@@ -587,18 +594,22 @@ pub fn update() {
                         &format!("Failed to join {}: {}", result.ssid, msg),
                     );
                 }
-                // Auto-hide after 10s
-                dom::set_timeout(
-                    || {
-                        if let Some(b) = dom::get_el("wifi-result-banner") {
-                            dom::add_class(&b, "hidden");
-                        }
-                        crate::state::with_mut(|s| s.wifi_connect_result = None);
-                    },
-                    10_000,
-                );
+                if !AUTOHIDE_ARMED.with(|a| a.get()) {
+                    AUTOHIDE_ARMED.with(|a| a.set(true));
+                    dom::set_timeout(
+                        || {
+                            if let Some(b) = dom::get_el("wifi-result-banner") {
+                                dom::add_class(&b, "hidden");
+                            }
+                            crate::state::with_mut(|s| s.wifi_connect_result = None);
+                            AUTOHIDE_ARMED.with(|a| a.set(false));
+                        },
+                        10_000,
+                    );
+                }
             } else {
                 dom::add_class(banner_el, "hidden");
+                AUTOHIDE_ARMED.with(|a| a.set(false));
             }
         }
 

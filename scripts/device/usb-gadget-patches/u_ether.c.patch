@@ -1,5 +1,5 @@
---- /home/scott/HKHacking/workspace/source/kernel/Invoke-kernel/drivers/usb/gadget/u_ether.c	2021-03-09 03:17:26.000000000 -0500
-+++ /mnt/g/HKInvoke/vendor/kernel/drivers/usb/gadget/u_ether.c	2026-06-17 00:22:39.551581100 -0400
+--- a/drivers/usb/gadget/u_ether.c
++++ b/drivers/usb/gadget/u_ether.c
 @@ -803,6 +803,17 @@
  	SET_NETDEV_DEV(net, &g->dev);
  	SET_NETDEV_DEVTYPE(net, &gadget_type);

@@ -22,7 +22,7 @@ else
   RUN_LINUX = bash -lc "cd '$(CURDIR)' && $(1)"
 endif
 
-.PHONY: help test lint firmware wasm encore app-dist app-icons app app-dev app-android app-android-dev kernel kernel-vendor kexec download clean clean-kernel clean-kernel-vendor clean-kexec clean-all distclean verify check-wsl
+.PHONY: help test lint tls firmware wasm encore app-dist app-icons app app-dev app-android app-android-dev kernel kernel-vendor kexec download clean clean-kernel clean-kernel-vendor clean-kexec clean-all distclean verify check-wsl
 
 # Default target — show usage
 .DEFAULT_GOAL := help
@@ -33,7 +33,7 @@ ifeq ($(IS_WINDOWS),1)
 	@if [ -z "$(REPO_WSL)" ]; then \
 		echo "ERROR: Could not detect WSL path for $(REPO_WIN)"; \
 		echo "  Ensure WSL Ubuntu is running: wsl -d Ubuntu echo ok"; \
-		echo "  Or set REPO_WSL manually: make REPO_WSL=/mnt/g/HKInvoke firmware"; \
+		echo "  Or set REPO_WSL manually: make REPO_WSL=/mnt/c/path/to/HKInvoke firmware"; \
 		exit 1; \
 	fi
 endif
@@ -44,6 +44,7 @@ help:
 	@echo "Targets:"
 	@echo "  make encore           Build WASM dashboard + ARM binary"
 	@echo "  make firmware         Build full firmware image"
+	@echo "  make tls              Create the TLS fallback pair in build/tls/"
 	@echo "  make wasm             Build WASM web dashboard only"
 	@echo "  make test             Run Rust tests"
 	@echo "  make lint             rustfmt --check + clippy gate"
@@ -83,6 +84,11 @@ lint:
 
 firmware: encore check-wsl
 	$(call RUN_LINUX,bash scripts/build/build_firmware.sh)
+
+# TLS fallback pair for the firmware image (git-ignored). `make firmware` runs
+# this too; run it by hand to inspect or replace the files first.
+tls:
+	bash scripts/build/gen_tls_fallback.sh
 
 wasm:
 	wasm-pack build encore/crates/encore-wasm --target web --out-dir ../../web/pkg
@@ -184,4 +190,4 @@ distclean: clean-all
 	@echo "Done"
 
 verify:
-	bash scripts/verify.sh
+	bash scripts/verify.sh $(VERIFY_ARGS)

@@ -62,7 +62,7 @@ pub struct WyomingSubsystem {
     voice_cmd_tx: Option<tokio::sync::mpsc::Sender<VoiceCmd>>,
     led_tx: Option<tokio::sync::mpsc::Sender<crate::led::LedCmd>>,
     trigger_rx: Option<tokio::sync::mpsc::Receiver<()>>,
-    suspend_rx: Option<tokio::sync::mpsc::Receiver<bool>>,
+    suspend_rx: Option<tokio::sync::watch::Receiver<bool>>,
 }
 
 #[cfg(target_os = "linux")]
@@ -89,7 +89,7 @@ impl WyomingSubsystem {
     }
 
     /// Set the suspend channel for group sync (follower mode pauses Wyoming).
-    pub fn set_suspend_rx(&mut self, rx: tokio::sync::mpsc::Receiver<bool>) {
+    pub fn set_suspend_rx(&mut self, rx: tokio::sync::watch::Receiver<bool>) {
         self.suspend_rx = Some(rx);
     }
 }
@@ -142,7 +142,7 @@ impl Subsystem for WyomingSubsystem {
 
         info!("Wyoming: listening on port {}", self.port);
         let has_suspend = self.suspend_rx.is_some();
-        let (_suspend_dummy_tx, suspend_dummy_rx) = tokio::sync::mpsc::channel::<bool>(1);
+        let (_suspend_dummy_tx, suspend_dummy_rx) = tokio::sync::watch::channel(false);
         let mut suspend_rx = self.suspend_rx.take().unwrap_or(suspend_dummy_rx);
         let mut suspended = false;
 
@@ -178,7 +178,8 @@ impl Subsystem for WyomingSubsystem {
                         }
                     }
                 }
-                Some(suspend) = suspend_rx.recv(), if has_suspend => {
+                Ok(()) = suspend_rx.changed(), if has_suspend => {
+                    let suspend = *suspend_rx.borrow_and_update();
                     if suspend && !suspended {
                         info!("Wyoming: suspended by group (follower mode)");
                         suspended = true;
@@ -186,6 +187,9 @@ impl Subsystem for WyomingSubsystem {
                     } else if !suspend && suspended {
                         info!("Wyoming: resumed by group");
                         suspended = false;
+                        // No set_active(true): the voice slot is session-scoped
+                        // (activated with TTS data per session), unlike the
+                        // persistent BT/Spotify stream slots.
                     }
                 }
                 _ = ctx.shutdown.recv() => {

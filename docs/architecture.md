@@ -107,13 +107,19 @@ The firewall (`S01firewall` + Encore's `network/firewall.rs`) implements:
 
 ## REST API
 
-The web subsystem exposes a REST API on HTTPS port 443 (and HTTP port 80 in AP mode):
+The web subsystem exposes a REST API on HTTPS port 443. Port 80 serves the same
+routes only to peers on the AP subnet (192.168.43.0/24) or the USB RNDIS link
+(10.55.55.0/24), where a self-signed cert would strand the browser; every other
+client gets `/ca.crt` plus a 308 redirect to HTTPS, so the API never runs in
+cleartext on the LAN. The API has no authentication, so browser requests from
+origins other than the device itself, the desktop app, or localhost are
+rejected, and CORS is limited to that same allowlist.
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/api/system` | GET | System metrics (uptime, CPU, memory, firmware version) |
-| `/api/config` | GET | Read config file |
-| `/api/config` | POST | Save config file |
+| `/api/config` | GET | Read config file (passwords and VPN keys are redacted) |
+| `/api/config` | POST | Save config file (absent or blank secrets keep their stored value) |
 | `/api/logs` | GET | Log history as JSON array |
 | `/api/crashes` | GET | All crash reports |
 | `/api/crashes/{subsystem}` | GET | Last crash for a subsystem |

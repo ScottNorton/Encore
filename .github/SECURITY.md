@@ -11,6 +11,10 @@ The password is the same for all devices running Encore. The SSID varies per dev
 use on trusted local networks. If you expose your Invoke to the internet,
 change the root password via SSH (`passwd`).
 
+## TLS Certificates
+
+Each speaker makes its own HTTPS certificate at first boot, so no certificate or key is shared between devices. A spare certificate and key are created on your machine when you build the firmware (`build/tls/`, see the [build guide](../docs/build-guide.md#tls-fallback-pair)). The speaker uses them only if it cannot make its own. They are never committed or published. Browsers do not trust either one until you install the speaker's CA from `/ca.crt`.
+
 ## Reporting Vulnerabilities
 
 If you find a security issue beyond the intentional defaults above, please

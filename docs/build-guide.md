@@ -131,6 +131,29 @@ Output:
 - `build/firmware/83_IMAGE` — full image for USB boot flashing
 - `build/firmware/rootfs.squashfs` — raw SquashFS for web UI OTA updates
 
+### TLS fallback pair
+
+`make firmware` also creates a TLS certificate and private key in `build/tls/` and installs them in the image. They are a spare. The speaker makes its own HTTPS certificate on first boot and normally uses that one (see [HTTPS / TLS Setup](troubleshooting.md#https--tls-setup)). The spare pair is used only when that fails, for example when `/lsync` cannot be written.
+
+| | |
+|---|---|
+| What it is | `cert.pem` (a self-signed certificate) and `key.pem` (its private key), both PEM files |
+| Where the build keeps it | `build/tls/cert.pem` and `build/tls/key.pem`, next to the compiled `build/encore` |
+| Where it ends up on the speaker | `/usr/share/encore/tls/cert.pem` and `key.pem` (read-only) |
+| What creates it | `scripts/build/gen_tls_fallback.sh`, run by `make firmware` or by `make tls` |
+
+Things worth knowing:
+
+- The key is made on your machine and belongs to your builds only. It is not in the repository, it is not compiled into the Encore binary, and it is not part of any published release.
+- Existing files are never overwritten. To use your own certificate, put `cert.pem` and `key.pem` in `build/tls/` before you run `make firmware`. The script checks that the key belongs to the certificate and stops if it does not. The certificate should cover the names and addresses you browse to.
+- The firmware loads the files when it starts, not when it is compiled. It checks that the key belongs to the certificate (for key files in the common PKCS#8 layout) and ignores a pair that is missing, unreadable, or does not match.
+- If there is no usable pair (for example you updated only the Encore binary over the air on an older image), the web server makes a throwaway certificate in memory each time it starts. The dashboard still comes up, and nothing is written to disk.
+- Browsers do not trust any of these certificates. Install the speaker's own CA from `/ca.crt` to get a trusted connection.
+- `make clean` removes `build/`, including the pair. The next `make firmware` creates a new one.
+- Never commit `build/tls/key.pem`. The repository ignores `*.pem` and `*.key`, and `make verify` fails if a private key is tracked.
+
+The script needs `openssl`. `make tls` runs it on its own if you want to look at or replace the files before building.
+
 ## Step 4: Flash
 
 See [Flashing Guide](flashing.md) for all deployment methods — USB boot (first flash), OTA rootfs, and OTA binary updates.
@@ -173,6 +196,16 @@ make test
 make verify
 ```
 
+This fails if the repository tracks a private key, a certificate or key file, a vendor PDF, a firmware image, a file over 2 MB, or a shell script with Windows line endings. It also looks for private-key blocks and common access-token formats in tracked text. Nothing needs to be set up for these checks, and CI runs them.
+
+To check the whole commit history as well (file names, sizes, private-key blocks, and author trailers in commit messages), run:
+
+```bash
+make verify VERIFY_ARGS=--history
+```
+
+For values only you know are private, such as your own WiFi name, put one pattern per line in `.verify-patterns` at the repository root. That file is git-ignored.
+
 ## Build Options
 
 ### Environment Variables
@@ -205,18 +238,28 @@ Edit files under `rootfs/`. The build script copies the entire overlay tree onto
 
 ### Building the USB Gadget Kernel Modules
 
-The USB network gadget (RNDIS over the Mini-B port, the device at 10.55.55.1) needs patched `g_ether`/RNDIS kernel modules. These are built separately from Encore and baked into the rootfs.
+The USB network gadget (RNDIS over the Mini-B port, the device at 10.55.55.1) needs patched `g_ether`/RNDIS kernel modules. They are built separately from Encore. The compiled `.ko` files are checked in under `rootfs/usr/lib/usbgadget/` and the firmware build installs them from there, so you only need to rebuild them if you change the gadget patches.
+
+These modules are GPL-2.0 kernel code. [LEGAL.md](../LEGAL.md#gpl-components-and-source-availability) says where the source for them is.
+
+What you need:
+
+- **The vendor kernel tree.** Linux 3.8.13 as Harman published it for the Invoke (LEGAL.md links a copy). Unpack it so that `vendor/kernel/Makefile` exists (`vendor/` is git-ignored), or point `KDIR` at it.
+- **The Linaro GCC 4.9.4 cross compiler**, release 2017.01 (`gcc-linaro-4.9.4-2017.01-x86_64_arm-linux-gnueabihf`). Linaro no longer serves it from its old download address, so you will have to find a copy of that exact release. Point `TOOLCHAIN` at its folder, or put it in `vendor/toolchains/`. A modern gcc builds modules that `insmod` accepts but that fault the 3.8.13 kernel once traffic flows.
+- **A prepared kernel tree.** Once, before the first build, run `scripts/build/build_kernel_vendor.sh defconfig` and then `scripts/build/build_kernel_vendor.sh modules_prepare`.
+
+Then run the build (from WSL or Linux):
 
 ```bash
-wsl.exe -d Ubuntu -u root -- bash scripts/device/build_usb_gadget_modules.sh
+export TOOLCHAIN=/path/to/gcc-linaro-4.9.4-2017.01-x86_64_arm-linux-gnueabihf
+bash scripts/device/build_usb_gadget_modules.sh
 ```
 
-The built `.ko` files land in `rootfs/usr/lib/usbgadget/`, where the firmware build picks them up as part of the rootfs overlay. `rootfs/sbin/usb_gadget.sh` loads them at boot and `usb_gadget_monitor.sh` reloads them if the link drops.
+The script applies the patches in `scripts/device/usb-gadget-patches/` to the kernel tree (a patch that is already applied is skipped), builds only the gadget modules, and collects the four `.ko` files in `build/usb_gadget_modules/`. Copy them into `rootfs/usr/lib/usbgadget/` and rebuild the firmware. `rootfs/sbin/usb_gadget.sh` loads them at boot and `usb_gadget_monitor.sh` reloads them if the link drops.
 
-Two things matter here:
+The patches are plain diffs against the unmodified Harman tree. To change the gadget behavior, edit the tree and then run `PRISTINE=/path/to/unmodified/tree bash scripts/device/gen_gadget_patches.sh` to regenerate them.
 
-- **Use the period Linaro 4.9.4 cross-compiler.** The device kernel is 3.8.13. A modern gcc produces modules that `insmod` accepts but that fault the kernel once traffic flows. The 4.9.4 toolchain matches the era of the vendor kernel and produces stable modules. The build script downloads and caches this toolchain.
-- **The source changes are tracked as diffs, not vendored trees.** They live in `scripts/device/usb-gadget-patches/`. The build script fetches the matching kernel source, applies these patches, and compiles only the gadget modules against it. Edit the patches there if you need to change the gadget behavior, then rebuild.
+The maintainer has built the modules this way. Nobody else has tried it from a clean checkout yet, so expect small problems and please report them.
 
 The MTU is fixed at 400 bytes in the gadget configuration so each frame is a single USB packet. The `mv_udc` controller stalls multi-packet bulk transfers, so raising the MTU brings the stall back. See [usb-access.md](usb-access.md) for the runtime side of this.
 

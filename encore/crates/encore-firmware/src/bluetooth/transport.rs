@@ -6,7 +6,7 @@
 //! into a MixerSlot.
 
 use crate::audio::mixer::MixerSlot;
-use crate::audio::resample::resample_i32_stereo;
+use crate::audio::resample::{AdaptiveResampler, LatencyServo, ServoVerdict};
 use crate::bluetooth::aptx::{AptxDecoder, APTX_MAX_SAMPLES};
 use crate::bluetooth::sbc::{SbcDecoder, SBC_MAX_SAMPLES};
 use crate::bluetooth::A2dpCodec;
@@ -37,20 +37,62 @@ const BT_SOURCE_RATE: u32 = 44100;
 /// Mixer/PCM output sample rate.
 const MIXER_RATE: u32 = 48000;
 
-/// Cap on buffered audio (interleaved stereo samples ≈ 0.75 s at 48 kHz).
-/// The BT source clock and the local DAC clock drift, and the fixed-ratio
-/// resampler doesn't track it, so the ring slowly fills over a long session.
-/// Past this cap we drop a decoded chunk to keep latency bounded instead of
-/// letting it grow to a hard ring-full glitch.
-// ponytail: chunk-drop on overflow (~15 ms gap, rare at real drift rates);
-// upgrade to adaptive resampling (vary output rate by buffer fill) only if the
-// drops ever become audible.
-const MAX_BUFFER_SAMPLES: usize = 72_000;
+/// Default latency-servo target when the config leaves it unset (ms).
+const DEFAULT_LATENCY_TARGET_MS: u16 = 100;
+/// Config clamp: below this the buffer can't ride out normal A2DP burst
+/// pacing; above it lip sync is unwatchable anyway.
+const LATENCY_TARGET_RANGE_MS: std::ops::RangeInclusive<u16> = 40..=400;
 
-/// Whether buffered audio has grown past the latency cap and a chunk should be
-/// dropped this round.
-fn over_latency_cap(available: usize) -> bool {
-    available > MAX_BUFFER_SAMPLES
+/// Resolve the configured target (0/absent = default) into a safe value.
+pub fn resolve_latency_target_ms(configured: u16) -> u32 {
+    let t = if configured == 0 {
+        DEFAULT_LATENCY_TARGET_MS
+    } else {
+        configured
+    };
+    t.clamp(*LATENCY_TARGET_RANGE_MS.start(), *LATENCY_TARGET_RANGE_MS.end()) as u32
+}
+
+/// Resample a decoded chunk and push it into the mixer slot, steered by the
+/// latency servo: the servo watches the slot fill (the device's own measure of
+/// how far behind the live stream it is), trims the resample ratio to hold the
+/// fill at the target — clock drift between the source and our DAC never
+/// accumulates — and, when the stream has fallen catastrophically behind,
+/// drops whole chunks until we've caught back up.
+fn resample_servo_push(
+    resampler: &mut AdaptiveResampler,
+    servo: &mut LatencyServo,
+    slot: &MixerSlot,
+    pcm: &[i32],
+    scratch: &mut Vec<i32>,
+    codec_name: &str,
+) {
+    match servo.update(slot.available()) {
+        ServoVerdict::Skip => {
+            // Chunk deliberately dropped: catch-up at real-time rate.
+            if servo.skipped_chunks == 1 || servo.skipped_chunks.is_multiple_of(500) {
+                warn!(
+                    "BT A2DP {}: behind live stream (buffer {} ms), skipping to catch up (total skipped {})",
+                    codec_name,
+                    servo.latency_ms(),
+                    servo.skipped_chunks
+                );
+            }
+        }
+        ServoVerdict::Correct(ppm) => {
+            resampler.set_correction_ppm(ppm);
+            scratch.clear();
+            resampler.process(pcm, scratch);
+            let written = slot.push(scratch);
+            if written < scratch.len() {
+                debug!(
+                    "BT A2DP {}: ring full, dropped {} samples",
+                    codec_name,
+                    scratch.len() - written
+                );
+            }
+        }
+    }
 }
 
 /// RTP header size (12 bytes).
@@ -134,6 +176,7 @@ pub fn spawn_reader(
     read_mtu: u16,
     slot: Arc<MixerSlot>,
     codec: A2dpCodec,
+    latency_target_ms: u32,
 ) -> Result<ReaderHandle> {
     let stop = Arc::new(AtomicBool::new(false));
     let running = Arc::new(AtomicBool::new(true));
@@ -145,13 +188,19 @@ pub fn spawn_reader(
         .spawn(move || {
             let _guard = RunningGuard(running_clone);
             info!(
-                "BT A2DP reader: started (codec={}, mtu={})",
-                codec, read_mtu
+                "BT A2DP reader: started (codec={}, mtu={}, latency target {} ms)",
+                codec, read_mtu, latency_target_ms
             );
             match codec {
-                A2dpCodec::Sbc => reader_loop_sbc(fd, read_mtu, slot, stop_clone),
-                A2dpCodec::Aptx => reader_loop_aptx(fd, read_mtu, slot, stop_clone, false),
-                A2dpCodec::AptxHd => reader_loop_aptx(fd, read_mtu, slot, stop_clone, true),
+                A2dpCodec::Sbc => {
+                    reader_loop_sbc(fd, read_mtu, slot, stop_clone, latency_target_ms)
+                }
+                A2dpCodec::Aptx => {
+                    reader_loop_aptx(fd, read_mtu, slot, stop_clone, false, latency_target_ms)
+                }
+                A2dpCodec::AptxHd => {
+                    reader_loop_aptx(fd, read_mtu, slot, stop_clone, true, latency_target_ms)
+                }
             }
         })
         .context("failed to spawn BT A2DP reader thread")?;
@@ -160,11 +209,21 @@ pub fn spawn_reader(
 }
 
 /// SBC reader loop — original decode path.
-fn reader_loop_sbc(fd: OwnedFd, read_mtu: u16, slot: Arc<MixerSlot>, stop: Arc<AtomicBool>) {
+fn reader_loop_sbc(
+    fd: OwnedFd,
+    read_mtu: u16,
+    slot: Arc<MixerSlot>,
+    stop: Arc<AtomicBool>,
+    latency_target_ms: u32,
+) {
     let mut file = unsafe { std::fs::File::from_raw_fd(fd.into_raw_fd()) };
     let mut buf = vec![0u8; read_mtu as usize];
     let mut decoder = SbcDecoder::new();
     let mut pcm_buf = vec![0i16; SBC_MAX_SAMPLES * 2]; // stereo interleaved
+    let mut resampler = AdaptiveResampler::new(BT_SOURCE_RATE, MIXER_RATE);
+    let mut servo = LatencyServo::new(latency_target_ms);
+    let mut resampled = Vec::with_capacity(SBC_MAX_SAMPLES * 4);
+    let mut total_packets: u64 = 0;
 
     slot.set_active(true);
 
@@ -191,6 +250,7 @@ fn reader_loop_sbc(fd: OwnedFd, read_mtu: u16, slot: Arc<MixerSlot>, stop: Arc<A
             None => continue,
         };
 
+        total_packets += 1;
         let mut pos = payload_offset;
 
         for _ in 0..frame_count {
@@ -206,26 +266,32 @@ fn reader_loop_sbc(fd: OwnedFd, read_mtu: u16, slot: Arc<MixerSlot>, stop: Arc<A
                         .iter()
                         .map(|&s| (s as i32) << 16)
                         .collect();
-                    // Resample 44100 → 48000 Hz
-                    let resampled = resample_i32_stereo(&s32, BT_SOURCE_RATE, MIXER_RATE);
-                    // Drop this chunk if buffering has run past the latency cap.
-                    let written = if over_latency_cap(slot.available()) {
-                        0
-                    } else {
-                        slot.push(&resampled)
-                    };
-                    if written < resampled.len() {
-                        debug!(
-                            "BT A2DP SBC: dropped {} samples (latency cap or ring full)",
-                            resampled.len() - written
-                        );
-                    }
+                    resample_servo_push(
+                        &mut resampler,
+                        &mut servo,
+                        &slot,
+                        &s32,
+                        &mut resampled,
+                        "SBC",
+                    );
                 }
                 Err(e) => {
                     debug!("BT A2DP SBC: decode error: {}", e);
                     break;
                 }
             }
+        }
+
+        // Log stream health periodically (every 5000 packets ≈ every ~100 seconds)
+        if total_packets.is_multiple_of(5000) {
+            info!(
+                "BT A2DP SBC: packets={} latency={}ms (target {}) skipped={} slot_avail={}",
+                total_packets,
+                servo.latency_ms(),
+                latency_target_ms,
+                servo.skipped_chunks,
+                slot.available()
+            );
         }
     }
 
@@ -241,6 +307,7 @@ fn reader_loop_aptx(
     slot: Arc<MixerSlot>,
     stop: Arc<AtomicBool>,
     hd: bool,
+    latency_target_ms: u32,
 ) {
     let mut file = unsafe { std::fs::File::from_raw_fd(fd.into_raw_fd()) };
     let mut buf = vec![0u8; read_mtu as usize];
@@ -259,6 +326,9 @@ fn reader_loop_aptx(
     let mut total_samples: u64 = 0;
     let mut zero_sample_packets: u64 = 0;
     let mut has_rtp: Option<bool> = None;
+    let mut resampler = AdaptiveResampler::new(BT_SOURCE_RATE, MIXER_RATE);
+    let mut servo = LatencyServo::new(latency_target_ms);
+    let mut resampled = Vec::with_capacity(APTX_MAX_SAMPLES * 2);
 
     slot.set_active(true);
 
@@ -314,22 +384,14 @@ fn reader_loop_aptx(
                         );
                     }
                     total_samples += samples as u64;
-                    // Resample 44100 → 48000 Hz
-                    let resampled =
-                        resample_i32_stereo(&pcm_buf[..samples], BT_SOURCE_RATE, MIXER_RATE);
-                    // Drop this chunk if buffering has run past the latency cap.
-                    let written = if over_latency_cap(slot.available()) {
-                        0
-                    } else {
-                        slot.push(&resampled)
-                    };
-                    if written < resampled.len() {
-                        debug!(
-                            "BT A2DP {}: dropped {} samples (latency cap or ring full)",
-                            codec_name,
-                            resampled.len() - written
-                        );
-                    }
+                    resample_servo_push(
+                        &mut resampler,
+                        &mut servo,
+                        &slot,
+                        &pcm_buf[..samples],
+                        &mut resampled,
+                        codec_name,
+                    );
                 } else {
                     zero_sample_packets += 1;
                     if zero_sample_packets <= 3 {
@@ -342,11 +404,14 @@ fn reader_loop_aptx(
                 // Log decode stats periodically (every 5000 packets ≈ every ~100 seconds)
                 if total_packets.is_multiple_of(5000) {
                     info!(
-                        "BT A2DP {}: packets={} samples={} zero_decode={} slot_avail={}",
+                        "BT A2DP {}: packets={} samples={} zero_decode={} latency={}ms (target {}) skipped={} slot_avail={}",
                         codec_name,
                         total_packets,
                         total_samples,
                         zero_sample_packets,
+                        servo.latency_ms(),
+                        latency_target_ms,
+                        servo.skipped_chunks,
                         slot.available()
                     );
                 }
@@ -366,15 +431,17 @@ fn reader_loop_aptx(
 mod tests {
     use super::*;
 
-    /// The latency cap must let normal buffering through and only trip once the
-    /// ring has grown past the threshold — guards against an off-by-one that
-    /// would either never drop (unbounded latency) or always drop (silence).
+    /// The config value 0 means "unset" and resolves to the default; explicit
+    /// values are honored but clamped into the safe range.
     #[test]
-    fn latency_cap_trips_only_above_threshold() {
-        assert!(!over_latency_cap(0));
-        assert!(!over_latency_cap(MAX_BUFFER_SAMPLES - 1));
-        assert!(!over_latency_cap(MAX_BUFFER_SAMPLES));
-        assert!(over_latency_cap(MAX_BUFFER_SAMPLES + 1));
+    fn latency_target_resolution_and_clamping() {
+        assert_eq!(
+            resolve_latency_target_ms(0),
+            DEFAULT_LATENCY_TARGET_MS as u32
+        );
+        assert_eq!(resolve_latency_target_ms(150), 150);
+        assert_eq!(resolve_latency_target_ms(5), 40); // too low to ride A2DP bursts
+        assert_eq!(resolve_latency_target_ms(2000), 400); // lip-sync ceiling
     }
 
     /// The running flag flips false on drop so the AVDTP loop learns a reader

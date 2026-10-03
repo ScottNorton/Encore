@@ -49,6 +49,8 @@ base64 = "0.22"
 microfft = "0.6"
 rcgen = { version = "0.14", default-features = false, features = ["pem", "ring", "x509-parser"] }
 time = "0.3"
+# Already in the build through rcgen; used directly to read certificate dates.
+x509-parser = { version = "0.18", default-features = false }
 
 [profile.dev]
 panic = "unwind"

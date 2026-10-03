@@ -1,9 +1,9 @@
 #!/bin/bash
 # Build a minimal Python 3.10 package for ARMv7 (HK Invoke).
-# Run in WSL: bash /mnt/g/HKInvoke/scripts/device/build_python_minimal.sh
+# Run in WSL: bash scripts/device/build_python_minimal.sh
 set -euo pipefail
 
-BUILD=/home/scott/python-armv7-build
+BUILD="${PYTHON_BUILD_DIR:-$HOME/python-armv7-build}"
 mkdir -p "$BUILD"
 
 # Download

@@ -48,6 +48,13 @@ impl Biquad {
         filter: FilterType,
         sample_rate: f32,
     ) -> Biquad {
+        // Clamp inputs from (untrusted) config / WebSocket to a stable range.
+        // Above Nyquist the bilinear transform yields a pole outside the unit
+        // circle, so the filter output diverges to full scale — a max-volume
+        // blast out the speaker — and an extreme gain yields NaN coefficients
+        // that poison the persistent delay line. Neither is a legitimate EQ band.
+        let freq_hz = freq_hz.clamp(1.0, sample_rate * 0.495);
+        let gain_db = gain_db.clamp(-24.0, 24.0);
         let q = q.max(0.01);
         let w0 = 2.0 * std::f32::consts::PI * freq_hz / sample_rate;
         let (sin_w0, cos_w0) = w0.sin_cos();
@@ -95,12 +102,29 @@ impl Biquad {
             ),
         };
 
-        Biquad {
+        let bq = Biquad {
             b0: b0 / a0,
             b1: b1 / a0,
             b2: b2 / a0,
             a1: a1 / a0,
             a2: a2 / a0,
+        };
+        // Safety backstop: if any coefficient is non-finite (a degenerate a0, or
+        // some future unclamped input), fall back to passthrough rather than
+        // feeding NaN/inf into the persistent delay line where it would stick.
+        if [bq.b0, bq.b1, bq.b2, bq.a1, bq.a2]
+            .iter()
+            .all(|c| c.is_finite())
+        {
+            bq
+        } else {
+            Biquad {
+                b0: 1.0,
+                b1: 0.0,
+                b2: 0.0,
+                a1: 0.0,
+                a2: 0.0,
+            }
         }
     }
 
@@ -399,6 +423,31 @@ mod tests {
             (mag + 10.0).abs() < 0.2,
             "expected -10 dB at center, got {mag}"
         );
+    }
+
+    #[test]
+    fn above_nyquist_or_extreme_gain_stays_stable() {
+        // An EQ band above Nyquist, or with an absurd gain (from a hand-edited
+        // config or a raw WebSocket message), must not build an unstable filter
+        // that diverges to full-scale output, nor NaN coefficients that poison
+        // the persistent delay line.
+        for (freq, gain) in [(30000.0, 6.0), (25000.0, 6.0), (1000.0, 3276.0)] {
+            let bq = Biquad::design(freq, gain, 1.0, FilterType::Peak, 48000.0);
+            assert!(
+                bq.b0.is_finite() && bq.a1.is_finite() && bq.a2.is_finite(),
+                "freq={freq} gain={gain} produced non-finite coefficients"
+            );
+            // Run 1s of a constant input; a stable filter's output stays bounded.
+            let mut st = BiquadState::default();
+            let mut peak = 0.0f32;
+            for _ in 0..48_000 {
+                peak = peak.max(bq.process(0.4, &mut st).abs());
+            }
+            assert!(
+                peak.is_finite() && peak < 100.0,
+                "freq={freq} gain={gain} diverged to {peak}"
+            );
+        }
     }
 
     #[test]

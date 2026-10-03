@@ -1,5 +1,5 @@
---- /home/scott/HKHacking/workspace/source/kernel/Invoke-kernel/drivers/usb/gadget/composite.c	2021-03-09 03:17:26.000000000 -0500
-+++ /mnt/g/HKInvoke/vendor/kernel/drivers/usb/gadget/composite.c	2026-06-16 16:42:43.527668200 -0400
+--- a/drivers/usb/gadget/composite.c
++++ b/drivers/usb/gadget/composite.c
 @@ -1042,6 +1042,38 @@
  }
  

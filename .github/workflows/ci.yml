@@ -162,9 +162,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The history check needs every commit, not just the latest.
+          fetch-depth: 0
 
-      - name: Check for credential leaks
-        run: make verify
+      - name: Check for leaked keys, vendor files, and trailers
+        run: make verify VERIFY_ARGS=--history
 
   audit:
     name: Dependency audit

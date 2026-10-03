@@ -75,13 +75,52 @@ pub async fn system_handler() -> Json<Value> {
     }))
 }
 
-/// GET /api/config — read config file.
+/// Config keys that hold secrets. Never returned by GET /api/config, and
+/// preserved from the on-disk config when a POST omits or blanks them.
+const SECRET_KEYS: &[(&str, &str)] = &[
+    ("network", "wifi_password"),
+    ("network", "ap_password"),
+    ("homeassistant", "mqtt_password"),
+    ("vpn", "private_key"),
+    ("vpn", "peer_preshared_key"),
+];
+
+/// Strip secret values from a parsed config before it leaves the device.
+fn redact_secrets(val: &mut toml::Value) {
+    for (section, key) in SECRET_KEYS {
+        if let Some(table) = val.get_mut(*section).and_then(|v| v.as_table_mut()) {
+            table.remove(*key);
+        }
+    }
+}
+
+/// Carry a stored secret forward when the incoming value is absent or blank.
+fn keep_existing_secret(incoming: &mut Option<String>, existing: &Option<String>) {
+    if incoming.as_deref().is_none_or(|s| s.is_empty()) {
+        incoming.clone_from(existing);
+    }
+}
+
+/// GET /api/config — read config file, with secrets redacted.
+///
+/// The API has no auth, so the WiFi/AP/MQTT passwords and VPN keys must never
+/// be readable here. The dashboard doesn't need them echoed (it edits config
+/// over the WebSocket), and POST /api/config keeps the stored value when a
+/// secret field comes back absent or blank.
 pub async fn config_handler() -> Json<Value> {
     debug!("API: /api/config");
     match std::fs::read_to_string(CONFIG_PATH) {
         Ok(content) => match toml::from_str::<toml::Value>(&content) {
-            Ok(val) => Json(json!({ "config": val })),
-            Err(e) => Json(json!({ "error": format!("parse error: {}", e) })),
+            Ok(mut val) => {
+                redact_secrets(&mut val);
+                Json(json!({ "config": val }))
+            }
+            Err(e) => {
+                // Don't echo the parse error: toml renders a snippet of the
+                // offending line, which could be a password line.
+                warn!("API: config parse error: {}", e);
+                Json(json!({ "error": "config parse error (see log)" }))
+            }
         },
         Err(_) => {
             // No config file yet — return defaults
@@ -91,10 +130,30 @@ pub async fn config_handler() -> Json<Value> {
 }
 
 /// POST /api/config — save config file.
+///
+/// GET /api/config redacts secrets, so a read-modify-write client posts them
+/// back absent (or blanked). Absent/blank means "unchanged", not "clear" —
+/// clearing a stored secret requires editing config.toml directly.
 pub async fn config_save_handler(
-    Json(config): Json<EncoreConfigFile>,
+    Json(mut config): Json<EncoreConfigFile>,
 ) -> (StatusCode, Json<Value>) {
     let path = std::path::Path::new(CONFIG_PATH);
+    if let Ok(existing) = EncoreConfigFile::load(path) {
+        keep_existing_secret(
+            &mut config.network.wifi_password,
+            &existing.network.wifi_password,
+        );
+        keep_existing_secret(&mut config.network.ap_password, &existing.network.ap_password);
+        keep_existing_secret(
+            &mut config.homeassistant.mqtt_password,
+            &existing.homeassistant.mqtt_password,
+        );
+        keep_existing_secret(&mut config.vpn.private_key, &existing.vpn.private_key);
+        keep_existing_secret(
+            &mut config.vpn.peer_preshared_key,
+            &existing.vpn.peer_preshared_key,
+        );
+    }
     match config.save(path) {
         Ok(()) => {
             info!("API: config saved to {}", CONFIG_PATH);
@@ -869,13 +928,27 @@ pub async fn firmware_flash_handler(body: axum::body::Body) -> (StatusCode, Json
             let stdout = String::from_utf8_lossy(&out.stdout);
             let stderr = String::from_utf8_lossy(&out.stderr);
             let combined = format!("{}{}", stdout, stderr);
-            if !out.status.success() || combined.to_lowercase().contains("error") {
-                warn!("Firmware: flash_image failed: {}", combined.trim());
+            // Trust the exit status alone. flash_image on this NAND prints
+            // "mtd: verification error" / "ECC error corrected" during normal
+            // bad-block remapping and still exits 0 (rc=0 = success); a substring
+            // match on "error" turned those benign diagnostics into a false
+            // failure that deleted the staging file after the rootfs was already
+            // written, prompting a needless re-flash and extra NAND wear.
+            if !out.status.success() {
+                warn!(
+                    "Firmware: flash_image failed (exit {:?}): {}",
+                    out.status.code(),
+                    combined.trim()
+                );
                 let _ = tokio::fs::remove_file(FIRMWARE_STAGING_PATH).await;
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(json!({"error": format!("flash failed: {}", combined.trim())})),
                 );
+            }
+            if !combined.trim().is_empty() {
+                // Keep the diagnostics visible (bad-block/ECC remapping is normal).
+                info!("Firmware: flash_image output: {}", combined.trim());
             }
             info!("Firmware: flash_image succeeded");
         }
@@ -920,7 +993,51 @@ pub async fn firmware_flash_handler(body: axum::body::Body) -> (StatusCode, Json
 
 #[cfg(test)]
 mod tests {
-    use super::validate_arm_elf;
+    use super::{keep_existing_secret, redact_secrets, validate_arm_elf};
+
+    #[test]
+    fn redact_strips_every_secret_and_keeps_the_rest() {
+        let mut val: toml::Value = toml::from_str(
+            r#"
+            [network]
+            wifi_ssid = "MyNet"
+            wifi_password = "psk-secret"
+            ap_password = "ap-secret"
+            [homeassistant]
+            mqtt_host = "mqtt.local"
+            mqtt_password = "mqtt-secret"
+            [vpn]
+            private_key = "vpn-secret"
+            peer_public_key = "peer-pub"
+            peer_preshared_key = "psk-secret"
+            "#,
+        )
+        .unwrap();
+        redact_secrets(&mut val);
+        let text = toml::to_string(&val).unwrap();
+        assert!(!text.contains("secret"), "secret leaked: {}", text);
+        // Non-secret fields survive
+        assert!(text.contains("MyNet"));
+        assert!(text.contains("mqtt.local"));
+        assert!(text.contains("peer-pub"));
+    }
+
+    #[test]
+    fn keep_existing_secret_merges_absent_and_blank_but_not_set() {
+        let existing = Some("stored".to_string());
+
+        let mut absent: Option<String> = None;
+        keep_existing_secret(&mut absent, &existing);
+        assert_eq!(absent.as_deref(), Some("stored"));
+
+        let mut blank = Some(String::new());
+        keep_existing_secret(&mut blank, &existing);
+        assert_eq!(blank.as_deref(), Some("stored"));
+
+        let mut set = Some("new".to_string());
+        keep_existing_secret(&mut set, &existing);
+        assert_eq!(set.as_deref(), Some("new"));
+    }
 
     fn arm_elf_header() -> Vec<u8> {
         let mut h = vec![0u8; 64];

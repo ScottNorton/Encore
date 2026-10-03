@@ -25,27 +25,14 @@ use anyhow::{Context, Result};
 use encore_common::protocol::SubsystemState;
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::time::{interval, Duration};
 use tracing::{debug, info, warn};
 
-/// Which A2DP codec was negotiated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum A2dpCodec {
-    Sbc,
-    Aptx,
-    AptxHd,
-}
-
-impl std::fmt::Display for A2dpCodec {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            A2dpCodec::Sbc => write!(f, "SBC"),
-            A2dpCodec::Aptx => write!(f, "aptX"),
-            A2dpCodec::AptxHd => write!(f, "aptX HD"),
-        }
-    }
-}
+/// Which A2DP codec was negotiated. Lives in `encore_common::avdtp` (pure,
+/// host-tested); re-exported here so existing `crate::bluetooth::A2dpCodec` /
+/// `super::A2dpCodec` references need no change.
+pub use encore_common::avdtp::A2dpCodec;
 
 /// Path to the bt8xxx kernel module.
 const BT_MODULE_PATH: &str =
@@ -149,23 +136,33 @@ pub struct BluetoothSubsystem {
     /// Remaining boot-time auto-reconnect attempts (the source may not be ready
     /// the instant we boot). Counts down on the poll ticker, zeroed on connect.
     auto_reconnect_retries: u8,
+    /// Friendly name (or address) of the source being auto-reconnected, for the
+    /// dashboard "Reconnecting to X…" hint. Only surfaced while
+    /// `auto_reconnect_retries > 0` and nothing is connected.
+    reconnect_name: Option<String>,
     /// Mesh name override: `Some(group_name)` when grouped and mesh is on, else
     /// `None` (advertise our own `device_name`).
     mesh_name: Option<String>,
+    /// Whether we may be BT-discoverable. Set false only when meshed and this
+    /// node is not the coordinator, so a phone sees the group as one device.
+    /// Defaults true (a normal, un-meshed speaker is discoverable when idle).
+    mesh_discoverable_allowed: bool,
     /// Last name applied via SET_LOCAL_NAME, to skip redundant updates.
     applied_name: String,
     /// Name sent to SET_LOCAL_NAME but not yet confirmed by CMD_COMPLETE;
     /// `applied_name` is only updated once the controller accepts it.
     pending_bt_name: Option<String>,
     /// Receives mesh-name updates from the group subsystem.
-    bt_name_rx: Option<mpsc::Receiver<Option<String>>>,
+    bt_name_rx: Option<mpsc::Receiver<crate::group::BtMeshSignal>>,
     /// AVRCP absolute volume: the controller (source) sets our master volume
     /// (0..=100) through this; main.rs forwards it to the LED volume authority.
     avrcp_vol_tx: Option<mpsc::Sender<u8>>,
     cmd_rx: Option<mpsc::Receiver<encore_common::protocol::BtAction>>,
     ws_tx: Option<tokio::sync::broadcast::Sender<String>>,
-    suspend_rx: Option<mpsc::Receiver<bool>>,
+    suspend_rx: Option<watch::Receiver<bool>>,
     group_cmd_tx: Option<mpsc::Sender<crate::group::GroupCmd>>,
+    /// A2DP latency-servo target (ms), resolved from config at construction.
+    latency_target_ms: u32,
 }
 
 impl BluetoothSubsystem {
@@ -187,18 +184,26 @@ impl BluetoothSubsystem {
             paired: Vec::new(),
             paired_names: load_paired_names(),
             auto_reconnect_retries: 0,
+            reconnect_name: None,
             mesh_name: None,
+            mesh_discoverable_allowed: true,
             bt_name_rx: None,
             avrcp_vol_tx: None,
             cmd_rx,
             ws_tx,
             suspend_rx: None,
             group_cmd_tx: None,
+            latency_target_ms: transport::resolve_latency_target_ms(0),
         }
     }
 
+    /// Set the A2DP latency-servo target from config (0 = default).
+    pub fn set_latency_target_ms(&mut self, configured: u16) {
+        self.latency_target_ms = transport::resolve_latency_target_ms(configured);
+    }
+
     /// Set the channel that receives mesh-name updates from the group subsystem.
-    pub fn set_bt_name_rx(&mut self, rx: mpsc::Receiver<Option<String>>) {
+    pub fn set_bt_name_rx(&mut self, rx: mpsc::Receiver<crate::group::BtMeshSignal>) {
         self.bt_name_rx = Some(rx);
     }
 
@@ -208,7 +213,7 @@ impl BluetoothSubsystem {
     }
 
     /// Set the suspend channel for group sync (follower mode pauses BT).
-    pub fn set_suspend_rx(&mut self, rx: mpsc::Receiver<bool>) {
+    pub fn set_suspend_rx(&mut self, rx: watch::Receiver<bool>) {
         self.suspend_rx = Some(rx);
     }
 
@@ -239,11 +244,31 @@ impl BluetoothSubsystem {
         } else {
             None
         };
+        // Reconnecting = the boot-time paging window is still open and nothing
+        // has connected. Derived from the retry budget so the four sites that
+        // zero it (connect, cancel paths, natural exhaustion) all end the hint
+        // without needing to clear reconnect_name.
+        let reconnecting = if self.auto_reconnect_retries > 0 && connected.is_none() {
+            self.reconnect_name.clone()
+        } else {
+            None
+        };
+        // Buffered audio depth = how far this speaker is behind the live
+        // stream; the latency servo holds it at its target while streaming.
+        let latency_ms = if self.playing {
+            (self.slot.available() / 96).min(u16::MAX as usize) as u16
+        } else {
+            0
+        };
         let status = encore_common::protocol::BtStatus {
             connected,
             playing: self.playing,
             paired: self.paired.clone(),
             name: self.applied_name.clone(),
+            reconnecting,
+            // The advertised name is the group name whenever a mesh name is set.
+            meshed: self.mesh_name.is_some(),
+            latency_ms,
         };
         if let Some(ref tx) = self.ws_tx {
             let msg = encore_common::protocol::ServerMsg::BluetoothStatus(status);
@@ -315,6 +340,14 @@ impl BluetoothSubsystem {
             mgmt.set_local_name(&desired).await;
             self.pending_bt_name = Some(desired);
         }
+    }
+
+    /// Set discoverability from the current idle state and mesh permission.
+    /// Discoverable only when idle (state Discoverable) AND allowed — when meshed
+    /// only the coordinator is allowed, so the group shows as one BT device.
+    async fn apply_discoverable(&self, mgmt: &mgmt::MgmtSocket) {
+        let want = self.mesh_discoverable_allowed && matches!(self.state, BtState::Discoverable);
+        mgmt.set_discoverable(want).await;
     }
 }
 
@@ -392,7 +425,7 @@ impl Subsystem for BluetoothSubsystem {
 
         // ── Phase 3: Open SDP and AVDTP sockets ──
         #[cfg(target_os = "linux")]
-        let mut avdtp_rx = {
+        let (avdtp_tx, mut avdtp_rx) = {
             // SDP server on L2CAP PSM 1
             let sdp_fd = l2cap::l2cap_socket().context("SDP: socket")?;
             l2cap::l2cap_bind(sdp_fd.as_raw_fd(), 1).context("SDP: bind PSM 1")?;
@@ -411,7 +444,8 @@ impl Subsystem for BluetoothSubsystem {
             l2cap::l2cap_bind(avdtp_fd.as_raw_fd(), 25).context("AVDTP: bind PSM 25")?;
             l2cap::l2cap_listen(avdtp_fd.as_raw_fd(), 2).context("AVDTP: listen")?;
 
-            let rx = avdtp::spawn_avdtp(avdtp_fd, self.slot.clone());
+            let (avdtp_tx, rx) =
+                avdtp::spawn_avdtp(avdtp_fd, self.slot.clone(), self.latency_target_ms);
             info!("Bluetooth: AVDTP listening on PSM 25");
 
             // AVCTP (AVRCP control) on L2CAP PSM 23. Permissive link mode for
@@ -434,7 +468,7 @@ impl Subsystem for BluetoothSubsystem {
             );
             info!("Bluetooth: AVCTP target listening on PSM {}", avrcp::PSM_AVCTP);
 
-            rx
+            (avdtp_tx, rx)
         };
 
         // ── Phase 4: Event loop ──
@@ -449,19 +483,30 @@ impl Subsystem for BluetoothSubsystem {
             // we boot. Zeroed once any device connects.
             let auto_reconnect_addr = load_last_device()
                 .filter(|a| self.paired.iter().any(|p| p.addr == *a));
-            if auto_reconnect_addr.is_some() {
+            if let Some(ref addr) = auto_reconnect_addr {
                 self.auto_reconnect_retries = 3;
+                // Resolve a readable label now (paired is already populated —
+                // the addr was just filtered against it); fall back to the MAC.
+                self.reconnect_name = Some(
+                    self.paired
+                        .iter()
+                        .find(|p| &p.addr == addr)
+                        .map(|p| p.name.clone())
+                        .filter(|n| !n.is_empty())
+                        .unwrap_or_else(|| addr.clone()),
+                );
             }
 
             let has_cmds = self.cmd_rx.is_some();
             let (_dummy_tx, dummy_rx) = mpsc::channel::<encore_common::protocol::BtAction>(1);
             let mut cmd_rx = self.cmd_rx.take().unwrap_or(dummy_rx);
             let has_suspend = self.suspend_rx.is_some();
-            let (_suspend_dummy_tx, suspend_dummy_rx) = mpsc::channel::<bool>(1);
+            let (_suspend_dummy_tx, suspend_dummy_rx) = watch::channel(false);
             let mut suspend_rx = self.suspend_rx.take().unwrap_or(suspend_dummy_rx);
             let mut suspended = false;
             let has_bt_name = self.bt_name_rx.is_some();
-            let (_btname_dummy_tx, btname_dummy_rx) = mpsc::channel::<Option<String>>(1);
+            let (_btname_dummy_tx, btname_dummy_rx) =
+                mpsc::channel::<crate::group::BtMeshSignal>(1);
             let mut bt_name_rx = self.bt_name_rx.take().unwrap_or(btname_dummy_rx);
 
             // Watch the dashboard broadcast for VolumeChanged so we can tell a
@@ -547,7 +592,7 @@ impl Subsystem for BluetoothSubsystem {
                                     // the only disconnect we see, and once state has
                                     // left Connected the mgmt DeviceDisconnected arm
                                     // skips its own set_discoverable(true).
-                                    mgmt.set_discoverable(true).await;
+                                    self.apply_discoverable(&mgmt).await;
                                 }
                                 self.broadcast_bt_status();
                             }
@@ -584,6 +629,26 @@ impl Subsystem for BluetoothSubsystem {
                             encore_common::protocol::BtAction::RequestStatus => {
                                 self.broadcast_bt_status();
                             }
+                            encore_common::protocol::BtAction::Connect { addr } => {
+                                // Sink-initiated A2DP: connect PSM 25 ourselves
+                                // and drive the stream up. A bare paged ACL is
+                                // not enough — sources (Windows included) only
+                                // stream over sessions somebody actually opens,
+                                // which is why headphones do exactly this.
+                                if self.playing || self.cur_codec.is_some() {
+                                    info!("Bluetooth: Connect ignored (already streaming)");
+                                } else if let Some(bdaddr) = l2cap::string_to_bdaddr(&addr) {
+                                    info!("Bluetooth: sink-initiated connect -> {}", addr);
+                                    avdtp::spawn_initiator(
+                                        bdaddr,
+                                        self.slot.clone(),
+                                        avdtp_tx.clone(),
+                                        self.latency_target_ms,
+                                    );
+                                } else {
+                                    warn!("Bluetooth: Connect with bad addr '{}'", addr);
+                                }
+                            }
                             encore_common::protocol::BtAction::Transport { key } => {
                                 // Clone the owning fd handle; holding the Arc keeps
                                 // the socket alive for the duration of the write.
@@ -609,7 +674,8 @@ impl Subsystem for BluetoothSubsystem {
                     }
 
                     // Group suspend/resume
-                    Some(suspend) = suspend_rx.recv(), if has_suspend => {
+                    Ok(()) = suspend_rx.changed(), if has_suspend => {
+                        let suspend = *suspend_rx.borrow_and_update();
                         // Follower mode mutes local BT output but keeps the
                         // reader running, so unfollowing resumes instantly
                         // without re-handshaking the source.
@@ -624,10 +690,20 @@ impl Subsystem for BluetoothSubsystem {
                         }
                     }
 
-                    // Mesh name updates from the group subsystem.
-                    Some(mesh) = bt_name_rx.recv(), if has_bt_name => {
-                        self.mesh_name = mesh;
+                    // Mesh name + discoverability updates from the group subsystem.
+                    Some(signal) = bt_name_rx.recv(), if has_bt_name => {
+                        self.mesh_name = signal.name;
+                        let discoverable_changed =
+                            self.mesh_discoverable_allowed != signal.discoverable;
+                        self.mesh_discoverable_allowed = signal.discoverable;
                         self.apply_bt_name(&mgmt).await;
+                        // Reflect a coordinator change immediately (a node that
+                        // just became a meshed non-coordinator hides now), but only
+                        // on an actual flip — this signal arrives on every status
+                        // broadcast, so don't re-issue set_discoverable each time.
+                        if discoverable_changed {
+                            self.apply_discoverable(&mgmt).await;
+                        }
                     }
 
                     // Local volume changed → tell a registered AVRCP controller.
@@ -756,8 +832,9 @@ impl BluetoothSubsystem {
                     self.state = BtState::Discoverable;
                     self.cur_codec = None;
                     self.playing = false;
-                    // Advertise again now that we're free.
-                    mgmt.set_discoverable(true).await;
+                    // Advertise again now that we're free (unless a meshed
+                    // non-coordinator, which stays hidden).
+                    self.apply_discoverable(mgmt).await;
                     self.broadcast_bt_status();
                 }
             }

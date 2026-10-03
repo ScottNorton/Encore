@@ -1,6 +1,24 @@
 //! Build script — compiles vendored C libraries for ARM cross-compilation.
 
 fn main() {
+    // When this firmware was built. web/certstore.rs treats it as the earliest the real
+    // time can be, because a speaker's clock reads 1970 until NTP sets it.
+    // SOURCE_DATE_EPOCH, when set, wins so reproducible builds stay possible.
+    let build_unix = std::env::var("SOURCE_DATE_EPOCH")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+        });
+    println!("cargo:rustc-env=ENCORE_BUILD_UNIX={build_unix}");
+    println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
+    // Rerun when the code changes so the stamp tracks the build (the C compile below
+    // adds its own rerun rules, which would otherwise be the only ones).
+    println!("cargo:rerun-if-changed=src");
+
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     if target_os == "linux" {
         // Compile vendored Google libsbc for SBC Bluetooth audio codec decoding.

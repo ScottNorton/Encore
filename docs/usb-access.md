@@ -65,4 +65,6 @@ fixed MTU is the workaround that ships.
 - The patched `g_ether`/RNDIS modules are rebuilt with
   `scripts/device/build_usb_gadget_modules.sh`, using the period Linaro 4.9.4
   cross-compiler. A modern gcc builds modules that load but then fault the 3.8.13 kernel.
-- The kernel patches are tracked as diffs in `scripts/device/usb-gadget-patches/`.
+- The kernel patches are tracked as diffs in `scripts/device/usb-gadget-patches/`. The
+  modules are GPL-2.0 code, and [LEGAL.md](../LEGAL.md#gpl-components-and-source-availability)
+  says where their source is.

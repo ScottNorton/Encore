@@ -221,7 +221,10 @@ impl Subsystem for LedSubsystem {
                             }
                             Ok(Some(McuEvent::VolumeDown(steps))) => {
                                 let delta = (steps.max(1) as u16) * (self.vol_step as u16);
-                                self.volume = self.volume.saturating_sub(delta as u8);
+                                // Subtract in u16 like the up path — `delta as u8`
+                                // truncated mod 256, so a large accumulated detent
+                                // count (delta >= 256) under-decremented or no-oped.
+                                self.volume = (self.volume as u16).saturating_sub(delta) as u8;
                                 let _ = self.audio_tx.try_send(AudioCmd::SetVolume(self.volume));
                                 vol_arc_countdown = VOL_ARC_FRAMES;
                                 self.broadcast_volume();
@@ -513,8 +516,10 @@ fn render_frame(animation: &LedAnimation, frame_num: u32, brightness: u8) -> [u8
             // Single lit LED rotating around the 12-LED ring
             let ring_leds = 12u32;
             let speed_val = (*speed).max(1) as u32;
-            // Advance position every (FPS / speed) frames
-            let pos = (frame_num * speed_val / FPS as u32) % ring_leds;
+            // Advance position every (FPS / speed) frames. Widen to u64: frame_num
+            // grows unbounded during a persistent Spin, so frame_num * speed_val
+            // overflows u32 after long uptime (panics under overflow-checks).
+            let pos = ((frame_num as u64 * speed_val as u64 / FPS) % ring_leds as u64) as u32;
 
             // Lit LED at pos, dimmer neighbors
             for i in 0..ring_leds {
@@ -591,7 +596,9 @@ fn render_frame(animation: &LedAnimation, frame_num: u32, brightness: u8) -> [u8
             // Amber/blue alternating sectors rotating at ~0.5 rev/sec.
             // 12 ring LEDs split into two 6-LED sectors.
             let speed = 15u32; // ~0.5 rev/sec at 30fps
-            let offset = (frame_num * speed / FPS as u32) % 12;
+            // Widen to u64 (see Spin above): frame_num * speed overflows u32 after
+            // long continuous SafeMode uptime.
+            let offset = ((frame_num as u64 * speed as u64 / FPS) % 12) as u32;
             let s = scale * 0.7;
             for i in 0..12u32 {
                 if (i + offset) % 12 < 6 {

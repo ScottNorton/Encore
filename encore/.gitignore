@@ -1,6 +1,2 @@
 /target/
 web/pkg/
-
-# TLS cert is intentionally tracked (self-signed, embedded in binary)
-!tls/cert.pem
-!tls/key.pem

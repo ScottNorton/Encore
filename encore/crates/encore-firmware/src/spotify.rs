@@ -23,7 +23,7 @@ use librespot_playback::mixer::{self, MixerConfig};
 use librespot_playback::player::{Player, PlayerEvent};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, watch};
 use tracing::info;
 
 const CACHE_DIR: &str = "/lsync/encore/spotify";
@@ -83,7 +83,7 @@ pub struct SpotifySubsystem {
     device_name: String,
     cmd_rx: Option<mpsc::Receiver<encore_common::protocol::SpotifyAction>>,
     ws_tx: Option<broadcast::Sender<String>>,
-    suspend_rx: Option<mpsc::Receiver<bool>>,
+    suspend_rx: Option<watch::Receiver<bool>>,
     group_cmd_tx: Option<mpsc::Sender<crate::group::GroupCmd>>,
 }
 
@@ -105,7 +105,7 @@ impl SpotifySubsystem {
     }
 
     /// Set the suspend channel for group sync (follower mode pauses Spotify).
-    pub fn set_suspend_rx(&mut self, rx: mpsc::Receiver<bool>) {
+    pub fn set_suspend_rx(&mut self, rx: watch::Receiver<bool>) {
         self.suspend_rx = Some(rx);
     }
 
@@ -142,7 +142,7 @@ impl Subsystem for SpotifySubsystem {
         // Channels are taken from `self` ONCE and reused across reconnect cycles.
         let group_cmd_tx = self.group_cmd_tx.clone();
         let has_suspend = self.suspend_rx.is_some();
-        let (_suspend_dummy_tx, suspend_dummy_rx) = mpsc::channel::<bool>(1);
+        let (_suspend_dummy_tx, suspend_dummy_rx) = watch::channel(false);
         let mut suspend_rx = self.suspend_rx.take().unwrap_or(suspend_dummy_rx);
 
         // Keep librespot's Discovery (the zeroconf HTTP server on port 48144) ALIVE
@@ -352,7 +352,8 @@ impl Subsystem for SpotifySubsystem {
                             }
                         }
                     }
-                    Some(suspend) = suspend_rx.recv(), if has_suspend => {
+                    Ok(()) = suspend_rx.changed(), if has_suspend => {
+                        let suspend = *suspend_rx.borrow_and_update();
                         if suspend && !suspended {
                             info!("Spotify: suspended by group (follower mode)");
                             suspended = true;
@@ -725,6 +726,55 @@ impl Resampler {
     }
 }
 
+/// Custom librespot Sink that pushes decoded PCM into a MixerSlot ring buffer.
+struct EncoreSink {
+    slot: Arc<MixerSlot>,
+    #[allow(dead_code)]
+    format: AudioFormat,
+    resampler: Resampler,
+}
+
+impl Sink for EncoreSink {
+    fn start(&mut self) -> SinkResult<()> {
+        self.slot.set_active(true);
+        self.slot.clear();
+        self.resampler.reset();
+        Ok(())
+    }
+
+    fn stop(&mut self) -> SinkResult<()> {
+        self.slot.set_active(false);
+        Ok(())
+    }
+
+    fn write(&mut self, packet: AudioPacket, converter: &mut Converter) -> SinkResult<()> {
+        match packet {
+            AudioPacket::Samples(samples) => {
+                let s32 = converter.f64_to_s32(&samples);
+                // Resample 44100 → 48000 Hz
+                let resampled = self.resampler.process(&s32);
+                // Backpressure: block until ALL samples are written to the ring buffer.
+                // Without this, librespot decodes at full CPU speed, overflows the buffer,
+                // drops samples, and "finishes" a 3-minute track in ~6 seconds.
+                let mut offset = 0;
+                while offset < resampled.len() {
+                    let written = self.slot.push(&resampled[offset..]);
+                    offset += written;
+                    if offset < resampled.len() {
+                        // Ring buffer full — sleep to let mixer thread drain.
+                        // 5ms ≈ half an ALSA period (10.67ms at 256 frames/48kHz).
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                }
+            }
+            AudioPacket::Raw(_) => {
+                // Raw passthrough — not used with S32 format
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod resampler_tests {
     use super::*;
@@ -792,54 +842,5 @@ mod resampler_tests {
                 "ramp not linear at out frame {i}: step {d}, expected {expected_step}"
             );
         }
-    }
-}
-
-/// Custom librespot Sink that pushes decoded PCM into a MixerSlot ring buffer.
-struct EncoreSink {
-    slot: Arc<MixerSlot>,
-    #[allow(dead_code)]
-    format: AudioFormat,
-    resampler: Resampler,
-}
-
-impl Sink for EncoreSink {
-    fn start(&mut self) -> SinkResult<()> {
-        self.slot.set_active(true);
-        self.slot.clear();
-        self.resampler.reset();
-        Ok(())
-    }
-
-    fn stop(&mut self) -> SinkResult<()> {
-        self.slot.set_active(false);
-        Ok(())
-    }
-
-    fn write(&mut self, packet: AudioPacket, converter: &mut Converter) -> SinkResult<()> {
-        match packet {
-            AudioPacket::Samples(samples) => {
-                let s32 = converter.f64_to_s32(&samples);
-                // Resample 44100 → 48000 Hz
-                let resampled = self.resampler.process(&s32);
-                // Backpressure: block until ALL samples are written to the ring buffer.
-                // Without this, librespot decodes at full CPU speed, overflows the buffer,
-                // drops samples, and "finishes" a 3-minute track in ~6 seconds.
-                let mut offset = 0;
-                while offset < resampled.len() {
-                    let written = self.slot.push(&resampled[offset..]);
-                    offset += written;
-                    if offset < resampled.len() {
-                        // Ring buffer full — sleep to let mixer thread drain.
-                        // 5ms ≈ half an ALSA period (10.67ms at 256 frames/48kHz).
-                        std::thread::sleep(std::time::Duration::from_millis(5));
-                    }
-                }
-            }
-            AudioPacket::Raw(_) => {
-                // Raw passthrough — not used with S32 format
-            }
-        }
-        Ok(())
     }
 }

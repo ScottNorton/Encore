@@ -11,6 +11,7 @@ pub mod follower;
 pub mod leader;
 pub mod peer;
 pub mod relay;
+pub mod tsf;
 pub mod wire;
 
 use crate::audio::mixer::MixerSlot;
@@ -52,12 +53,34 @@ pub enum GroupCmd {
     PlayPause { action: String },
     /// Toggle party mode (accept streams from any group).
     SetPartyMode(bool),
+    /// Toggle Bluetooth mesh mode at runtime (advertise the group name; only the
+    /// coordinator stays discoverable). Applied live and re-broadcast to BT.
+    SetMeshEnabled(bool),
 }
 
 /// Guard a freshly-elected leader waits before activating its audio tap, so a
 /// previous leader's stream has drained from followers before ours begins
 /// (one heartbeat). Prevents a brief two-streams overlap during a handoff.
 const LEADER_TAP_GUARD: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Follower playout backlog target: the drain-tick drift controller regulates
+/// the network_slot fill toward this (it is the follower's real jitter
+/// absorber; the play-at lead's jitter buffer runs ~empty). Also the second
+/// half of the leader's local playout delay — see
+/// [`leader_local_delay_samples`].
+pub(crate) const TARGET_BACKLOG_US: i64 = 150_000; // ~150ms; absorbs single-radio WiFi bursts
+
+/// How far the leader must delay its own DAC output while streaming to
+/// followers, in interleaved stereo samples at 48 kHz. A follower plays a
+/// chunk at `play_at` (production + lead) and then holds it ~TARGET_BACKLOG in
+/// its network_slot, so the leader matches lead + backlog to land on the same
+/// wall-clock instant (Snapcast model).
+pub(crate) fn leader_local_delay_samples() -> usize {
+    let lead_us = buffer_ctl::BufferCtl::new().target_lead_us();
+    let us = lead_us + TARGET_BACKLOG_US as u64;
+    // µs → interleaved samples: 48000 frames/s × 2 ch = 96 samples per ms.
+    ((us * 96 / 1000) as usize) & !1
+}
 
 /// Derive a stable small id for a leader from its peer_id (FNV-1a/32).
 ///
@@ -83,6 +106,18 @@ pub enum GroupRole {
     Leader,
     /// This speaker is receiving audio from the leader.
     Follower,
+}
+
+/// Group → Bluetooth advertising signal.
+pub struct BtMeshSignal {
+    /// Name to advertise: the group name when meshed and grouped, else `None`
+    /// (the BT subsystem falls back to this speaker's own name).
+    pub name: Option<String>,
+    /// Whether this node may be BT-discoverable. When meshed, only the
+    /// coordinator (lowest peer id) is, so a phone sees the whole group as a
+    /// single device instead of one entry per speaker. Always `true` when not
+    /// meshed, so a normal speaker's discoverability is unchanged.
+    pub discoverable: bool,
 }
 
 /// State of a connected peer.
@@ -145,8 +180,10 @@ pub struct GroupSubsystem {
     /// Command channel from other subsystems.
     cmd_rx: mpsc::Receiver<GroupCmd>,
 
-    /// Suspend channels for audio sources (sent true to suspend, false to resume).
-    suspend_txs: Vec<mpsc::Sender<bool>>,
+    /// Suspend channels for audio sources (true = suspend, false = resume).
+    /// watch, so signalling the follower edge never blocks the group loop on a
+    /// source that isn't currently draining its receiver.
+    suspend_txs: Vec<tokio::sync::watch::Sender<bool>>,
 
     /// Volume set channel: sends u8 volume level for group volume sync.
     volume_set_tx: Option<mpsc::Sender<u8>>,
@@ -168,7 +205,7 @@ pub struct GroupSubsystem {
     /// Tells the BT subsystem the mesh name: `Some(group_name)` when grouped and
     /// mesh is on (so the group looks like one BT device), `None` to revert to
     /// the speaker's own name.
-    bt_name_tx: Option<mpsc::Sender<Option<String>>>,
+    bt_name_tx: Option<mpsc::Sender<BtMeshSignal>>,
     /// Whether Bluetooth mesh mode is on.
     mesh_enabled: bool,
 }
@@ -219,7 +256,7 @@ impl GroupSubsystem {
     }
 
     /// Set the channel that tells the BT subsystem the mesh name.
-    pub fn set_bt_name_tx(&mut self, tx: mpsc::Sender<Option<String>>) {
+    pub fn set_bt_name_tx(&mut self, tx: mpsc::Sender<BtMeshSignal>) {
         self.bt_name_tx = Some(tx);
     }
 
@@ -229,7 +266,7 @@ impl GroupSubsystem {
     }
 
     /// Add a suspend channel for an audio source subsystem.
-    pub fn add_suspend_tx(&mut self, tx: mpsc::Sender<bool>) {
+    pub fn add_suspend_tx(&mut self, tx: tokio::sync::watch::Sender<bool>) {
         self.suspend_txs.push(tx);
     }
 
@@ -258,37 +295,35 @@ impl GroupSubsystem {
         self.zone_tx = Some(tx);
     }
 
-    /// Suspend all local audio sources (entering follower mode).
-    // ponytail: real follower source-suspension (call this on follower entry) is
-    // device step 11, see docs/superpowers/specs/2026-06-17-group-sync-hardening-design.md.
-    #[allow(dead_code)]
-    async fn suspend_sources(&self) {
+    /// Suspend all local audio sources (entering follower mode). Non-blocking:
+    /// watch::send stores the latest value and never waits on the receiver.
+    fn suspend_sources(&self) {
         for tx in &self.suspend_txs {
-            let _ = tx.send(true).await;
+            let _ = tx.send(true);
         }
     }
 
-    /// Resume all local audio sources (leaving follower mode).
-    // ponytail: real follower source-resumption (call this on standalone return) is
-    // device step 11, see docs/superpowers/specs/2026-06-17-group-sync-hardening-design.md.
-    #[allow(dead_code)]
-    async fn resume_sources(&self) {
+    /// Resume all local audio sources (leaving follower mode). Non-blocking.
+    fn resume_sources(&self) {
         for tx in &self.suspend_txs {
-            let _ = tx.send(false).await;
+            let _ = tx.send(false);
         }
     }
 
     /// Broadcast group status to WebSocket clients.
     fn broadcast_status(&self, role: GroupRole, peers: &HashMap<String, ConnectedPeer>) {
-        // Tell the BT subsystem the mesh name on every state change: the group
-        // name when we're grouped and mesh is on, else revert to our own name.
+        let coordinator_id =
+            election::choose_coordinator(self.peer_id.as_str(), peers.keys().map(|s| s.as_str()));
+
+        // Tell the BT subsystem the mesh name + discoverability on every state
+        // change: the group name when we're grouped and mesh is on (else revert
+        // to our own name), and — when meshed — discoverable only if we are the
+        // coordinator, so a phone sees the group as one BT device.
         if let Some(ref tx) = self.bt_name_tx {
-            let mesh_name = if self.mesh_enabled && !peers.is_empty() {
-                Some(self.group_name.clone())
-            } else {
-                None
-            };
-            let _ = tx.try_send(mesh_name);
+            let meshed = self.mesh_enabled && !peers.is_empty();
+            let name = meshed.then(|| self.group_name.clone());
+            let discoverable = !meshed || coordinator_id == self.peer_id;
+            let _ = tx.try_send(BtMeshSignal { name, discoverable });
         }
 
         let Some(ref ws) = self.ws_tx else { return };
@@ -320,8 +355,6 @@ impl GroupSubsystem {
             })
             .collect();
 
-        let coordinator_id =
-            election::choose_coordinator(self.peer_id.as_str(), peers.keys().map(|s| s.as_str()));
         let zone_name = if self.group_name.is_empty() {
             self.device_name.clone()
         } else {
@@ -611,17 +644,33 @@ impl Subsystem for GroupSubsystem {
             udp_socket.local_addr()
         );
 
-        // Spawn UDP audio receiver task
+        // Spawn UDP audio receiver task. This is also the clock-sync fast
+        // path: sync packets are stamped and answered right here at the socket
+        // boundary. When sync rode the TCP control channel it queued behind
+        // writer backlogs and retransmits under BT/WiFi single-radio
+        // contention — measured "RTTs" of 11+ seconds on hardware, so the
+        // follower's offset never converged and playout wobbled by seconds.
+        // The UDP path shares the audio socket, which demonstrably keeps
+        // flowing under the same load.
         let (udp_audio_tx, mut udp_audio_rx) = mpsc::channel::<(u32, u32, u64, Vec<i32>)>(256);
+        // (t1, t2, t3, t4, source ip) — t4 stamped at arrival, below.
+        let (udp_sync_tx, mut udp_sync_rx) =
+            mpsc::channel::<(u64, u64, u64, u64, std::net::IpAddr)>(64);
+        // (tsf_us, mono_us, err_us, source ip) — a peer's shared-clock anchor.
+        let (udp_tsfmap_tx, mut udp_tsfmap_rx) =
+            mpsc::channel::<(u64, u64, u32, std::net::IpAddr)>(16);
         {
             let sock = udp_socket.clone();
             tokio::spawn(async move {
                 let mut buf = vec![0u8; 8192]; // max AudioChunk ~3.9KB
                 loop {
-                    let n = match sock.recv(&mut buf).await {
-                        Ok(n) => n,
+                    let (n, src) = match sock.recv_from(&mut buf).await {
+                        Ok(v) => v,
                         Err(_) => continue,
                     };
+                    // Stamp arrival before any parsing so a ClockSyncResp's t4
+                    // measures the wire, not our decode.
+                    let arrival_us = clock::now_us();
                     if n < wire::HEADER_SIZE {
                         continue;
                     }
@@ -634,22 +683,67 @@ impl Subsystem for GroupSubsystem {
                         Err(_) => continue,
                     };
                     let Some(ptype) = ptype_opt else { continue };
-                    if ptype != wire::PacketType::AudioChunk {
-                        continue;
-                    }
                     let payload_end = wire::HEADER_SIZE + payload_len as usize;
                     if payload_end > n {
                         continue;
                     }
-                    if let Ok(GroupPacket::AudioChunk {
-                        seq,
-                        leader_id,
-                        play_at_us,
-                        pcm,
-                        ..
-                    }) = wire::decode_payload(ptype, &buf[wire::HEADER_SIZE..payload_end])
-                    {
-                        let _ = udp_audio_tx.try_send((seq, leader_id, play_at_us, pcm));
+                    let payload = &buf[wire::HEADER_SIZE..payload_end];
+                    match ptype {
+                        wire::PacketType::AudioChunk => {
+                            if let Ok(GroupPacket::AudioChunk {
+                                seq,
+                                leader_id,
+                                play_at_us,
+                                pcm,
+                                ..
+                            }) = wire::decode_payload(ptype, payload)
+                            {
+                                let _ = udp_audio_tx.try_send((seq, leader_id, play_at_us, pcm));
+                            }
+                        }
+                        // Answer inline — no event-loop hop between the wire
+                        // and the timestamps. Response goes straight back to
+                        // the requester's source address.
+                        wire::PacketType::ClockSyncReq => {
+                            if let Ok(GroupPacket::ClockSyncReq { originate_us }) =
+                                wire::decode_payload(ptype, payload)
+                            {
+                                let resp = GroupPacket::ClockSyncResp {
+                                    originate_us,
+                                    receive_us: arrival_us,
+                                    transmit_us: clock::now_us(),
+                                };
+                                let _ = sock.send_to(&wire::encode(&resp, 0), src).await;
+                            }
+                        }
+                        wire::PacketType::ClockSyncResp => {
+                            if let Ok(GroupPacket::ClockSyncResp {
+                                originate_us,
+                                receive_us,
+                                transmit_us,
+                            }) = wire::decode_payload(ptype, payload)
+                            {
+                                let _ = udp_sync_tx.try_send((
+                                    originate_us,
+                                    receive_us,
+                                    transmit_us,
+                                    arrival_us,
+                                    src.ip(),
+                                ));
+                            }
+                        }
+                        wire::PacketType::TsfMap => {
+                            if let Ok(GroupPacket::TsfMap {
+                                tsf_us,
+                                mono_us,
+                                err_us,
+                            }) = wire::decode_payload(ptype, payload)
+                            {
+                                let _ =
+                                    udp_tsfmap_tx.try_send((tsf_us, mono_us, err_us, src.ip()));
+                            }
+                        }
+                        _ => {}
                     }
                 }
             });
@@ -662,6 +756,10 @@ impl Subsystem for GroupSubsystem {
         // Last (advertise, zone_name) we pushed to the network subsystem (dedupe).
         let mut last_advertise: Option<(bool, String)> = None;
         let mut jitter_buffer = JitterBuffer::new(self.buffer_ms, self.channel);
+        // The alignment element: chunks play at play_at + backlog-target, the
+        // same instant the leader's delayed DAC plays them. Held in the jitter
+        // buffer, so the material doubles as burst armor.
+        jitter_buffer.set_playout_delay_us(TARGET_BACKLOG_US as u64);
         let mut drift_ctl = follower::DriftController::new();
         // Live follower target set, re-read by the leader streaming task each
         // tick. Updated on every membership change while we are the leader.
@@ -670,12 +768,17 @@ impl Subsystem for GroupSubsystem {
         let mut active_sources: HashSet<String> = HashSet::new();
         let mut election_state = ElectionState::new();
         let uptime_start = Instant::now();
-        // Debounce leadership release: a brief source pause/resume must not drop
-        // and re-take leadership. Set when all sources stop; cleared if audio
-        // resumes before the grace elapses.
+        // Debounce leadership release: a paused source must not drop and
+        // re-take leadership. Sized for a real-world movie/music pause (grab a
+        // drink, bathroom break): releasing sooner buys nothing in a home
+        // group — no rival source is waiting — while every release costs the
+        // followers a jitter-buffer clear, drift reset and re-anchor on
+        // resume (observed live as seconds of chaos right when playback
+        // returns). Held leadership through a pause keeps followers locked to
+        // the timeline; a genuinely ended stream still releases, just half a
+        // minute later.
         let mut release_leadership_at: Option<Instant> = None;
-        const LEADERSHIP_RELEASE_GRACE: std::time::Duration =
-            std::time::Duration::from_millis(1500);
+        const LEADERSHIP_RELEASE_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
         // Track peers with pending duplicate disconnect events to ignore
         let mut pending_dup_disconnects: HashMap<String, u32> = HashMap::new();
         // Reconnect queue: (peer_id, address, next_attempt_time, attempt_count)
@@ -683,6 +786,24 @@ impl Subsystem for GroupSubsystem {
             VecDeque::new();
 
         let mut leader_task_handle: Option<tokio::task::JoinHandle<()>> = None;
+
+        // ── WiFi TSF shared clock ──
+        // Every station on the BSS hardware-adopts the AP's TSF, so pairing
+        // (tsf, monotonic) anchors across peers yields offsets with no network
+        // asymmetry term. Sampling forks/ioctls in a blocking task — the read
+        // must never stall this loop (the follower drain tick feeds audio).
+        let _ = tsf::ensure_conf();
+        let (tsf_tx, mut tsf_sample_rx) = mpsc::channel::<Option<tsf::TsfSample>>(4);
+        let mut my_tsf: Option<tsf::TsfSample> = None;
+        let mut tsf_inflight = false;
+        let mut tsf_failures: u32 = 0;
+        /// Give up on TSF after this many consecutive failed reads (missing
+        /// mlanutl, firmware without GET_TSF) — UDP sync carries on alone.
+        const TSF_MAX_FAILURES: u32 = 5;
+        /// Anchors older than this are stale for pairing: extrapolating across
+        /// the gap accumulates each crystal's drift vs the AP (~200 ppm worst
+        /// case ≈ 0.6 ms at 3 s — keep it well under the UDP path's error).
+        const TSF_PAIR_MAX_AGE_US: u64 = 3_000_000;
 
         // Timers
         let mut heartbeat_interval = tokio::time::interval(std::time::Duration::from_secs(5));
@@ -712,7 +833,23 @@ impl Subsystem for GroupSubsystem {
         self.broadcast_status(role, &peers);
         self.emit_zone_if_changed(&peers, &mut last_advertise);
 
+        // Follower source-suspension (device step 11): role changes in many
+        // select arms below, so detect the Follower edge centrally here instead
+        // of at every assignment. A follower's local sources (BT/Spotify/
+        // Wyoming) pause so they can't play over the leader's synced stream;
+        // any other role resumes them.
+        let mut last_role = role;
+
         loop {
+            if role != last_role {
+                if role == GroupRole::Follower {
+                    self.suspend_sources();
+                } else if last_role == GroupRole::Follower {
+                    self.resume_sources();
+                }
+                last_role = role;
+            }
+
             tokio::select! {
                 // ── Peer events from TCP connections ──
                 event = peer_events.recv() => {
@@ -907,14 +1044,15 @@ impl Subsystem for GroupSubsystem {
                                             self.network_slot.set_active(true);
                                         }
                                     } else if role != GroupRole::Follower {
-                                        // Accept: enter follower mode (mixed audio — local sources keep playing)
+                                        // Accept: enter follower mode (the loop-top edge
+                                        // detector suspends local sources)
                                         role = GroupRole::Follower;
                                         leader_id = Some(peer_id.clone());
                                         jitter_buffer.clear();
                                         drift_ctl.reset();
                                         jitter_buffer.set_current_leader(leader_fnv(&peer_id));
                                         self.network_slot.set_active(true);
-                                        info!("Group: entered follower mode (mixed audio)");
+                                        info!("Group: entered follower mode");
                                     }
 
                                     if let Some(peer) = peers.get_mut(&peer_id) {
@@ -931,7 +1069,7 @@ impl Subsystem for GroupSubsystem {
                                             self.network_slot.set_active(false);
                                             jitter_buffer.clear();
                                             drift_ctl.reset();
-                                            // Phase 2: No resume needed — local sources were never suspended
+                                            // Local sources resume via the loop-top edge detector
                                             info!("Group: returned to standalone");
                                         }
                                     }
@@ -1069,6 +1207,10 @@ impl Subsystem for GroupSubsystem {
                                         }
                                     }
                                 }
+                                GroupPacket::TsfMap { .. } => {
+                                    // TSF anchors travel the UDP fast path; a
+                                    // TCP copy carries stale timestamps.
+                                }
                             }
                             ctx.health.inc_msg();
                         }
@@ -1087,6 +1229,74 @@ impl Subsystem for GroupSubsystem {
                                     peer.last_seen = Instant::now();
                                     peer.missed_heartbeats = 0;
                                 }
+                            }
+                        }
+                    }
+                }
+
+                // ── Clock sync responses (UDP, timestamps stamped at the socket) ──
+                sync = udp_sync_rx.recv() => {
+                    if let Some((t1, t2, t3, t4, src_ip)) = sync {
+                        // Attribute the sample to the peer we probed by source
+                        // address; anything from an unknown host is dropped
+                        // before it can steer playout timing.
+                        if let Some(peer) = peers.values_mut().find(|p| p.address == src_ip) {
+                            peer.clock.process_response(t1, t2, t3, t4);
+                        }
+                    }
+                }
+
+                // ── Our own TSF sample arrived (from the blocking read) ──
+                s = tsf_sample_rx.recv() => {
+                    tsf_inflight = false;
+                    match s {
+                        Some(Some(sample)) => {
+                            let first = my_tsf.is_none();
+                            my_tsf = Some(sample);
+                            if first {
+                                tsf::log_startup(true);
+                            }
+                            tsf_failures = 0;
+                            // The leader publishes its anchor so followers can
+                            // compute offsets through the shared AP clock.
+                            if role == GroupRole::Leader {
+                                let pkt = GroupPacket::TsfMap {
+                                    tsf_us: sample.tsf_us,
+                                    mono_us: sample.mono_us,
+                                    err_us: sample.err_us,
+                                };
+                                let data = wire::encode(&pkt, 0);
+                                for addr in Self::target_addrs(&peers) {
+                                    let _ = udp_socket.send_to(&data, addr).await;
+                                }
+                            }
+                        }
+                        Some(None) => {
+                            tsf_failures += 1;
+                            if tsf_failures == TSF_MAX_FAILURES {
+                                tsf::log_startup(false);
+                            }
+                        }
+                        None => {}
+                    }
+                }
+
+                // ── A peer's TSF anchor: merge through the shared AP clock ──
+                m = udp_tsfmap_rx.recv() => {
+                    if let Some((tsf_us, mono_us, err_us, src_ip)) = m {
+                        let now = clock::now_us();
+                        if let (Some(ours), Some(peer)) = (
+                            my_tsf.filter(|o| now.saturating_sub(o.mono_us) < TSF_PAIR_MAX_AGE_US),
+                            peers.values_mut().find(|p| p.address == src_ip),
+                        ) {
+                            let theirs = tsf::TsfSample { tsf_us, mono_us, err_us };
+                            // Reject cross-BSS pairings (a peer on a different
+                            // AP carries a different TSF domain): the counters
+                            // must agree to within the pairing window.
+                            let gap = (theirs.tsf_us as i64 - ours.tsf_us as i64).unsigned_abs();
+                            if gap < TSF_PAIR_MAX_AGE_US {
+                                let (t1, t2, t3, t4) = tsf::synthesize_exchange(&theirs, &ours);
+                                peer.clock.process_response(t1, t2, t3, t4);
                             }
                         }
                     }
@@ -1194,6 +1404,19 @@ impl Subsystem for GroupSubsystem {
                             }
                             self.broadcast_status(role, &peers);
                         }
+                        GroupCmd::SetMeshEnabled(enabled) => {
+                            info!("Group: SetMeshEnabled({})", enabled);
+                            self.mesh_enabled = enabled;
+                            // Persist so the choice survives a reboot.
+                            let config_path = std::path::Path::new("/lsync/encore/config.toml");
+                            if let Ok(mut cfg) = encore_common::config::EncoreConfigFile::load(config_path) {
+                                cfg.bluetooth.mesh_enabled = enabled;
+                                let _ = cfg.save(config_path);
+                            }
+                            // Re-broadcast so BT picks up the new mesh name +
+                            // coordinator-only discoverability immediately.
+                            self.broadcast_status(role, &peers);
+                        }
                         GroupCmd::SetEnabled(enabled) => {
                             self.enabled = enabled;
                             // Make the human's choice sticky across reboots.
@@ -1259,16 +1482,33 @@ impl Subsystem for GroupSubsystem {
 
                 // ── Clock sync (bidirectional — all roles measure RTT to peers) ──
                 _ = clock_sync_interval.tick() => {
+                    // Refresh our TSF anchor whenever peers exist; the read
+                    // runs on the blocking pool so audio ticks never wait.
+                    if !peers.is_empty() && !tsf_inflight && tsf_failures < TSF_MAX_FAILURES {
+                        tsf_inflight = true;
+                        let tx = tsf_tx.clone();
+                        tokio::task::spawn_blocking(move || {
+                            let _ = tx.blocking_send(tsf::sample());
+                        });
+                    }
                     if role == GroupRole::Follower {
-                        // Follower syncs to leader for audio timing
+                        // Follower syncs to leader for audio timing — over UDP
+                        // to the leader's audio socket, answered inline in its
+                        // recv task. The TCP control channel queues for whole
+                        // seconds under radio contention, which is what these
+                        // timestamps exist to measure around.
                         if let Some(ref lid) = leader_id {
-                            let req = GroupPacket::ClockSyncReq {
-                                originate_us: clock::now_us(),
-                            };
-                            peer_mgr.send_to(lid, &req);
-
-                            // Adapt sync rate based on convergence
                             if let Some(peer) = peers.get(lid) {
+                                let req = GroupPacket::ClockSyncReq {
+                                    originate_us: clock::now_us(),
+                                };
+                                let addr = std::net::SocketAddr::new(
+                                    peer.address,
+                                    peer::GROUP_AUDIO_PORT,
+                                );
+                                let _ = udp_socket.send_to(&wire::encode(&req, 0), addr).await;
+
+                                // Adapt sync rate based on convergence
                                 let desired_us = peer.clock.sync_interval_us();
                                 let desired = std::time::Duration::from_micros(desired_us);
                                 clock_sync_interval = tokio::time::interval(desired);
@@ -1296,26 +1536,34 @@ impl Subsystem for GroupSubsystem {
                                 let now = clock::now_us();
                                 let mut samples = jitter_buffer.drain_ready(now, &peer.clock);
                                 if !samples.is_empty() {
-                                    // Buffer-fill drift control: regulate the network_slot backlog
-                                    // (the de-facto follower buffer, since the jitter buffer runs
-                                    // ~empty here) toward a target. error_us is a single-timeline
-                                    // sample count on our OWN ring -- no leader/follower clock phase
-                                    // enters it (the old cross-timeline metric read a steady ~-800ms).
-                                    const TARGET_BACKLOG_US: i64 = 150_000; // ~150ms; absorbs single-radio WiFi bursts
+                                    // Slot-residual drift control. The alignment delay now lives
+                                    // in the jitter buffer (playout_delay_us), so the slot should
+                                    // carry only a small release-quantization residual; this loop
+                                    // trims the slow leader-vs-local DAC clock drift that
+                                    // accumulates in it. error_us is a single-timeline sample
+                                    // count on our OWN ring -- no leader/follower clock phase
+                                    // enters it.
                                     const COARSE_THRESH_US: i64 = 60_000; // only big excursions snap; steady-state jitter is left to the smoothed fine loop
+                                    // Small standing residual (~2 chunks) so the mixer never
+                                    // scrapes an empty ring between 2ms drain ticks.
+                                    const SLOT_RESIDUAL_TARGET_US: i64 = 6_000;
                                     let raw_backlog_us =
                                         (self.network_slot.available() as i64 / 2) * 1_000_000 / 48_000;
                                     // EMA-smooth so the loop tracks the trend, not the WiFi burst
                                     // jitter (raw +-5ms was thrashing the coarse path every tick).
                                     let backlog_us = drift_ctl.smoothed_backlog(raw_backlog_us);
-                                    let error_us = backlog_us - TARGET_BACKLOG_US;
+                                    let error_us = backlog_us - SLOT_RESIDUAL_TARGET_US;
                                     drift_ctl.last_error_us = error_us; // keep group::drift telemetry truthful on coarse ticks
-                                    if peer.clock.converged() && error_us.abs() > COARSE_THRESH_US && drift_ctl.coarse_ready() {
+                                    // Corrections trust the certified anchor, not instantaneous
+                                    // convergence: under streaming load probe agreement drops
+                                    // while the anchored mapping stays certified, and gating on
+                                    // converged() left this loop disabled for whole streams.
+                                    if peer.clock.anchored() && error_us.abs() > COARSE_THRESH_US && drift_ctl.coarse_ready() {
                                         follower::coarse_correction(error_us, &mut samples, &mut drift_ctl);
                                         drift_ctl.reset_fine(); // coarse moved the buffer; keep the fine integrator clean
                                     } else {
                                         let corr = follower::drift_correction(
-                                            error_us, peer.clock.converged(), &mut drift_ctl);
+                                            error_us, peer.clock.anchored(), &mut drift_ctl);
                                         if corr > 0 {
                                             let drop = (corr as usize) * 2;
                                             if samples.len() > drop {
@@ -1544,6 +1792,7 @@ impl Subsystem for GroupSubsystem {
                                 skew_ppm = peer.clock.skew_ppm(),
                                 sigma_us = peer.clock.sigma_offset_us(),
                                 converged = peer.clock.converged(),
+                                bound_us = peer.clock.bound_us(),
                                 depth_us = jitter_buffer.depth_us(),
                                 slot_backlog_us = (self.network_slot.available() / 2) as u64 * 1_000_000 / 48_000,
                                 skips = drift_ctl.skips,

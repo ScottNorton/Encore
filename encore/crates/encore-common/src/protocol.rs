@@ -395,6 +395,21 @@ pub struct BtStatus {
     /// The Bluetooth name this speaker advertises ("visible as" on phones).
     #[serde(default)]
     pub name: String,
+    /// While the speaker is paging a bonded source to reconnect (e.g. the
+    /// ~15s window just after boot), the source's friendly name; `None` when
+    /// not reconnecting. Lets the dashboard show "Reconnecting to X…" instead
+    /// of a bare "No device connected" that reads as a fault.
+    #[serde(default)]
+    pub reconnecting: Option<String>,
+    /// True when `name` is the shared group (mesh) name rather than this
+    /// speaker's own name. The dashboard makes the "Visible As" field read-only
+    /// then, since editing it would rename only this speaker, not the group.
+    #[serde(default)]
+    pub meshed: bool,
+    /// Buffered A2DP audio in the mixer slot (ms) while streaming; the latency
+    /// servo holds this near its target. 0 when idle.
+    #[serde(default)]
+    pub latency_ms: u16,
 }
 
 /// Now-playing metadata pulled from the source over AVRCP (Controller role).
@@ -827,6 +842,20 @@ impl EncoreConfig {
         }
     }
 
+    /// Blank every secret field (WiFi/AP/MQTT passwords, VPN keys) so this
+    /// config is safe to hand to a client. `/ws` has no auth, so
+    /// `ServerMsg::ConfigLoaded` must never carry these — call this before
+    /// broadcasting. `to_file_merge` preserves the on-disk value whenever a
+    /// saved config comes back with one of these fields `None`, so redacting
+    /// here does not risk clobbering the stored secret on the next save.
+    pub fn redact_secrets(&mut self) {
+        self.wifi_password = None;
+        self.ap_password = None;
+        self.mqtt_password = None;
+        self.vpn_private_key = None;
+        self.vpn_peer_preshared_key = None;
+    }
+
     /// Convert protocol EncoreConfig back to EncoreConfigFile for saving.
     /// Merges onto an existing file config to preserve fields not exposed
     /// in the protocol (e.g. spotify.cache_path, debug.overrides).
@@ -872,13 +901,22 @@ impl EncoreConfig {
                 enabled: self.bluetooth_enabled,
                 discoverable: self.bluetooth_discoverable,
                 mesh_enabled: self.bluetooth_mesh_enabled,
+                // Config-file-only tuning knob: no dashboard field, so preserve
+                // it across SaveConfig instead of resetting it.
+                latency_target_ms: existing.bluetooth.latency_target_ms,
             },
             homeassistant: HomeAssistantConfig {
                 enabled: self.homeassistant_enabled,
                 mqtt_host: self.mqtt_host.clone(),
                 mqtt_port: self.mqtt_port,
                 mqtt_user: self.mqtt_user.clone(),
-                mqtt_password: self.mqtt_password.clone(),
+                // Preserve on None like wifi_password below: ConfigLoaded never
+                // sends this secret back, so every SaveConfig arrives with it
+                // absent, and a plain overwrite would erase it on every save.
+                mqtt_password: self
+                    .mqtt_password
+                    .clone()
+                    .or_else(|| existing.homeassistant.mqtt_password.clone()),
             },
             wyoming: WyomingConfig {
                 enabled: self.wyoming_enabled,
@@ -900,14 +938,25 @@ impl EncoreConfig {
                     .or_else(|| existing.network.wifi_password.clone()),
                 ap_keep_alive: self.ap_keep_alive,
                 ap_ssid: self.ap_ssid.clone(),
-                ap_password: self.ap_password.clone(),
+                // Preserve on None, same reason as wifi_password/mqtt_password.
+                ap_password: self
+                    .ap_password
+                    .clone()
+                    .or_else(|| existing.network.ap_password.clone()),
             },
             vpn: VpnConfig {
                 enabled: self.vpn_enabled,
-                private_key: self.vpn_private_key.clone(),
+                // Both keys preserve on None, same reason as wifi_password.
+                private_key: self
+                    .vpn_private_key
+                    .clone()
+                    .or_else(|| existing.vpn.private_key.clone()),
                 address: self.vpn_address.clone(),
                 peer_public_key: self.vpn_peer_public_key.clone(),
-                peer_preshared_key: self.vpn_peer_preshared_key.clone(),
+                peer_preshared_key: self
+                    .vpn_peer_preshared_key
+                    .clone()
+                    .or_else(|| existing.vpn.peer_preshared_key.clone()),
                 peer_endpoint: self.vpn_peer_endpoint.clone(),
                 peer_allowed_ips: self.vpn_peer_allowed_ips.clone(),
                 persistent_keepalive: self.vpn_persistent_keepalive,
@@ -1612,6 +1661,7 @@ mod tests {
                 enabled: true,
                 discoverable: false,
                 mesh_enabled: false,
+                latency_target_ms: 0,
             },
             homeassistant: crate::config::HomeAssistantConfig {
                 enabled: true,
@@ -2087,6 +2137,84 @@ mod tests {
             merged.network.wifi_password.as_deref(),
             Some("existingpass")
         );
+    }
+
+    #[test]
+    fn to_file_merge_preserves_all_secrets_when_none() {
+        use crate::config::*;
+        // On-file config carries every kind of secret this device stores.
+        let existing = EncoreConfigFile {
+            network: NetworkConfig {
+                ap_password: Some("apsecret".into()),
+                ..Default::default()
+            },
+            homeassistant: HomeAssistantConfig {
+                mqtt_password: Some("mqttsecret".into()),
+                ..Default::default()
+            },
+            vpn: VpnConfig {
+                private_key: Some("vpnpriv".into()),
+                peer_preshared_key: Some("vpnpsk".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // A ConfigLoaded broadcast is redacted, so a client's SaveConfig
+        // round-trips every secret field as None (nothing was ever typed).
+        let mut proto = EncoreConfig::from_file(&EncoreConfigFile::default());
+        proto.ap_password = None;
+        proto.mqtt_password = None;
+        proto.vpn_private_key = None;
+        proto.vpn_peer_preshared_key = None;
+
+        let merged = proto.to_file_merge(&existing);
+        assert_eq!(merged.network.ap_password.as_deref(), Some("apsecret"));
+        assert_eq!(
+            merged.homeassistant.mqtt_password.as_deref(),
+            Some("mqttsecret")
+        );
+        assert_eq!(merged.vpn.private_key.as_deref(), Some("vpnpriv"));
+        assert_eq!(merged.vpn.peer_preshared_key.as_deref(), Some("vpnpsk"));
+    }
+
+    #[test]
+    fn redact_secrets_blanks_only_the_five_secret_fields() {
+        let cfg = EncoreConfigFile {
+            network: crate::config::NetworkConfig {
+                wifi_ssid: Some("MyNet".into()),
+                wifi_password: Some("wifisecret".into()),
+                ap_ssid: Some("MyAP".into()),
+                ap_password: Some("apsecret".into()),
+                ..Default::default()
+            },
+            homeassistant: crate::config::HomeAssistantConfig {
+                mqtt_host: Some("broker".into()),
+                mqtt_password: Some("mqttsecret".into()),
+                ..Default::default()
+            },
+            vpn: crate::config::VpnConfig {
+                private_key: Some("vpnpriv".into()),
+                peer_public_key: Some("vpnpub".into()),
+                peer_preshared_key: Some("vpnpsk".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut proto = EncoreConfig::from_file(&cfg);
+        proto.redact_secrets();
+
+        // The five secrets are gone.
+        assert_eq!(proto.wifi_password, None);
+        assert_eq!(proto.ap_password, None);
+        assert_eq!(proto.mqtt_password, None);
+        assert_eq!(proto.vpn_private_key, None);
+        assert_eq!(proto.vpn_peer_preshared_key, None);
+        // Non-secret identifiers survive — the dashboard still needs these to
+        // render the settings panels (e.g. show which network is configured).
+        assert_eq!(proto.wifi_ssid.as_deref(), Some("MyNet"));
+        assert_eq!(proto.ap_ssid.as_deref(), Some("MyAP"));
+        assert_eq!(proto.mqtt_host.as_deref(), Some("broker"));
+        assert_eq!(proto.vpn_peer_public_key.as_deref(), Some("vpnpub"));
     }
 
     #[test]

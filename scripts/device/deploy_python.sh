@@ -2,7 +2,7 @@
 # Deploy Python 3 + discovery scripts to the Invoke's /lsync partition.
 #
 # Run from WSL (Ubuntu):
-#   bash /mnt/g/HKInvoke/scripts/device/deploy_python.sh [DEVICE_IP]
+#   bash scripts/device/deploy_python.sh [DEVICE_IP]
 #
 # After deployment, SSH to device and run:
 #   /lsync/python/bin/python3 /lsync/scripts/mcu.py monitor

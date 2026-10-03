@@ -12,6 +12,20 @@ use std::collections::VecDeque;
 // guaranteed to agree, so the constant is the minimal correct choice today.
 const CHUNK_DUR_US: u64 = super::wire::AUDIO_CHUNK_DUR_US;
 
+/// Hard ceiling on buffered chunks, independent of the time-span depth cap. A
+/// peer flooding chunks that share (or tightly cluster) one `play_at_us` has a
+/// span of ~0, so `depth_us()` never trips the span cap; without a count cap the
+/// buffer grows unbounded (OOM) and each insert's O(n) dedup scan becomes O(n²).
+/// 4096 chunks is ~12s of audio at `CHUNK_DUR_US`, far above any real buffer
+/// depth, so legit playback never reaches it.
+const MAX_PENDING_CHUNKS: usize = 4096;
+
+/// Reject a chunk whose PCM is implausibly larger than a real one. A legit chunk
+/// is `AUDIO_CHUNK_SAMPLES`; the wire decoder will turn a ~1MB AudioChunk into a
+/// 262k-sample Vec, which a flood could use to amplify the buffer toward OOM.
+/// 8× the real size is generous headroom for any cross-version drift.
+const MAX_CHUNK_SAMPLES: usize = super::wire::AUDIO_CHUNK_SAMPLES * 8;
+
 /// A buffered audio chunk waiting to be played.
 struct TimedChunk {
     /// Sequence number assigned by the leader (monotonic per stream).
@@ -51,6 +65,18 @@ pub struct JitterBuffer {
     /// dropped by [`accept`], so a brief two-leaders window can never merge two
     /// streams into the buffer.
     current_leader: Option<u32>,
+    /// Playout delay past each chunk's `play_at` stamp (µs). This is the
+    /// group's alignment element: the leader holds its own DAC back by
+    /// lead + backlog-target, so a follower must play `play_at + backlog-target`
+    /// to land on the same wall-clock instant. Holding the delay HERE — chunks
+    /// wait in this buffer, which is also the burst armor — makes sync
+    /// structural from the first chunk. (The old design expected the slot
+    /// regulator to accumulate the same delay as FIFO backlog by padding
+    /// frames, which could only crawl there at ~2 ms/s: streams started
+    /// ~150 ms apart, converged over minutes, and re-opened the gap on every
+    /// buffer dump — heard live as slow-heal desyncs plus constant
+    /// padding-churn crackle on the follower.)
+    playout_delay_us: u64,
 }
 
 impl JitterBuffer {
@@ -64,7 +90,14 @@ impl JitterBuffer {
             last_seq: None,
             last_emitted_play_at: None,
             current_leader: None,
+            playout_delay_us: 0,
         }
+    }
+
+    /// Set the playout delay (µs) applied past every chunk's `play_at`. Must
+    /// match the backlog-target half of the leader's local delay.
+    pub fn set_playout_delay_us(&mut self, us: u64) {
+        self.playout_delay_us = us;
     }
 
     /// Set the leader this follower is currently streaming (stable id, FNV of
@@ -92,6 +125,12 @@ impl JitterBuffer {
     /// has already passed the playout watermark (stale/late arrivals), so a lost
     /// or reordered packet never causes a permanent timing slip.
     pub fn insert(&mut self, seq: u32, play_at_us: u64, pcm: Vec<i32>) {
+        // Reject an implausibly large chunk before it can bloat the buffer (the
+        // wire decoder does not bound PCM length against frame_count).
+        if pcm.len() > MAX_CHUNK_SAMPLES {
+            return;
+        }
+
         // Reject stale chunks whose slot has already played out.
         if let Some(watermark) = self.played_through_us {
             if play_at_us <= watermark {
@@ -132,14 +171,34 @@ impl JitterBuffer {
     /// underruns are covered but an outage re-anchors instead of ballooning. A
     /// fixed floor keeps a small fill working even when the target depth is tiny
     /// or zero (e.g. an unconfigured buffer).
+    /// The depth a healthy buffer actually carries: the configured jitter
+    /// target plus the playout delay's worth of deliberately-held chunks.
+    /// Every cap keys off this, or the hold-back would read as overrun.
+    fn effective_depth_target_us(&self) -> u64 {
+        self.target_depth_us + self.playout_delay_us
+    }
+
     fn max_gap_fill_chunks(&self) -> u64 {
         const GAP_FILL_TARGET_MULTIPLE: u64 = 4;
         const GAP_FILL_FLOOR_CHUNKS: u64 = 32; // ~320ms at 10ms/chunk
         let from_target = self
-            .target_depth_us
+            .effective_depth_target_us()
             .saturating_mul(GAP_FILL_TARGET_MULTIPLE)
             / CHUNK_DUR_US;
         from_target.max(GAP_FILL_FLOOR_CHUNKS)
+    }
+
+    /// Hard ceiling on the buffered span (oldest..newest play_at). The span cap
+    /// holds a legit buffer at ~2× the target depth, so anything wildly beyond
+    /// that is a far-future outlier (a crafted or buggy chunk). Kept comfortably
+    /// above the span cap's 2× so genuine overrun is never mistaken for an
+    /// outlier, with a generous absolute floor for tiny/zero targets.
+    fn max_buffer_span_us(&self) -> u64 {
+        const FLOOR_US: u64 = 30_000_000; // 30s
+        const TARGET_MULTIPLE: u64 = 8; // must exceed the span cap's 2×
+        self.effective_depth_target_us()
+            .saturating_mul(TARGET_MULTIPLE)
+            .max(FLOOR_US)
     }
 
     /// Cap pending audio at ~2× the target depth. On overrun the leader is
@@ -149,30 +208,81 @@ impl JitterBuffer {
     /// time-compression — so it cannot wobble a steady stream. `play_at_us` on
     /// the kept chunks is untouched, so playback still lands on the leader's grid.
     fn enforce_depth_cap(&mut self) {
-        let cap = self.target_depth_us.saturating_mul(2);
-        if cap == 0 || self.depth_us() <= cap {
-            return;
-        }
-        // Discard the oldest chunks until we are back at or below the target.
-        while self.depth_us() > self.target_depth_us && self.chunks.len() > 1 {
-            if let Some(dropped) = self.chunks.pop_front() {
-                // Mark the discarded slot as played so a late retransmit for it
-                // can never be re-inserted behind the new front.
-                self.note_played_through(dropped.play_at_us);
+        // Drop far-future back-outliers FIRST. A chunk (or a small cluster) whose
+        // play_at sits absurdly beyond the rest — e.g. a crafted or buggy
+        // AudioChunk with play_at = u64::MAX — would otherwise inflate depth_us()
+        // so the span cap below front-drops every real chunk (marking each as
+        // played), permanently wedging the follower to silence for the session.
+        // Drop from the back while the newest chunk is more than max_buffer_span_us
+        // beyond the oldest. These never played, so do NOT advance the watermark
+        // (that would stale-reject every future real chunk). A legit buffer spans
+        // at most ~2× the target depth, far under this bound, so real overrun is
+        // never mistaken for an outlier.
+        let max_span = self.max_buffer_span_us();
+        while self.chunks.len() >= 2 {
+            let front = self.chunks.front().unwrap().play_at_us;
+            let back = self.chunks.back().unwrap().play_at_us;
+            if back.saturating_sub(front) > max_span {
+                self.chunks.pop_back();
+            } else {
+                break;
             }
         }
+
+        let mut trimmed = false;
+
+        // Hard count cap (see MAX_PENDING_CHUNKS): the span cap below keys off
+        // depth_us(), which a same-/tight-play_at flood (span ~0) slips past.
+        // Drop the oldest past the cap; note_played_through advances the
+        // watermark, so the flood's remaining same-slot chunks are then
+        // stale-rejected at the top of insert (O(1)) and the buffer stays bounded.
+        while self.chunks.len() > MAX_PENDING_CHUNKS {
+            match self.chunks.pop_front() {
+                Some(dropped) => {
+                    self.note_played_through(dropped.play_at_us);
+                    trimmed = true;
+                }
+                None => break,
+            }
+        }
+
+        // Span-based cap: the leader is running ahead of us faster than playback
+        // can drain (or a burst arrived), so drop the *oldest* whole chunks until
+        // the buffer is back down to the target depth. A one-time jump forward —
+        // never per-frame time-compression — so it cannot wobble a steady stream.
+        let effective_target = self.effective_depth_target_us();
+        let cap = effective_target.saturating_mul(2);
+        if cap != 0 && self.depth_us() > cap {
+            while self.depth_us() > effective_target && self.chunks.len() > 1 {
+                if let Some(dropped) = self.chunks.pop_front() {
+                    // Mark the discarded slot as played so a late retransmit for
+                    // it can never be re-inserted behind the new front.
+                    self.note_played_through(dropped.play_at_us);
+                    trimmed = true;
+                }
+            }
+        }
+
         // After a forward jump the previously-emitted watermark is meaningless;
         // clearing it suppresses a spurious giant silence-fill before the new
         // front chunk (which is exactly what we just discarded our way past).
-        self.last_emitted_play_at = None;
+        if trimmed {
+            self.last_emitted_play_at = None;
+        }
     }
 
-    /// Drain all chunks whose play_at time has arrived (in local clock).
-    /// Converts the local deadline into leader-clock time and delegates to
+    /// Drain all chunks due for playout (in local clock). Converts the local
+    /// deadline into leader-clock time, shifts it back by the playout delay
+    /// (a chunk is due at `play_at + playout_delay`), and delegates to
     /// [`drain_due`], so both entry points share one playback path.
+    ///
+    /// Uses the clock's *stable* mapping: the live offset estimate can swing
+    /// by whole seconds while sync probes fight radio contention, and release
+    /// timing must not follow it (that read as play-then-desync on real
+    /// hardware). The last converged lock, skew-extrapolated, drives playout.
     pub fn drain_ready(&mut self, local_now_us: u64, clock: &ClockSync) -> Vec<i32> {
-        let leader_now_us = clock.local_to_remote(local_now_us);
-        self.drain_due(leader_now_us)
+        let leader_now_us = clock.local_to_remote_stable(local_now_us);
+        self.drain_due(leader_now_us.saturating_sub(self.playout_delay_us))
     }
 
     /// Drain all chunks whose `play_at_us` is at or before `leader_now_us`
@@ -563,6 +673,42 @@ mod tests {
         jb.drain_ready(u64::MAX, &clock)
     }
 
+    // ── playout delay (the group alignment element) ──
+
+    #[test]
+    fn playout_delay_holds_chunks_past_play_at() {
+        let mut jb = JitterBuffer::new(35, ChannelAssignment::Stereo);
+        jb.set_playout_delay_us(150_000);
+        let mut clock = ClockSync::new();
+        clock.process_response(0, 0, 0, 0); // identity: remote == local
+        jb.insert(1, 1_000, frames(144, 7));
+
+        // At play_at the chunk is NOT yet due — the leader's own DAC plays it
+        // backlog-target later, and we must land on the same instant.
+        assert!(jb.drain_ready(1_000, &clock).is_empty());
+        assert!(jb.drain_ready(140_000, &clock).is_empty());
+        // Due exactly one playout delay past the stamp.
+        let out = jb.drain_ready(151_100, &clock);
+        assert_eq!(out.len(), 144 * 2, "chunk must release at play_at + delay");
+    }
+
+    #[test]
+    fn playout_delay_does_not_trip_depth_caps() {
+        // ~185ms of deliberately-held chunks must read as healthy depth, not
+        // overrun: the effective target includes the playout delay.
+        let mut jb = JitterBuffer::new(35, ChannelAssignment::Stereo);
+        jb.set_playout_delay_us(150_000);
+        let n = (185_000 / CHUNK_DUR_US) as u32; // ~61 chunks
+        for i in 0..n {
+            jb.insert(i, 1_000 + i as u64 * CHUNK_DUR_US, frames(144, 5));
+        }
+        assert_eq!(
+            jb.chunks.len(),
+            n as usize,
+            "held chunks must not be front-dropped as overrun"
+        );
+    }
+
     #[test]
     fn insert_and_drain_in_order() {
         let mut jb = JitterBuffer::new(80, ChannelAssignment::Stereo);
@@ -798,6 +944,55 @@ mod tests {
         );
         // The post-gap real chunk must still land (no loss): its data is the tail.
         assert!(out[out.len() - 480 * 2..].iter().all(|&s| s == 3));
+    }
+
+    #[test]
+    fn same_play_at_flood_stays_bounded() {
+        // A peer flooding chunks with distinct seqs but one shared FUTURE
+        // play_at (span ~0) slips past the span-based cap. The count cap must
+        // still bound the buffer instead of letting it grow toward OOM.
+        let mut jb = JitterBuffer::new(50, ChannelAssignment::Stereo);
+        jb.set_current_leader(1);
+        for seq in 0..(MAX_PENDING_CHUNKS as u32 + 5_000) {
+            jb.accept(1, seq, 1_000_000, frames(144, 1));
+        }
+        assert!(
+            jb.pending_chunks() <= MAX_PENDING_CHUNKS,
+            "buffer exceeded the count cap: {}",
+            jb.pending_chunks()
+        );
+    }
+
+    #[test]
+    fn oversized_chunk_is_rejected() {
+        let mut jb = JitterBuffer::new(50, ChannelAssignment::Stereo);
+        jb.set_current_leader(1);
+        jb.accept(1, 0, 1_000_000, vec![0i32; MAX_CHUNK_SAMPLES + 1]);
+        assert_eq!(
+            jb.pending_chunks(),
+            0,
+            "an implausibly large chunk must be dropped at the door"
+        );
+        // A legit-sized chunk is still accepted.
+        jb.accept(1, 1, 1_000_000, frames(144, 1));
+        assert_eq!(jb.pending_chunks(), 1);
+    }
+
+    #[test]
+    fn far_future_poison_chunk_does_not_wedge() {
+        // A single crafted chunk at play_at = u64::MAX must not anchor the span
+        // and make the span cap evict every real chunk (permanent silence for
+        // the session). The far-future back-outlier drop discards it.
+        let mut jb = JitterBuffer::new(50, ChannelAssignment::Stereo);
+        jb.set_current_leader(1);
+        jb.accept(1, 0, u64::MAX, frames(144, 1)); // poison arrives first
+        let d = CHUNK_DUR_US;
+        let mut delivered = 0;
+        for i in 1..200u32 {
+            jb.accept(1, i, i as u64 * d, frames(144, 1));
+            delivered += jb.drain_due(i as u64 * d + d).len();
+        }
+        assert!(delivered > 0, "far-future poison wedged the buffer to silence");
     }
 
     #[test]

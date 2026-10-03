@@ -1,5 +1,5 @@
---- /home/scott/HKHacking/workspace/source/kernel/Invoke-kernel/drivers/usb/gadget/f_rndis.c	2021-03-09 03:17:26.000000000 -0500
-+++ /mnt/g/HKInvoke/vendor/kernel/drivers/usb/gadget/f_rndis.c	2026-06-16 16:51:21.237622100 -0400
+--- a/drivers/usb/gadget/f_rndis.c
++++ b/drivers/usb/gadget/f_rndis.c
 @@ -114,9 +114,11 @@
  	/* .bInterfaceNumber = DYNAMIC */
  	/* status endpoint is optional; this could be patched later */

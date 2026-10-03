@@ -5,7 +5,7 @@ set -euo pipefail
 
 DEVICE_IP="${1:-$ENCORE_DEVICE_IP}"
 SSH="sshpass -p $ENCORE_SSH_PASS ssh $ENCORE_SSH_OPTS root@$DEVICE_IP"
-SCRIPTS="/mnt/g/HKInvoke/scripts/device"
+SCRIPTS="$(cd "$(dirname "$0")" && pwd)"
 
 $SSH "mkdir -p /lsync/scripts"
 

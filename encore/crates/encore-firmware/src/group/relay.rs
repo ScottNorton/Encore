@@ -3,8 +3,7 @@
 //!
 //! INACTIVE in v1: the leader never computes or sends a relay tree. The
 //! receive-side handler and the wire codec exist, but there is no producer
-//! driving them in production. See
-//! docs/superpowers/specs/2026-06-17-group-sync-hardening-design.md.
+//! driving them in production.
 
 use std::collections::HashMap;
 

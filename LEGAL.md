@@ -76,8 +76,8 @@ repository.
 
 ## Project License and Contributions
 
-Encore is released under the [GNU General Public License v3.0](LICENSE). Documentation in
-`docs/` is licensed under
+Encore is released under the [GNU General Public License](LICENSE), version 3 or (at your
+option) any later version. Documentation in `docs/` is licensed under
 [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
 
 - Contributors retain copyright over their contributions and license them under GPL-3.0 by
@@ -103,29 +103,68 @@ unmodified functional configuration data from the stock device; see the
 [README in that directory](rootfs/usr/share/factory/misc_config/README.md) for provenance
 and contact information.
 
+## GPL Components and Source Availability
+
+Encore's own code is GPL-3.0-or-later, and its source is this repository. The repository
+also carries one set of compiled files that are not Encore's own code:
+
+| Files | License | What they are |
+|-------|---------|---------------|
+| `rootfs/usr/lib/usbgadget/udc-core.ko`, `mv_udc.ko`, `libcomposite.ko`, `g_ether.ko` | GPL-2.0 (Linux kernel) | The USB network gadget modules, built from the Invoke's vendor kernel with patches from this repository |
+
+**Source for the USB gadget modules.**
+
+1. The kernel tree: the Linux 3.8.13 source for the Invoke that Harman published under the
+   GPL. The Internet Archive keeps a copy at <https://archive.org/details/invoke-kernel>
+   (`Invoke-kernel.tar`, SHA-1 `0ebb18b574b83f5bf153b0a9355aad74c196ff0a`).
+2. The changes made to it: the patch files in
+   [`scripts/device/usb-gadget-patches/`](scripts/device/usb-gadget-patches/), which change
+   `composite.c`, `ether.c`, `f_rndis.c`, `mv_udc_core.c`, and `u_ether.c`.
+3. The build recipe:
+   [`scripts/device/build_usb_gadget_modules.sh`](scripts/device/build_usb_gadget_modules.sh)
+   sets the kernel options (the gadget drivers as modules) and builds with the Linaro GCC
+   4.9.4 cross compiler. The
+   [build guide](docs/build-guide.md#building-the-usb-gadget-kernel-modules) explains how to
+   run it.
+
+**Written offer.** If you received these modules from this repository and want the
+corresponding source in another form, for example the patched tree on its own, open an
+issue and it will be provided. This offer is valid for at least three years from the date
+the modules were last published here. A short copy of this notice ships next to the modules
+as `SOURCE.txt`, so it is also inside firmware images you build.
+
+A firmware image you build yourself also contains the vendor's stock kernel and userland,
+taken from your own copy of the vendor image. This project does not distribute those. If you
+share a built image, you are distributing them yourself, including their GPL source
+obligations.
+
 ## Third-Party Software
 
 Encore incorporates or depends on the following open-source projects:
 
 | Project | License | Purpose |
 |---------|---------|---------|
-| librespot | MIT | Spotify Connect protocol implementation |
-| Tokio | MIT | Asynchronous runtime |
-| Axum | MIT | HTTP/WebSocket server |
-| nix | MIT | Unix system call bindings (ALSA PCM, BT sockets) |
-| boringtun | BSD-3-Clause | WireGuard VPN implementation |
-| rumqttc | Apache-2.0 | MQTT client |
-| rkyv | MIT | Zero-copy serialization |
-| rust-embed | MIT | Static asset embedding |
-| wasm-bindgen | MIT / Apache-2.0 | WebAssembly bindings |
-| Zig | MIT | Cross-compilation toolchain |
-| tracing | MIT | Structured logging |
-| libfreeaptx | LGPL-2.1-or-later | aptX / aptX HD Bluetooth codec decoder (vendored, statically linked) |
-| libsbc | Apache-2.0 | SBC Bluetooth codec decoder (vendored, statically linked) |
+| [librespot](https://github.com/librespot-org/librespot) | MIT | Spotify Connect protocol implementation |
+| [Tokio](https://github.com/tokio-rs/tokio) | MIT | Asynchronous runtime |
+| [Axum](https://github.com/tokio-rs/axum) | MIT | HTTP/WebSocket server |
+| [nix](https://github.com/nix-rust/nix) | MIT | Unix system call bindings (ALSA PCM, BT sockets) |
+| [boringtun](https://github.com/cloudflare/boringtun) | BSD-3-Clause | WireGuard VPN implementation |
+| [rumqttc](https://github.com/bytebeamio/rumqtt) | Apache-2.0 | MQTT client |
+| [rkyv](https://github.com/rkyv/rkyv) | MIT | Zero-copy serialization |
+| [rust-embed](https://crates.io/crates/rust-embed) | MIT | Static asset embedding |
+| [wasm-bindgen](https://github.com/wasm-bindgen/wasm-bindgen) | MIT / Apache-2.0 | WebAssembly bindings |
+| [Zig](https://github.com/ziglang/zig) | MIT | Cross-compilation toolchain |
+| [tracing](https://github.com/tokio-rs/tracing) | MIT | Structured logging |
+| [libfreeaptx](https://github.com/regularhunter/libfreeaptx) | LGPL-2.1-or-later | aptX / aptX HD Bluetooth codec decoder (vendored, statically linked) |
+| [libsbc](https://github.com/google/libsbc) | Apache-2.0 | SBC Bluetooth codec decoder (vendored, statically linked) |
+| [Inter](https://github.com/rsms/inter) (Regular, Medium) | SIL OFL 1.1 | Dashboard font, embedded in the firmware and served with the dashboard. License text: `encore/web/fonts/OFL.txt` |
 
 The complete Rust dependency list with pinned versions is in `encore/Cargo.toml`. Vendored
 C sources for the Bluetooth codecs are in `encore/crates/encore-firmware/csrc/` with their
-upstream license files preserved alongside the code.
+upstream license files preserved alongside the code. Two librespot crates are kept as local
+copies with small patches, `encore/vendor/librespot-audio` and
+`encore/crates/vendored/librespot-discovery`. They are MIT licensed, like the rest of
+librespot, and each keeps librespot's license file next to the code.
 
 ## Contact
 

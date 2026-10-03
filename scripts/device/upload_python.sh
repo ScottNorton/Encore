@@ -1,13 +1,13 @@
 #!/bin/bash
 # Upload pre-built minimal Python + scripts to the Invoke.
-# Run in WSL: bash /mnt/g/HKInvoke/scripts/device/upload_python.sh [IP]
+# Run in WSL: bash scripts/device/upload_python.sh [IP]
 set -euo pipefail
 . "$(dirname "$0")/../common.sh"
 
 DEVICE_IP="${1:-$ENCORE_DEVICE_IP}"
 SSH="sshpass -p $ENCORE_SSH_PASS ssh $ENCORE_SSH_OPTS root@$DEVICE_IP"
-BUILD="/home/scott/python-armv7-build"
-SCRIPTS="/mnt/g/HKInvoke/scripts/device"
+BUILD="${PYTHON_BUILD_DIR:-$HOME/python-armv7-build}"
+SCRIPTS="$(cd "$(dirname "$0")" && pwd)"
 TAR="$BUILD/python-minimal.tar.gz"
 
 if [ ! -f "$TAR" ]; then

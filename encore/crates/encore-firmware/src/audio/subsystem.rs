@@ -755,8 +755,11 @@ impl Subsystem for AudioSubsystem {
         power_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut idle_elapsed_secs = 0u32;
 
-        // PCM period rate: 48000Hz / 512 frames = ~94 periods/sec
-        let periods_per_sec = 94u32;
+        // PCM period rate derived from the actual (kernel-coerced) period, not a
+        // stale constant. The period is 256 frames (DMA-capped), so ~187/sec; the
+        // old hardcoded 94 assumed 512-frame periods and made silence_secs advance
+        // ~2x too fast, firing the Active->Idle timeout at half its configured length.
+        let periods_per_sec = (48000 / period_size).max(1);
 
         // Command loop
         loop {
@@ -1369,6 +1372,12 @@ fn mixer_thread(
     let mut mix_buf = vec![0i32; samples_per_period];
     let mut logged_first_audio = false;
 
+    // While this speaker leads a group stream, its own DAC output is delayed to
+    // land on the followers' playout instant (lead + backlog target); the tap
+    // and meters stay live. Passthrough whenever the tap is inactive.
+    let mut leader_delay =
+        crate::audio::mixer::LeaderDelay::new(crate::group::leader_local_delay_samples());
+
     // Software DRC processor
     let mut drc = DrcProcessor::new();
     let mut drc_sync_counter = 0u32;
@@ -1377,10 +1386,10 @@ fn mixer_thread(
     let mut eq = encore_common::dsp::StereoEq::new(48000.0);
     let mut eq_generation = 0u64;
 
-    // VU meter state: accumulate over ~100ms (~10 periods at 512 frames/period)
-    // then send a levels update. 48000 / 512 ≈ 94 periods/sec → every 9 periods ≈ 10Hz.
-    // Send levels every ~47 periods ≈ 2Hz (was 9 ≈ 10Hz, which flooded
-    // the WebSocket and caused WiFi backpressure → tokio starvation).
+    // VU meter state: accumulate then send a levels update every LEVELS_INTERVAL
+    // periods. The period is 256 frames, so 48000 / 256 ≈ 187 periods/sec and 47
+    // periods ≈ 4Hz — kept low on purpose (a higher send rate flooded the
+    // WebSocket and caused WiFi backpressure → tokio starvation).
     const LEVELS_INTERVAL: u32 = 47;
     let mut levels_counter = 0u32;
     let mut sum_sq_l = 0.0f64;
@@ -1391,13 +1400,13 @@ fn mixer_thread(
 
     // Spectrum analyzer state. We keep a ring of the most-recent FFT_N mono samples
     // and transform a fresh window every FFT_INTERVAL periods. A 2048-sample window
-    // buys real low-frequency resolution (bin_hz = 48000/2048 ≈ 23.4 Hz vs 93.75 Hz
-    // for a single 512-period). The send rate stays modest on purpose: high WS
+    // buys real low-frequency resolution (bin_hz = 48000/2048 ≈ 23.4 Hz vs 187.5 Hz
+    // for a single 256-period). The send rate stays modest on purpose: high WS
     // message rates cause WiFi backpressure (see LEVELS_INTERVAL above), so the
-    // dashboard smooths/interpolates this ~8 Hz spectrum at display framerate rather
+    // dashboard smooths/interpolates this spectrum at display framerate rather
     // than us flooding the socket. FFT_N must match the rfft_*() call below.
     const FFT_N: usize = 2048;
-    const FFT_INTERVAL: u32 = 12; // ~94 periods/s / 12 ≈ 8 spectra/s
+    const FFT_INTERVAL: u32 = 12; // ~187 periods/s / 12 ≈ 16 spectra/s
     let mut fft_ring = vec![0.0f32; FFT_N]; // heap ring buffer
     let mut fft_mags = vec![0.0f32; FFT_N / 2]; // heap magnitude scratch
     let mut fft_work = [0.0f32; FFT_N]; // 8 KB stack; microfft needs a fixed array
@@ -1460,7 +1469,13 @@ fn mixer_thread(
         // EQ/DRC here would double-process it and desync it from the leader.
         let follower_playthrough = network_in
             .as_ref()
-            .map_or(false, |s| s.is_active() && s.available() >= samples_per_period);
+            .is_some_and(|s| s.is_active() && s.available() >= samples_per_period);
+
+        // Leading a group stream: local output goes through the leader delay so
+        // this speaker and its followers play in unison.
+        let leading = tap_active
+            .as_ref()
+            .is_some_and(|a| a.load(Ordering::Relaxed));
 
         // Sum all active sources
         let mut any_active = false;
@@ -1609,6 +1624,10 @@ fn mixer_thread(
                 });
             }
 
+            // While leading, hold the local output back to the followers'
+            // playout instant (tap and meters above already saw the live mix).
+            leader_delay.process(&mut mix_buf, leading);
+
             // Write i32 samples directly as S32_LE to PCM
             if let Some(ref mut p) = pcm {
                 if let Err(e) = p.write_frames(&mix_buf) {
@@ -1637,6 +1656,10 @@ fn mixer_thread(
             for s in mix_buf.iter_mut() {
                 *s = 0;
             }
+            // A leading stream that goes momentarily silent still owes the
+            // delayed tail: push the silence through the delay so the ring
+            // finishes playing out instead of freezing stale audio.
+            leader_delay.process(&mut mix_buf, leading);
             if let Some(ref mut p) = pcm {
                 if let Err(e) = p.write_frames(&mix_buf) {
                     warn!("Mixer: PCM silence write error: {}", e);

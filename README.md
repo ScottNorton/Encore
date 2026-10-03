@@ -225,7 +225,7 @@ assignments, and audio signal path.
 ```bash
 make download      # fetch the stock firmware image (required base, ~69 MB)
 make encore        # WASM dashboard + ARM binary
-make firmware      # full flashable image (Linux/WSL)
+make firmware      # full flashable image (Linux/WSL); also creates a TLS key pair in build/tls/
 make app           # optional: desktop app installer
 ```
 
@@ -328,9 +328,15 @@ disclosures, and third-party attribution.
 
 ## License
 
-[GPL-3.0](LICENSE) for code. [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)
-for documentation in `docs/`.
+Copyright (C) 2026 Scott Norton and contributors.
 
-Community-authored code in this repository is released under the GNU General Public License
-v3.0. Stock firmware components (kernel, bootloader, wireless drivers) remain the property
-of their respective copyright holders and are not included in this repository.
+Encore's code is free software: you can redistribute it and modify it under the terms of the
+[GNU General Public License](LICENSE) as published by the Free Software Foundation, either
+version 3 of the License, or (at your option) any later version. It is distributed in the hope
+that it will be useful, but without any warranty. The documentation in `docs/` is licensed
+under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
+
+The stock firmware itself (the kernel image, the bootloader, and the vendor's userland) is not
+in this repository. A few pieces from other projects are, each under its own license: the
+Bluetooth codecs, the dashboard font, the USB gadget kernel modules, and some Marvell WLAN
+configuration files. [LEGAL.md](LEGAL.md) lists them and says where their source is.

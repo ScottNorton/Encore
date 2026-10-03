@@ -202,16 +202,30 @@ fn fetch_log_history() {
             }
         };
         let resp: web_sys::Response = resp_val.unchecked_into();
+        // Body-read failures (a WiFi drop mid-transfer rejects the text()
+        // promise) must render the retryable error card like the other error
+        // paths — a bare `return` here left the viewer stuck on the "Waiting for
+        // log entries…" placeholder with no retry (HISTORY_LOADED is latched, so
+        // re-navigating never re-fetches).
         let text_val = match resp.text() {
             Ok(promise) => match JsFuture::from(promise).await {
                 Ok(v) => v,
-                Err(_) => return,
+                Err(_) => {
+                    show_history_error();
+                    return;
+                }
             },
-            Err(_) => return,
+            Err(_) => {
+                show_history_error();
+                return;
+            }
         };
         let text = match text_val.as_string() {
             Some(s) => s,
-            None => return,
+            None => {
+                show_history_error();
+                return;
+            }
         };
 
         if let Ok(entries) = serde_json::from_str::<Vec<encore_common::protocol::LogEntry>>(&text) {

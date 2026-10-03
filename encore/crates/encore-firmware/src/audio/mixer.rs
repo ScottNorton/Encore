@@ -165,6 +165,55 @@ impl MixerSlot {
     }
 }
 
+/// Delays the leader's local PCM output while it streams to group followers.
+///
+/// Followers deliberately play a leader chunk `lead + backlog-target` after the
+/// leader's mixer produced it (the play-at lead plus the regulated network_slot
+/// backlog). Without a matching local delay the leader's own DAC runs that far
+/// ahead of every follower — a constant audible offset between speakers in the
+/// same room. This ring holds exactly that much audio on the leader's write
+/// path (tap and VU stay live), so all group members play a sample at the same
+/// wall-clock time (Snapcast model).
+///
+/// Single-threaded (mixer thread only). While inactive it is a no-op; on
+/// deactivation the tail is dropped (the stream is over — followers drop their
+/// buffered tail the same way).
+pub struct LeaderDelay {
+    q: std::collections::VecDeque<i32>,
+    delay_samples: usize,
+}
+
+impl LeaderDelay {
+    pub fn new(delay_samples: usize) -> Self {
+        Self {
+            q: std::collections::VecDeque::with_capacity(delay_samples + 1024),
+            delay_samples,
+        }
+    }
+
+    /// Run one mixer period through the delay. When `active`, `buf` is pushed
+    /// into the ring and replaced with audio from `delay_samples` ago (silence
+    /// until the ring has filled — the leader's deliberate startup hold-back).
+    /// When inactive, `buf` passes through untouched and any tail is dropped.
+    pub fn process(&mut self, buf: &mut [i32], active: bool) {
+        if !active {
+            if !self.q.is_empty() {
+                self.q.clear();
+            }
+            return;
+        }
+        self.q.extend(buf.iter().copied());
+        if self.q.len() >= self.delay_samples + buf.len() {
+            for s in buf.iter_mut() {
+                // Ring length checked above; pop cannot fail.
+                *s = self.q.pop_front().unwrap_or(0);
+            }
+        } else {
+            buf.fill(0);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -338,6 +387,49 @@ mod tests {
         let mut out = [100i32, 200, 300];
         assert_eq!(slot.read_add(&mut out), 0);
         assert_eq!(out, [100, 200, 300]); // unchanged
+    }
+
+    // ── leader delay ──
+
+    #[test]
+    fn leader_delay_outputs_silence_then_exactly_delayed_audio() {
+        // Delay of 8 samples, periods of 4.
+        let mut d = LeaderDelay::new(8);
+        let mut p1 = [1i32, 2, 3, 4];
+        d.process(&mut p1, true);
+        assert_eq!(p1, [0, 0, 0, 0], "first period: ring still filling");
+        let mut p2 = [5i32, 6, 7, 8];
+        d.process(&mut p2, true);
+        assert_eq!(p2, [0, 0, 0, 0], "second period: ring at delay, not delay+period");
+        let mut p3 = [9i32, 10, 11, 12];
+        d.process(&mut p3, true);
+        assert_eq!(p3, [1, 2, 3, 4], "third period: audio from exactly 8 samples ago");
+        let mut p4 = [13i32, 14, 15, 16];
+        d.process(&mut p4, true);
+        assert_eq!(p4, [5, 6, 7, 8]);
+    }
+
+    #[test]
+    fn leader_delay_inactive_is_passthrough_and_drops_tail() {
+        let mut d = LeaderDelay::new(8);
+        let mut p = [1i32, 2, 3, 4];
+        d.process(&mut p, true);
+        // Stream ends: tail dropped, live audio passes through untouched.
+        let mut live = [7i32, 7, 7, 7];
+        d.process(&mut live, false);
+        assert_eq!(live, [7, 7, 7, 7]);
+        // Re-activation starts a fresh fill (silence again).
+        let mut p2 = [9i32, 9, 9, 9];
+        d.process(&mut p2, true);
+        assert_eq!(p2, [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn leader_delay_zero_is_passthrough_when_active() {
+        let mut d = LeaderDelay::new(0);
+        let mut p = [1i32, 2, 3, 4];
+        d.process(&mut p, true);
+        assert_eq!(p, [1, 2, 3, 4]);
     }
 
     #[test]

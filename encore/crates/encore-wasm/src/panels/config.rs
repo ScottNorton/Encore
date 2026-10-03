@@ -66,6 +66,7 @@ pub fn render(container: &web_sys::Element) {
         &[
             field_toggle("cfg-bt-en", "Enabled", cfg.bluetooth_enabled),
             field_toggle("cfg-bt-disc", "Discoverable", cfg.bluetooth_discoverable),
+            field_toggle("cfg-bt-mesh", "Mesh Mode", cfg.bluetooth_mesh_enabled),
         ],
     );
 
@@ -328,13 +329,7 @@ fn save_config() {
         }),
         bluetooth_enabled: get_checkbox("cfg-bt-en"),
         bluetooth_discoverable: get_checkbox("cfg-bt-disc"),
-        // Not in this form — preserve the live value so a config save can't clobber it.
-        bluetooth_mesh_enabled: crate::state::with(|s| {
-            s.config
-                .as_ref()
-                .map(|c| c.bluetooth_mesh_enabled)
-                .unwrap_or(false)
-        }),
+        bluetooth_mesh_enabled: get_checkbox("cfg-bt-mesh"),
         homeassistant_enabled: crate::state::with(|s| {
             s.config
                 .as_ref()

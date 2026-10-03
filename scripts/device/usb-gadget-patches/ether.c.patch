@@ -1,5 +1,5 @@
---- /home/scott/HKHacking/workspace/source/kernel/Invoke-kernel/drivers/usb/gadget/ether.c	2021-03-09 03:17:26.000000000 -0500
-+++ /mnt/g/HKInvoke/vendor/kernel/drivers/usb/gadget/ether.c	2026-06-16 16:51:31.010345000 -0400
+--- a/drivers/usb/gadget/ether.c
++++ b/drivers/usb/gadget/ether.c
 @@ -142,7 +142,10 @@
   * the non-RNDIS configuration.
   */

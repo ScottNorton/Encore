@@ -521,7 +521,15 @@ impl Dsp {
 
     /// Dump a range of pages. Returns concatenated responses.
     pub fn dump_memory_range(&mut self, start_page: u16, num_pages: u16) -> Result<Vec<u8>> {
+        // start_page/num_pages arrive from an unauthenticated /ws message. Clamp
+        // start_page against the real page count too: without it an out-of-range
+        // start (> DSP_MEMORY_PAGES) made `end` clamp below start_page, so
+        // `end - start_page` underflowed u16 into a ~133 MB allocation (OOM/abort).
+        let start_page = start_page.min(DSP_MEMORY_PAGES);
         let end = start_page.saturating_add(num_pages).min(DSP_MEMORY_PAGES);
+        if start_page >= end {
+            return Ok(Vec::new());
+        }
         info!("DSP: dumping pages 0x{:04X}..0x{:04X}", start_page, end - 1);
 
         let mut result = Vec::with_capacity((end - start_page) as usize * SPI_RX_SIZE);

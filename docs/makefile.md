@@ -14,6 +14,7 @@ Run `make` with no arguments to see the target list.
 | `make encore` | Any (Rust) | `wasm` | `build/encore` | WASM dashboard + ARM binary — the main firmware binary |
 | `make wasm` | Any (Rust) | — | `encore/web/pkg/` | WASM dashboard only (via `wasm-pack`) |
 | `make firmware` | Linux/WSL | `encore` | `build/firmware/83_IMAGE`, `build/firmware/rootfs.squashfs` | Full flashable firmware image (extracts stock, merges overlay, packages SquashFS) |
+| `make tls` | Any (openssl) | — | `build/tls/cert.pem`, `build/tls/key.pem` | Create the TLS fallback pair if it is not there yet. `make firmware` does this too; see [TLS fallback pair](build-guide.md#tls-fallback-pair) |
 
 `make encore` depends on `make wasm` — the WASM dashboard is always built first
 and embedded in the ARM binary at compile time via `rust-embed`.
@@ -48,7 +49,7 @@ building to prevent stale frontend content.
 | Target | Environment | Dependencies | Output | Description |
 |--------|-------------|-------------|--------|-------------|
 | `make download` | Linux/WSL | — | `firmware/83_IMAGE_stock` | Download the stock Harman firmware image (~69 MB) |
-| `make verify` | Any | — | — | Check for credential leaks and line-ending issues |
+| `make verify` | Any | — | — | Fail if the repository tracks a private key, key or certificate file, vendor PDF, firmware image, oversized file, or shell script with CRLF line endings. `make verify VERIFY_ARGS=--history` also checks every commit |
 
 ### Clean Targets
 

@@ -61,6 +61,10 @@ pub enum PacketType {
     RelayAssignment = 14,
     VolumeSync = 15,
     PlayPause = 16,
+    /// A peer's (WiFi TSF, local monotonic) clock anchor — lets group members
+    /// compute mutual offsets through the AP's shared hardware clock instead
+    /// of NTP-style exchanges (no network asymmetry term at all).
+    TsfMap = 17,
 }
 
 impl PacketType {
@@ -82,6 +86,7 @@ impl PacketType {
             14 => Some(Self::RelayAssignment),
             15 => Some(Self::VolumeSync),
             16 => Some(Self::PlayPause),
+            17 => Some(Self::TsfMap),
             _ => None,
         }
     }
@@ -126,6 +131,13 @@ pub enum GroupPacket {
         originate_us: u64,
         receive_us: u64,
         transmit_us: u64,
+    },
+    /// Sender's clock anchor on the AP's shared TSF counter: "my monotonic
+    /// clock read `mono_us` when the BSS TSF read `tsf_us`, within ±err_us".
+    TsfMap {
+        tsf_us: u64,
+        mono_us: u64,
+        err_us: u32,
     },
     LeaderClaim {
         source: String,
@@ -233,6 +245,17 @@ fn encode_typed(packet: &GroupPacket) -> (PacketType, Vec<u8>) {
             p.extend_from_slice(&receive_us.to_le_bytes());
             p.extend_from_slice(&transmit_us.to_le_bytes());
             (PacketType::ClockSyncResp, p)
+        }
+        GroupPacket::TsfMap {
+            tsf_us,
+            mono_us,
+            err_us,
+        } => {
+            let mut p = Vec::with_capacity(20);
+            p.extend_from_slice(&tsf_us.to_le_bytes());
+            p.extend_from_slice(&mono_us.to_le_bytes());
+            p.extend_from_slice(&err_us.to_le_bytes());
+            (PacketType::TsfMap, p)
         }
         GroupPacket::LeaderClaim {
             source,
@@ -432,6 +455,16 @@ pub fn decode_payload(ptype: PacketType, payload: &[u8]) -> io::Result<GroupPack
                 originate_us: u64::from_le_bytes(payload[0..8].try_into().unwrap()),
                 receive_us: u64::from_le_bytes(payload[8..16].try_into().unwrap()),
                 transmit_us: u64::from_le_bytes(payload[16..24].try_into().unwrap()),
+            })
+        }
+        PacketType::TsfMap => {
+            if payload.len() < 20 {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "short payload"));
+            }
+            Ok(GroupPacket::TsfMap {
+                tsf_us: u64::from_le_bytes(payload[0..8].try_into().unwrap()),
+                mono_us: u64::from_le_bytes(payload[8..16].try_into().unwrap()),
+                err_us: u32::from_le_bytes(payload[16..20].try_into().unwrap()),
             })
         }
         PacketType::LeaderClaim => {

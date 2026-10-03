@@ -92,46 +92,44 @@ async fn main() -> anyhow::Result<()> {
         web::log_layer::spawn_log_broadcaster(log_rx, ws_tx.clone());
 
         // Persistent file log to /lsync/encore/encore.log (survives watchdog reboot).
-        // Truncate on each start to avoid filling yaffs2 — the previous run's
-        // logs are the ones we lose, but a crash at the END of a run is what
-        // we need to capture, and this log captures it.
+        // RotatingWriter caps the active log and rotates to encore.log.prev, so a
+        // chatty run can never fill the ~123 MB /lsync partition (which once blocked
+        // OTA / crash-recovery staging). Combined footprint stays under 2x the cap.
         // Preserve the previous run's log (the one that may have crashed) as
         // encore.log.prev before starting a fresh log for this run.
         if let Err(e) = crashlog::rotate_log(std::path::Path::new("/lsync/encore/encore.log")) {
             eprintln!("Warning: could not rotate encore.log: {}", e);
         }
-        let file_layer = match std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open("/lsync/encore/encore.log")
-        {
-            Ok(file) => {
-                let writer = std::sync::Mutex::new(file);
-                Some(
-                    tracing_subscriber::fmt::layer()
-                        .with_timer(LocalTime)
-                        .with_ansi(false)
-                        .with_writer(writer)
-                        .with_filter(LevelFilter::INFO),
-                )
-            }
+        let file_layer = match crashlog::RotatingWriter::new(
+            std::path::PathBuf::from("/lsync/encore/encore.log"),
+            crashlog::LOG_MAX_BYTES,
+        ) {
+            Ok(writer) => Some(
+                tracing_subscriber::fmt::layer()
+                    .with_timer(LocalTime)
+                    .with_ansi(false)
+                    .with_writer(std::sync::Mutex::new(writer))
+                    .with_filter(LevelFilter::INFO),
+            ),
             Err(e) => {
                 eprintln!("Warning: could not open /lsync/encore/encore.log: {}", e);
                 None
             }
         };
 
-        // All layers filter to INFO+ so the registry sets the global max
-        // to INFO — TRACE/DEBUG events are never even created.  This is
+        // The file_layer is the single INFO sink. We deliberately do NOT add a
+        // stdout fmt layer: the supervisor redirects stdout/stderr to encore.log,
+        // but it opens that fd before we rotate at startup, so a stdout layer's
+        // events land in the (renamed) .prev inode and grow it without bound —
+        // exactly what filled /lsync. stderr (panics, eprintln warnings) still
+        // reaches the supervisor for a crash trail; the dashboard reads logs via
+        // the WS log_layer, not stdout.
+        //
+        // Both remaining layers filter to INFO+ so the registry sets the global
+        // max to INFO — TRACE/DEBUG events are never even created. This is
         // critical on the dual-core Cortex-A7: without this filter, tokio/
         // hyper/rustls TRACE events caused 100% CPU and a watchdog reboot.
         tracing_subscriber::registry()
-            .with(
-                tracing_subscriber::fmt::layer()
-                    .with_timer(LocalTime)
-                    .with_filter(LevelFilter::INFO),
-            )
             .with(log_layer.with_filter(LevelFilter::INFO))
             .with(file_layer)
             .init();
@@ -477,12 +475,16 @@ async fn main() -> anyhow::Result<()> {
         // ── Group (multi-speaker sync) ──
         let (group_cmd_tx, group_cmd_rx) = mpsc::channel::<group::GroupCmd>(32);
 
-        // Suspend channels: group → audio sources (true = suspend, false = resume)
-        let (spotify_suspend_tx, spotify_suspend_rx) = mpsc::channel::<bool>(1);
-        let (bt_suspend_tx, bt_suspend_rx) = mpsc::channel::<bool>(1);
-        let (wyoming_suspend_tx, wyoming_suspend_rx) = mpsc::channel::<bool>(1);
-        // Mesh name: group → BT (Some(group_name) when grouped+mesh, else None).
-        let (bt_name_tx, bt_name_rx) = mpsc::channel::<Option<String>>(8);
+        // Suspend channels: group → audio sources (true = suspend, false = resume).
+        // watch, not mpsc: the group signals the *latest* desired state and must
+        // never block on a source that isn't draining (idle Spotify / a busy
+        // Wyoming session) — a blocking send there would wedge the group loop.
+        let (spotify_suspend_tx, spotify_suspend_rx) = tokio::sync::watch::channel(false);
+        let (bt_suspend_tx, bt_suspend_rx) = tokio::sync::watch::channel(false);
+        let (wyoming_suspend_tx, wyoming_suspend_rx) = tokio::sync::watch::channel(false);
+        // Mesh signal: group → BT (advertised name + coordinator-only
+        // discoverability when meshed).
+        let (bt_name_tx, bt_name_rx) = mpsc::channel::<group::BtMeshSignal>(8);
 
         let group_vol_sync_rx: Option<mpsc::Receiver<u8>>;
         {
@@ -576,6 +578,7 @@ async fn main() -> anyhow::Result<()> {
                     Some(bt_cmd_rx),
                     Some(ws_tx.clone()),
                 );
+                bt_sub.set_latency_target_ms(cfg.bluetooth.latency_target_ms);
                 bt_sub.set_suspend_rx(bt_suspend_rx);
                 bt_sub.set_group_tx(group_cmd_tx.clone());
                 bt_sub.set_bt_name_rx(bt_name_rx);
@@ -718,6 +721,7 @@ async fn main() -> anyhow::Result<()> {
                 let audio_tx_ha = audio_cmd_tx.clone();
                 let led_tx_ha = led_tx.clone();
                 let spotify_tx_ha = spotify_cmd_tx.clone();
+                let group_tx_ha = group_cmd_tx.clone();
                 tokio::spawn(async move {
                     while let Some(msg) = ha_rx.recv().await {
                         use encore_common::protocol::ClientMsg;
@@ -737,6 +741,15 @@ async fn main() -> anyhow::Result<()> {
                             }
                             ClientMsg::SpotifyControl(action) => {
                                 let _ = spotify_tx_ha.try_send(action);
+                            }
+                            // The HA discovery advertises a Group Mode switch and a
+                            // Group Volume number; forward them like the WS router
+                            // does (they were silently dropped by the _ => {} arm).
+                            ClientMsg::SetGroupEnabled(enabled) => {
+                                let _ = group_tx_ha.try_send(group::GroupCmd::SetEnabled(enabled));
+                            }
+                            ClientMsg::SetGroupVolume(vol) => {
+                                let _ = group_tx_ha.try_send(group::GroupCmd::SetVolume(vol));
                             }
                             _ => {}
                         }
@@ -831,7 +844,12 @@ async fn main() -> anyhow::Result<()> {
                 let broadcast_config = |tx: &tokio::sync::broadcast::Sender<String>| {
                     let cfg_file = encore_common::config::EncoreConfigFile::load(config_path)
                         .unwrap_or_default();
-                    let proto = EncoreConfig::from_file(&cfg_file);
+                    let mut proto = EncoreConfig::from_file(&cfg_file);
+                    // /ws has no auth: never let a WiFi/AP/MQTT password or VPN
+                    // key leave the device in this broadcast. to_file_merge
+                    // preserves the stored value on the next save, so this
+                    // can't clobber anything.
+                    proto.redact_secrets();
                     let msg = ServerMsg::ConfigLoaded(Box::new(proto));
                     if let Ok(json) = serde_json::to_string(&msg) {
                         let _ = tx.send(json);
@@ -883,6 +901,8 @@ async fn main() -> anyhow::Result<()> {
                                 encore_common::config::EncoreConfigFile::load(config_path)
                                     .unwrap_or_default();
                             let old_spotify_enabled = existing.spotify.enabled;
+                            let old_mesh_enabled = existing.bluetooth.mesh_enabled;
+                            let mesh_enabled = config.bluetooth_mesh_enabled;
                             let cfg = config.to_file_merge(&existing);
                             if let Err(e) = cfg.save(config_path) {
                                 warn!("ClientMsg: config save failed: {}", e);
@@ -901,6 +921,14 @@ async fn main() -> anyhow::Result<()> {
                                         encore_common::protocol::SpotifyAction::SetEnabled {
                                             enabled: spotify_enabled,
                                         },
+                                    );
+                                }
+                                // Apply a BT mesh-mode change live (the group
+                                // re-broadcasts to BT), so it takes effect without
+                                // a reboot.
+                                if mesh_enabled != old_mesh_enabled {
+                                    let _ = group_tx.try_send(
+                                        group::GroupCmd::SetMeshEnabled(mesh_enabled),
                                     );
                                 }
                             }
@@ -1059,7 +1087,15 @@ async fn main() -> anyhow::Result<()> {
                                 }
                             });
                         }
-                        ClientMsg::DspDumpToFile { path } => {
+                        ClientMsg::DspDumpToFile { path: _ } => {
+                            // Trust boundary: /ws is unauthenticated and this runs
+                            // as root, so a client-supplied path would be an
+                            // arbitrary create/truncate primitive (config, WiFi
+                            // creds, OTA staging). No legitimate caller needs a
+                            // custom path — this is a diagnostic dump — so ignore
+                            // the requested path and write a fixed file on the
+                            // non-persistent /run tmpfs.
+                            let path = "/run/dsp_dump.bin".to_string();
                             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                             let _ = audio_tx.try_send(audio::subsystem::AudioCmd::DspDumpToFile {
                                 path: path.clone(),

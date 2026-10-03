@@ -5,7 +5,7 @@
 //! The kernel's bt8xxx.ko provides these interfaces — no BlueZ daemon needed.
 
 use std::io;
-use std::os::fd::{FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
 // ── Bluetooth socket constants ──
 
@@ -127,6 +127,29 @@ pub fn l2cap_bind(fd: RawFd, psm: u16) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+/// Connect an L2CAP SEQPACKET socket to `bdaddr` (kernel byte order) on `psm`.
+///
+/// Blocks through paging + link setup — on a bonded peer the kernel brings up
+/// the ACL with the stored key, so this is how the speaker initiates a session
+/// (e.g. sink-initiated AVDTP) rather than waiting to be connected to. Run it
+/// from a dedicated thread; paging an absent device can take ~5–10 s.
+pub fn l2cap_connect(bdaddr: &[u8; 6], psm: u16) -> io::Result<OwnedFd> {
+    let fd = l2cap_socket()?;
+    let mut addr = SockaddrL2::new(psm);
+    addr.l2_bdaddr = *bdaddr;
+    let ret = unsafe {
+        libc::connect(
+            fd.as_raw_fd(),
+            &addr as *const SockaddrL2 as *const libc::sockaddr,
+            std::mem::size_of::<SockaddrL2>() as libc::socklen_t,
+        )
+    };
+    if ret < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(fd)
 }
 
 /// Bind the management socket to HCI_CHANNEL_CONTROL.

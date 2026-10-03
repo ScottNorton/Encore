@@ -143,7 +143,7 @@ pub fn active_source(s: &AppState) -> &'static str {
     if connected.is_some()
         || s.bt_status
             .as_ref()
-            .map_or(false, |st| st.connected.is_some())
+            .is_some_and(|st| st.connected.is_some())
     {
         return "bluetooth";
     }

@@ -1,0 +1,32 @@
+Source for the kernel modules in this folder
+============================================
+
+These four files are Linux kernel modules licensed under the GNU General Public
+License, version 2:
+
+    udc-core.ko  mv_udc.ko  libcomposite.ko  g_ether.ko
+
+They are built from the Invoke's vendor kernel (Linux 3.8.13) with the patches in
+scripts/device/usb-gadget-patches/ of the Encore repository, using
+scripts/device/build_usb_gadget_modules.sh and the Linaro GCC 4.9.4 cross
+compiler.
+
+Corresponding source
+--------------------
+
+Kernel tree:  the Linux 3.8.13 source for the Invoke that Harman published under
+              the GPL. The Internet Archive keeps a copy at
+              https://archive.org/details/invoke-kernel
+              (Invoke-kernel.tar, SHA-1 0ebb18b574b83f5bf153b0a9355aad74c196ff0a)
+
+Patches and build script:  https://github.com/ScottNorton/Encore
+
+Written offer
+-------------
+
+If you received these modules and want the corresponding source in another form,
+open an issue at https://github.com/ScottNorton/Encore/issues and it will be
+provided. This offer is valid for at least three years from the date the modules
+were last published in that repository.
+
+LEGAL.md in the repository has the full notice.

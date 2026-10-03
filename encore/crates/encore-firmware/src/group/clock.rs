@@ -28,6 +28,17 @@ fn median_u64(values: &[u64]) -> u64 {
 /// Rolling sample window capacity.
 const MEDIAN_CAPACITY: usize = 60;
 
+/// RTT acceptance-floor window (well-formed samples, accepted or not).
+///
+/// Deliberately much shorter than the offset window: the floor's min is the
+/// acceptance gate, and a floor remembering 60 samples of a quiet-era 3 ms
+/// path rejects EVERY sample once streaming load legitimately raises RTTs to
+/// tens of ms — observed live as the estimator freezing for a minute mid-
+/// stream (zero accepts, sigma pinned, convergence unreachable). At 16 the
+/// floor turns over within ~8–30 s of probes, so a new path regime is
+/// admitted while the min-RTT anchor still protects the published offset.
+const RTT_FLOOR_WINDOW: usize = 16;
+
 /// Fixed slack added to the min-RTT acceptance threshold (microseconds).
 ///
 /// A sample is accepted only if its RTT is within `min_rtt + margin`, where
@@ -35,12 +46,36 @@ const MEDIAN_CAPACITY: usize = 60;
 /// baseline RTTs from rejecting legitimate same-path samples.
 const RTT_MARGIN_US: u64 = 2_000;
 
+/// Hard ceiling on a usable sample's RTT (microseconds).
+///
+/// The adaptive floor above tracks a genuinely raised path, but it must never
+/// legitimize garbage: an exchange that took seconds (observed live when sync
+/// rode the TCP control channel under BT/WiFi single-radio contention) carries
+/// up to ±RTT/2 of asymmetric-delay error — useless against the ~10ms sync
+/// budget, yet once such samples fill the window the floor rises to meet them
+/// and they all pass the relative gate. Group peers share a LAN; a real
+/// same-network RTT is a few tens of ms even under load, so anything past this
+/// ceiling is queueing pathology, not a path to adapt to.
+const MAX_ACCEPT_RTT_US: u64 = 150_000;
+
 /// Maximum offset dispersion (microseconds) tolerated for `converged()`.
 ///
 /// Even with enough samples we refuse to call the estimate converged while the
 /// offsets are still scattered: a high sigma means the min-RTT anchor and skew
 /// fit are not yet trustworthy enough to drive playout timing.
 const CONVERGED_SIGMA_US: u64 = 300;
+
+/// Maximum anchor-sample RTT (microseconds) tolerated for `converged()`.
+///
+/// Low sigma proves the samples agree with each other, not that they are
+/// right: a consistently asymmetric path biases every exchange the same way,
+/// and no amount of agreement detects it. What timestamps CAN prove is the
+/// hard NTP bound — the published offset is within ±RTT/2 of truth for the
+/// anchor exchange. Requiring the anchor under 20 ms makes `converged()` a
+/// certificate ("provably within ±10 ms", the two-speaker audibility line)
+/// instead of an assumption; the achieved bound is exposed via
+/// [`bound_us`](ClockSync::bound_us) — typically ±1–3 ms on this LAN.
+const CONVERGED_MAX_ANCHOR_RTT_US: u64 = 20_000;
 
 /// Minimum samples required before `converged()` can be true.
 const CONVERGED_MIN_SAMPLES: u32 = 3;
@@ -64,6 +99,9 @@ pub struct ClockSync {
     offset_us: i64,
     /// Local timestamp of the minimum-RTT sample — the interpolation anchor `t0`.
     anchor_local_us: u64,
+    /// RTT of the anchor sample; `u64::MAX` until a sample is accepted. The
+    /// published offset is provably within ±`anchor_rtt_us/2` of truth.
+    anchor_rtt_us: u64,
     /// Estimated clock skew in parts-per-million: how fast the offset drifts per
     /// microsecond of local time. Positive means the remote clock runs fast
     /// relative to ours. Stored as a float; `offset_at` applies it continuously.
@@ -72,6 +110,11 @@ pub struct ClockSync {
     rtt_us: u64,
     /// Total number of samples processed.
     samples: u32,
+    /// Snapshot of `(offset_us, anchor_local_us, skew_ppm)` taken only while
+    /// converged. Playout timing reads this mapping, so a noisy stretch (sync
+    /// probes lost or degraded under WiFi/BT contention) extrapolates the last
+    /// trusted lock at its measured skew instead of chasing the live wobble.
+    stable: Option<(i64, u64, f64)>,
 }
 
 impl ClockSync {
@@ -81,9 +124,11 @@ impl ClockSync {
             rtt_window: VecDeque::with_capacity(MEDIAN_CAPACITY),
             offset_us: 0,
             anchor_local_us: 0,
+            anchor_rtt_us: u64::MAX,
             skew_ppm: 0.0,
             rtt_us: 0,
             samples: 0,
+            stable: None,
         }
     }
 
@@ -103,12 +148,16 @@ impl ClockSync {
     /// sample instead of deriving it from `t4`. The skew regression and the
     /// continuous offset interpolation key off this local timestamp.
     pub fn process_response_at(&mut self, t1: u64, t2: u64, t3: u64, t4: u64, local_t_us: u64) {
-        let t1 = t1 as i64;
-        let t2 = t2 as i64;
-        let t3 = t3 as i64;
-        let t4 = t4 as i64;
+        // t1..t4 are untrusted microsecond clocks off the wire. Compute the
+        // differences in i128 so hostile/corrupt extremes can't overflow i64 —
+        // that panics in debug/test builds (tearing down the group loop) and
+        // wraps to a garbage offset in release. Bounded clocks fit i128 easily.
+        let t1 = t1 as i128;
+        let t2 = t2 as i128;
+        let t3 = t3 as i128;
+        let t4 = t4 as i128;
 
-        let offset = ((t2 - t1) + (t3 - t4)) / 2;
+        let offset_i128 = ((t2 - t1) + (t3 - t4)) / 2;
         let raw_rtt = (t4 - t1) - (t3 - t2);
 
         // A well-formed NTP exchange yields a non-negative RTT. A negative
@@ -118,14 +167,31 @@ impl ClockSync {
         if raw_rtt < 0 {
             return;
         }
+        // Reject implausible samples so a hostile/corrupt peer can't inject an
+        // out-of-range value, and so the i128 -> i64/u64 narrowing is lossless.
+        // The offset is a monotonic-clock difference (bounded by uptime, so it
+        // can be large but never absurd); the RTT is real network latency.
+        const MAX_OFFSET_US: i128 = 1_000_000_000_000_000; // ~31 years
+        const MAX_RTT_US: i128 = 60_000_000; // 60s; real RTT is << this
+        if offset_i128.abs() > MAX_OFFSET_US || raw_rtt > MAX_RTT_US {
+            return;
+        }
+        let offset = offset_i128 as i64;
         let rtt = raw_rtt as u64;
+
+        // Queueing pathology, not a measurable path — see MAX_ACCEPT_RTT_US.
+        // Rejected before the floor window so a burst of them can't raise the
+        // adaptive floor into accepting garbage.
+        if rtt > MAX_ACCEPT_RTT_US {
+            return;
+        }
 
         // Record the RTT of every well-formed sample so the acceptance floor
         // slides. The floor is the minimum RTT over this window, NOT an all-time
         // monotonic minimum, so a genuinely raised path floor (WiFi roam /
         // single-radio AP-STA channel contention) eventually replaces the stale
         // low values and the gate stops rejecting forever.
-        if self.rtt_window.len() >= MEDIAN_CAPACITY {
+        if self.rtt_window.len() >= RTT_FLOOR_WINDOW {
             self.rtt_window.pop_front();
         }
         self.rtt_window.push_back(rtt);
@@ -162,18 +228,26 @@ impl ClockSync {
             .iter()
             .min_by_key(|&&(_, rtt, _)| rtt)
             .copied();
-        if let Some((offset, _, local_t)) = anchor {
+        if let Some((offset, rtt, local_t)) = anchor {
             self.offset_us = offset;
             self.anchor_local_us = local_t;
+            self.anchor_rtt_us = rtt;
         } else {
             self.offset_us = 0;
             self.anchor_local_us = 0;
+            self.anchor_rtt_us = u64::MAX;
         }
 
         self.skew_ppm = self.estimate_skew_ppm();
 
         let rtts: Vec<u64> = self.samples_buf.iter().map(|&(_, r, _)| r).collect();
         self.rtt_us = median_u64(&rtts);
+
+        // Refresh the trusted playout mapping only while the estimate holds
+        // together; a noisy window leaves the last lock in place.
+        if self.converged() {
+            self.stable = Some((self.offset_us, self.anchor_local_us, self.skew_ppm));
+        }
     }
 
     /// Least-squares slope of `offset` vs `local_t` over the window, in ppm
@@ -256,13 +330,39 @@ impl ClockSync {
         self.samples
     }
 
-    /// Whether we've converged: enough samples AND a recent run of offsets that
-    /// agree closely. A stale outlier earlier in the window no longer blocks
-    /// convergence once a steady run of agreeing samples follows it, but a
-    /// currently-noisy estimate stays unconverged.
+    /// Whether we've converged: enough samples, a recent run of offsets that
+    /// agree closely, AND an anchor exchange fast enough that the agreement is
+    /// backed by a hard accuracy bound (±anchor RTT/2 — see
+    /// [`CONVERGED_MAX_ANCHOR_RTT_US`]). A stale outlier earlier in the window
+    /// no longer blocks convergence once a steady run of agreeing samples
+    /// follows it, but a currently-noisy estimate stays unconverged.
     pub fn converged(&self) -> bool {
         self.samples >= CONVERGED_MIN_SAMPLES
             && self.sigma_offset_over(CONVERGED_WINDOW) < CONVERGED_SIGMA_US
+            && self.anchor_rtt_us <= CONVERGED_MAX_ANCHOR_RTT_US
+    }
+
+    /// Hard accuracy certificate for the published offset, in microseconds:
+    /// the NTP bound guarantees truth is within ±this of the estimate,
+    /// regardless of path asymmetry. 0 = no accepted samples yet.
+    pub fn bound_us(&self) -> u64 {
+        if self.anchor_rtt_us == u64::MAX {
+            0
+        } else {
+            self.anchor_rtt_us / 2
+        }
+    }
+
+    /// Whether the published mapping rests on a certified anchor (±10 ms or
+    /// better, per [`CONVERGED_MAX_ANCHOR_RTT_US`]). This is the trust signal
+    /// for playout corrections: unlike [`converged`](Self::converged) it does
+    /// not demand that the *latest* samples agree — under streaming load the
+    /// radio legitimately delays probes for tens of ms and agreement drops,
+    /// but the anchored offset (plus skew) stays certified. Gating buffer
+    /// regulation on instantaneous convergence left the follower running with
+    /// a near-empty buffer for entire streams (observed live).
+    pub fn anchored(&self) -> bool {
+        self.anchor_rtt_us <= CONVERGED_MAX_ANCHOR_RTT_US
     }
 
     /// Interpolated offset at local time `local_t_us`, extrapolating from the
@@ -286,6 +386,23 @@ impl ClockSync {
     /// Convert a local timestamp to remote time.
     pub fn local_to_remote(&self, local_us: u64) -> u64 {
         (local_us as i64 + self.offset_at(local_us)) as u64
+    }
+
+    /// As [`local_to_remote`](Self::local_to_remote), but through the last
+    /// converged mapping (skew-extrapolated) when one exists. Playout timing
+    /// uses this so a currently-unconverged estimate — the live offset can
+    /// swing by whole seconds while sync probes fight radio contention — never
+    /// jerks the release schedule around. Falls back to the live mapping until
+    /// first convergence (best effort beats not playing at all).
+    pub fn local_to_remote_stable(&self, local_us: u64) -> u64 {
+        match self.stable {
+            Some((offset, anchor, skew)) => {
+                let dt = local_us as f64 - anchor as f64;
+                let off = (offset as f64 + skew * dt).round() as i64;
+                (local_us as i64 + off) as u64
+            }
+            None => self.local_to_remote(local_us),
+        }
     }
 
     /// How often to send sync requests (microseconds).
@@ -333,6 +450,18 @@ mod tests {
         // With t2 = t3 = mid: offset = mid - (t1 + t4)/2  =>  mid = offset + (t1+t4)/2.
         let mid = (offset_us + ((t1 + t4) / 2) as i64) as u64;
         c.process_response_at(t1, mid, mid, t4, local_t_us);
+    }
+
+    #[test]
+    fn extreme_wire_timestamps_do_not_overflow() {
+        // Hostile/corrupt timestamps must not overflow the offset/RTT math (a
+        // debug/test panic in the old i64 version) and must not be accepted.
+        let mut c = ClockSync::new();
+        c.process_response(i64::MIN as u64, i64::MAX as u64, 0, 0);
+        c.process_response(u64::MAX, 0, u64::MAX, 0);
+        c.process_response(0, u64::MAX, u64::MAX, u64::MAX);
+        // All implausible -> rejected; nothing entered the estimator.
+        assert_eq!(c.samples(), 0);
     }
 
     #[test]
@@ -457,6 +586,122 @@ mod tests {
             "gate froze on stale floor: offset {} did not follow raised path",
             c.offset_us()
         );
+    }
+
+    #[test]
+    fn convergence_requires_a_certified_anchor_not_just_agreement() {
+        // Samples that agree perfectly (sigma 0) but all rode a slow path must
+        // NOT converge: agreement proves precision, only a fast anchor bounds
+        // accuracy. 30ms RTT → ±15ms possible bias — outside the certificate.
+        let mut c = ClockSync::new();
+        for _ in 0..10 {
+            feed(&mut c, 1000, 30_000);
+        }
+        assert!(!c.converged(), "agreeing-but-slow samples must not certify");
+        assert_eq!(c.bound_us(), 15_000);
+        // One clean fast exchange anchors the estimate and certifies it.
+        feed(&mut c, 1000, 4_000);
+        assert!(c.converged());
+        assert_eq!(c.bound_us(), 2_000, "bound = anchor RTT / 2");
+    }
+
+    #[test]
+    fn bound_is_zero_before_any_sample() {
+        let c = ClockSync::new();
+        assert_eq!(c.bound_us(), 0);
+        assert!(!c.converged());
+        assert!(!c.anchored());
+    }
+
+    #[test]
+    fn anchored_survives_load_noise_that_breaks_convergence() {
+        let mut c = ClockSync::new();
+        for _ in 0..8 {
+            feed(&mut c, 1000, 3_000);
+        }
+        assert!(c.converged() && c.anchored());
+        // Streaming load: scattered offsets on slower (but window-admitted)
+        // exchanges. Agreement collapses; the certified anchor does not.
+        feed(&mut c, 60_000, 4_000);
+        feed(&mut c, -40_000, 4_500);
+        assert!(!c.converged(), "noisy run must drop convergence");
+        assert!(c.anchored(), "certified anchor must survive the noise");
+    }
+
+    #[test]
+    fn rtt_floor_recovers_from_a_quiet_era_within_the_short_window() {
+        // The live failure: a 3 ms quiet-era floor rejected every 20–70 ms
+        // streaming-load sample, freezing the estimator for a minute. With the
+        // short floor window, accepts must resume within RTT_FLOOR_WINDOW
+        // well-formed probes of the new regime.
+        let mut c = ClockSync::new();
+        for _ in 0..RTT_FLOOR_WINDOW {
+            feed(&mut c, 1000, 3_000);
+        }
+        let before = c.samples();
+        // New regime: 30 ms path. First probes are gate-rejected, but each
+        // still enters the floor window; once the 3 ms era ages out the gate
+        // admits the new path.
+        for _ in 0..RTT_FLOOR_WINDOW {
+            feed(&mut c, 2000, 30_000);
+        }
+        assert!(
+            c.samples() > before,
+            "estimator must not starve past the floor window"
+        );
+    }
+
+    #[test]
+    fn seconds_long_rtt_never_becomes_the_baseline() {
+        // The live failure this guards: sync rode a congested TCP path, every
+        // exchange measured seconds of RTT, the adaptive floor rose to meet
+        // them, and the estimator "converged" on offsets carrying ±RTT/2 of
+        // error. A window of pathological samples must leave the estimator
+        // empty rather than adapted.
+        let mut c = ClockSync::new();
+        for _ in 0..MEDIAN_CAPACITY {
+            feed(&mut c, 500_000, 11_000_000); // 11s RTT, garbage offset
+        }
+        assert_eq!(c.samples(), 0, "pathological RTTs must all be rejected");
+        assert!(!c.converged());
+        // A real sample afterwards seeds the estimator cleanly.
+        feed(&mut c, 1000, 20_000);
+        assert_eq!(c.samples(), 1);
+        assert!((c.offset_us() - 1000).abs() < 500);
+    }
+
+    #[test]
+    fn stable_mapping_ignores_unconverged_wobble() {
+        let mut c = ClockSync::new();
+        // Converge on offset ~1000 (zero skew).
+        for _ in 0..8 {
+            feed_at(&mut c, 1_000_000, 1000, 2_000);
+        }
+        assert!(c.converged());
+        let locked = c.local_to_remote_stable(2_000_000);
+        assert!((locked as i64 - (2_000_000 + 1000)).abs() < 60, "got {locked}");
+
+        // A wild burst (accepted RTT-wise, wildly scattered offsets) breaks
+        // convergence and swings the live mapping...
+        feed_at(&mut c, 2_000_000, 90_000, 2_000);
+        feed_at(&mut c, 2_100_000, -70_000, 1_900);
+        assert!(!c.converged(), "scattered offsets must drop convergence");
+        // ...but the stable mapping still answers from the last lock.
+        let held = c.local_to_remote_stable(2_200_000);
+        assert!(
+            (held as i64 - (2_200_000 + 1000)).abs() < 60,
+            "stable mapping moved with the wobble: {held}"
+        );
+    }
+
+    #[test]
+    fn stable_mapping_falls_back_to_live_before_first_convergence() {
+        let mut c = ClockSync::new();
+        feed(&mut c, 1000, 2_000);
+        // One sample: not converged, no snapshot — must still map via the
+        // live estimate rather than identity.
+        let mapped = c.local_to_remote_stable(500_000);
+        assert!((mapped as i64 - (500_000 + 1000)).abs() < 60, "got {mapped}");
     }
 
     #[test]

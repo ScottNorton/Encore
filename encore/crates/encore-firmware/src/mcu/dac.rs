@@ -37,7 +37,11 @@ pub const MIN_SAFE_VOLUME_REG: u8 = 0x18;
 ///   volume_to_reg(0, _)      → 0xA0 (silent)
 ///   volume_to_reg(100, 0x30) → 0x30 (-24 dB, the stock loudest)
 pub fn volume_to_reg(percent: u8, max_reg: u8) -> u8 {
-    let max_reg = max_reg.max(MIN_SAFE_VOLUME_REG);
+    // Clamp BOTH ends: the lower clamp holds the loudness floor, and the upper
+    // clamp keeps max_reg <= DAC_VOL_QUIETEST so the `DAC_VOL_QUIETEST - max_reg`
+    // span can't underflow (a hand-edited config with max_volume_reg > 0xA0
+    // otherwise panicked in debug / drove garbage-loud values in release).
+    let max_reg = max_reg.clamp(MIN_SAFE_VOLUME_REG, DAC_VOL_QUIETEST);
     let span = (DAC_VOL_QUIETEST - max_reg) as u16;
     let p = percent.min(100) as u16;
     DAC_VOL_QUIETEST - (p * span / 100) as u8
@@ -186,5 +190,18 @@ mod tests {
         // louder than the safety floor.
         assert_eq!(volume_to_reg(100, 0x00), MIN_SAFE_VOLUME_REG);
         assert!(volume_to_reg(100, 0x05) >= MIN_SAFE_VOLUME_REG);
+    }
+
+    #[test]
+    fn cap_above_quietest_does_not_underflow() {
+        // A hand-edited config with max_volume_reg > DAC_VOL_QUIETEST used to
+        // underflow the span. It must stay silent (never wrap to a loud value)
+        // and every result must sit within the safe [floor, quietest] range.
+        assert_eq!(volume_to_reg(100, 0xC0), DAC_VOL_QUIETEST);
+        assert_eq!(volume_to_reg(0, 0xFF), DAC_VOL_QUIETEST);
+        for pct in 0..=100u8 {
+            let reg = volume_to_reg(pct, 0xC0);
+            assert!((MIN_SAFE_VOLUME_REG..=DAC_VOL_QUIETEST).contains(&reg));
+        }
     }
 }

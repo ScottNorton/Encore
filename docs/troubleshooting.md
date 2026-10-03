@@ -35,7 +35,7 @@ file uboot/79_IMAGE  # Should say "ASCII text", NOT "ASCII text, with CRLF line 
 
 Always write/edit `79_IMAGE` from WSL or use an editor that saves with LF endings. If you edit it on Windows and it gets CRLF, convert it:
 ```bash
-wsl.exe -d Ubuntu -- bash -c "sed -i 's/\r$//' /mnt/g/HKInvoke/uboot/79_IMAGE"
+wsl.exe -d Ubuntu -- bash -c "sed -i 's/\r$//' /mnt/c/path/to/HKInvoke/uboot/79_IMAGE"
 ```
 
 ### `tftp2nand` fails when automated
@@ -193,8 +193,23 @@ Encore generates a self-signed Certificate Authority (CA) on first boot. All TLS
 **How it works:**
 
 - HTTPS is served on port 443 automatically with no configuration required.
-- The CA is valid for 10 years. The server certificate is valid for 825 days and regenerates automatically when the device's IP address or hostname changes.
+- The CA is valid for 10 years. The server certificate is valid for 825 days and regenerates automatically when the device's IP address or hostname changes, or when its dates stop being right (see Certificate dates below).
 - Because the CA is self-signed, browsers will show a certificate warning by default.
+- If the speaker cannot make its own certificate (for example `/lsync` is not writable), it falls back to the spare pair installed at `/usr/share/encore/tls/`, and if that is missing or does not match it makes a throwaway certificate in memory. The log line starting with `TLS:` says which one was used. See [TLS fallback pair](build-guide.md#tls-fallback-pair) for what the spare pair is and where it comes from.
+
+**Certificate dates:**
+
+A speaker has no battery-backed clock. It starts at 1 January 1970 and only learns the real date from NTP once it is on the network, which is after the web server already needs its certificate. A certificate made with that 1970 clock is valid only from 1970 to 1972, so every browser reports it as expired, even after you install the CA. Older firmware made its certificates this way and never looked at the dates again.
+
+The current firmware handles it in three ways:
+
+- While the clock is unset, new certificates are dated from the time the firmware was built, which is the earliest the real date can be. They start in the past and last their full term.
+- At startup it replaces any certificate that was made with an unset clock. If your speaker was affected, the first start after updating makes a new CA and a new server certificate, and the log says `TLS: the CA certificate was made while the clock was unset, replacing it.`
+- Once NTP has set the clock, and then once a day, it checks the dates again. A server certificate that has expired, expires within 30 days, or is not valid yet is replaced, and the speaker starts using the new one without a restart. The CA is replaced the same way when it has expired or is within 90 days of expiring.
+
+Replacing the server certificate needs nothing from you. If the CA is replaced, install `/ca.crt` again the same way as the first time, because the old CA does not vouch for the new server certificate.
+
+One limit remains. A speaker that never gets onto a network cannot learn the date, so it keeps judging by the build date. If its firmware is more than about two years old, the certificate it makes can already be expired. Connecting the speaker to a network once, or updating its firmware, fixes that.
 
 **Getting a green padlock (trusted HTTPS):**
 

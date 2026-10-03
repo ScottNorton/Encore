@@ -5,7 +5,9 @@ set -euo pipefail
 
 DEVICE_IP="${1:-$ENCORE_DEVICE_IP}"
 SSH="sshpass -p $ENCORE_SSH_PASS ssh $ENCORE_SSH_OPTS root@$DEVICE_IP"
-SCRIPT="//mnt/g/HKInvoke/scripts/device/dsp_init_stock.py"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# This folder as WSL sees it: Git Bash says /g/..., WSL says /mnt/g/... (already right inside WSL).
+WSL_SCRIPT_DIR="$(printf '%s' "$SCRIPT_DIR" | sed -E 's#^/([a-zA-Z])/#/mnt/\L\1/#')"
 
 echo "=== Deploying DSP init proxy ==="
 
@@ -13,7 +15,7 @@ echo "=== Deploying DSP init proxy ==="
 wsl.exe -d Ubuntu -e bash -c "
   SSH='sshpass -p $ENCORE_SSH_PASS ssh $ENCORE_SSH_OPTS root@${DEVICE_IP}'
   \$SSH 'mkdir -p /lsync/scripts'
-  sed 's/\r\$//' /mnt/g/HKInvoke/scripts/device/dsp_init_stock.py | \$SSH 'cat > /lsync/scripts/dsp_init_stock.py'
+  sed 's/\r\$//' '${WSL_SCRIPT_DIR}/dsp_init_stock.py' | \$SSH 'cat > /lsync/scripts/dsp_init_stock.py'
   \$SSH 'chmod +x /lsync/scripts/dsp_init_stock.py'
   echo 'Uploaded dsp_init_stock.py'
   \$SSH 'ls -la /lsync/scripts/dsp_init_stock.py'

@@ -5,8 +5,94 @@
 //! a panic anywhere (including in `main`, spawned tasks, or the web server) and
 //! preserving the log of a run that died or was killed by the watchdog.
 
+use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+
+/// Default cap for the active `encore.log`. With one rotated generation
+/// (`encore.log.prev`) the on-disk total stays under 2x this (~32 MB), which
+/// keeps the ~123 MB `/lsync` partition with ample room to stage a new ~14 MB
+/// `encore_next` for OTA / crash-recovery — the exact staging that failed when a
+/// chatty run let the logs grow to 117 MB and filled the partition.
+pub const LOG_MAX_BYTES: u64 = 16 * 1024 * 1024;
+
+/// A `std::io::Write` sink that caps its file at `max_bytes` by rotating to
+/// `<path>.prev` (overwriting the old `.prev`) once the next write would exceed
+/// the cap. Total on-disk footprint is therefore bounded by `2 * max_bytes`.
+///
+/// This is what makes the cap hold *during* a run: `rotate_log` only preserves
+/// the previous run's log at startup and does nothing about in-run growth, so
+/// without this a busy session grows `encore.log` without bound until `/lsync`
+/// fills and blocks the supervisor from staging a recovery binary.
+///
+/// Wrap in a `Mutex` to use as a `tracing_subscriber` writer (single-threaded
+/// tests can use it directly).
+pub struct RotatingWriter {
+    path: PathBuf,
+    file: File,
+    written: u64,
+    max_bytes: u64,
+}
+
+impl RotatingWriter {
+    /// Open (truncating) a fresh active log at `path`. Call `rotate_log` first if
+    /// you want the previous run's log preserved as `.prev`.
+    pub fn new(path: PathBuf, max_bytes: u64) -> std::io::Result<Self> {
+        let file = Self::open_fresh(&path)?;
+        Ok(Self {
+            path,
+            file,
+            written: 0,
+            max_bytes,
+        })
+    }
+
+    fn open_fresh(path: &Path) -> std::io::Result<File> {
+        OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(path)
+    }
+
+    fn reopen(&mut self) -> std::io::Result<()> {
+        self.file = Self::open_fresh(&self.path)?;
+        self.written = 0;
+        Ok(())
+    }
+
+    fn rotate(&mut self) -> std::io::Result<()> {
+        self.file.flush()?;
+        let prev = self.path.with_extension("log.prev");
+        std::fs::rename(&self.path, &prev)?;
+        self.reopen()
+    }
+}
+
+impl Write for RotatingWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        // Rotate before this write would push us over the cap, so the active log
+        // never exceeds max_bytes (assuming a single write is <= max_bytes, which
+        // a log line always is). `written > 0` guards against an infinite loop if
+        // one write is somehow larger than the whole cap.
+        if self.written > 0
+            && self.written + buf.len() as u64 > self.max_bytes
+            && self.rotate().is_err()
+        {
+            // rename within the same dir on a local fs effectively never
+            // fails; if it somehow does, still bound the file by truncating
+            // in place (we lose `.prev` this one cycle, but `/lsync` is safe).
+            let _ = self.reopen();
+        }
+        let n = self.file.write(buf)?;
+        self.written += n as u64;
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush()
+    }
+}
 
 /// Rotate `path` to `<path>.prev` if it exists and is non-empty.
 ///
@@ -122,6 +208,33 @@ mod tests {
         rotate_log(&log).unwrap();
         assert!(!log.with_extension("log.prev").exists());
         assert!(log.exists());
+    }
+
+    #[test]
+    fn rotating_writer_caps_footprint_under_heavy_logging() {
+        let dir = scratch("rotcap");
+        let log = dir.join("encore.log");
+        let prev = log.with_extension("log.prev");
+        let max = 4096u64;
+        let mut w = RotatingWriter::new(log.clone(), max).unwrap();
+
+        // Write ~200 KB through a 4 KB cap: ~50x the cap. If rotation didn't
+        // bound it, the files would blow past `max`.
+        let line = [b'x'; 200];
+        for _ in 0..1000 {
+            w.write_all(&line).unwrap();
+            w.write_all(b"\n").unwrap();
+
+            let active = std::fs::metadata(&log).map(|m| m.len()).unwrap_or(0);
+            let prevlen = std::fs::metadata(&prev).map(|m| m.len()).unwrap_or(0);
+            // Invariant at every step: neither file exceeds the cap, so the
+            // combined footprint stays under 2x the cap no matter how much we log.
+            assert!(active <= max, "active {} exceeds cap {}", active, max);
+            assert!(prevlen <= max, "prev {} exceeds cap {}", prevlen, max);
+            assert!(active + prevlen <= 2 * max);
+        }
+        // And it actually rotated (otherwise the test proves nothing).
+        assert!(prev.exists(), "expected a rotation to have produced .prev");
     }
 
     #[test]

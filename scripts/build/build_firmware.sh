@@ -184,6 +184,17 @@ apply_overlay() {
         exit 1
     fi
 
+    # TLS fallback pair. Created in build/tls/ (git-ignored) the first time and
+    # kept after that, so it can be replaced with your own. The firmware loads it
+    # from /usr/share/encore/tls only if it cannot make its own per-device
+    # certificate. See "TLS fallback pair" in docs/build-guide.md.
+    TLS_SRC="${TLS_DIR:-$BUILD_DIR/tls}"
+    bash "$REPO_ROOT/scripts/build/gen_tls_fallback.sh"
+    install -d -m 755 "$HYBRID/usr/share/encore/tls"
+    install -m 644 "$TLS_SRC/cert.pem" "$HYBRID/usr/share/encore/tls/cert.pem"
+    install -m 600 "$TLS_SRC/key.pem" "$HYBRID/usr/share/encore/tls/key.pem"
+    echo "  Installed TLS fallback pair from $TLS_SRC"
+
     # Set permissions — binaries
     chmod 755 "$HYBRID/usr/bin/run-podium.sh" "$HYBRID/usr/bin/i2c_mute"
 
@@ -220,6 +231,7 @@ fix_ownership() {
     chown root:root "$HYBRID/usr/bin/encore" 2>/dev/null || true
     chown root:root "$HYBRID/sbin/usb_gadget.sh" "$HYBRID/sbin/usb_gadget_monitor.sh" 2>/dev/null || true
     chown -R root:root "$HYBRID/usr/lib/usbgadget" 2>/dev/null || true
+    chown -R root:root "$HYBRID/usr/share/encore" 2>/dev/null || true
     chown root:root "$HYBRID/system/etc/wpa_supplicant.conf.in" 2>/dev/null || true
     echo '  Ownership fixed'
 }

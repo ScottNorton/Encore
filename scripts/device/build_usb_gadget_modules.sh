@@ -3,25 +3,69 @@
 # cross-compiler. The running kernel is gcc 5.3.0 / soft-float; modules built
 # with a modern host gcc load but then fault the kernel (float-ABI / codegen
 # mismatch), so we pin the old Linaro toolchain and force soft-float. We reuse
-# vendor/kernel (same Harman config as the stock Invoke kernel, host tools
-# already built, LOCALVERSION already = -yocto-standard) and only swap the cross
+# the vendor kernel tree (same Harman config as the stock Invoke kernel, host
+# tools already built, LOCALVERSION = -yocto-standard) and only swap the cross
 # compiler for the gadget objects.
 #
-# Source patches applied to vendor/kernel before building live in
-# scripts/device/usb-gadget-patches/ (regenerate the diffs with
-# gen_gadget_patches.sh). After building, copy the .ko files into
-# rootfs/usr/lib/usbgadget/ and rebuild the firmware.
+# These modules are GPL-2.0 kernel code. LEGAL.md says where the corresponding
+# source is: Harman's kernel tree, the patches in scripts/device/usb-gadget-patches/,
+# and this script.
+#
+# Inputs, set as environment variables when the defaults do not fit:
+#   KDIR       the Invoke vendor kernel tree, Linux 3.8.13 (default: <repo>/vendor/kernel).
+#              Prepare it once with scripts/build/build_kernel_vendor.sh: "defconfig",
+#              then "modules_prepare".
+#   TOOLCHAIN  the Linaro GCC 4.9.4 toolchain folder, the one that contains
+#              bin/arm-linux-gnueabihf-gcc (default:
+#              <repo>/vendor/toolchains/gcc-linaro-4.9.4-2017.01-x86_64_arm-linux-gnueabihf).
+#   OUT        where the built .ko files are collected (default: <repo>/build/usb_gadget_modules).
+#
+# The source changes are applied to KDIR here; a patch that is already applied
+# is left alone. After building, copy the .ko files into rootfs/usr/lib/usbgadget/
+# and rebuild the firmware.
 set -euo pipefail
 
-TOOLCHAIN=/home/scott/HKHacking/workspace/tools/gcc-linaro-4.9.4-2017.01-x86_64_arm-linux-gnueabihf
-KDIR=/mnt/g/HKInvoke/vendor/kernel
-OUT=/mnt/g/HKInvoke/build/usb_gadget_modules
+REPO="$(cd "$(dirname "$0")/../.." && pwd)"
+KDIR="${KDIR:-$REPO/vendor/kernel}"
+TOOLCHAIN="${TOOLCHAIN:-$REPO/vendor/toolchains/gcc-linaro-4.9.4-2017.01-x86_64_arm-linux-gnueabihf}"
+OUT="${OUT:-$REPO/build/usb_gadget_modules}"
+PATCH_DIR="$REPO/scripts/device/usb-gadget-patches"
+
+if [ ! -x "$TOOLCHAIN/bin/arm-linux-gnueabihf-gcc" ]; then
+    echo "ERROR: no arm-linux-gnueabihf-gcc in $TOOLCHAIN/bin" >&2
+    echo "       Set TOOLCHAIN to the gcc-linaro-4.9.4-2017.01-x86_64_arm-linux-gnueabihf folder." >&2
+    echo "       A modern gcc is not a substitute: its modules load but fault the 3.8.13 kernel." >&2
+    exit 1
+fi
+if [ ! -f "$KDIR/Makefile" ]; then
+    echo "ERROR: no kernel tree at $KDIR" >&2
+    echo "       Set KDIR to the unpacked Invoke vendor kernel (LEGAL.md says where to get it)." >&2
+    exit 1
+fi
+
 export PATH="$TOOLCHAIN/bin:$PATH"
 export ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf-
-export TMPDIR=/mnt/g/HKInvoke/build/wsl-tmp
+# WSL's /tmp is a small tmpfs, so keep temporary files inside the build folder.
+export TMPDIR="${TMPDIR:-$REPO/build/wsl-tmp}"
 mkdir -p "$TMPDIR" "$OUT"
 
 echo "=== cross toolchain ==="; arm-linux-gnueabihf-gcc --version | head -1
+
+echo "=== apply the gadget patches to $KDIR ==="
+for p in "$PATCH_DIR"/*.patch; do
+    name="$(basename "$p")"
+    if patch -p1 -R --dry-run -s -f -d "$KDIR" < "$p" >/dev/null 2>&1; then
+        echo "  already applied: $name"
+    elif patch -p1 --dry-run -s -f -d "$KDIR" < "$p" >/dev/null 2>&1; then
+        patch -p1 -s -f -d "$KDIR" < "$p"
+        echo "  applied: $name"
+    else
+        echo "ERROR: $name does not apply to $KDIR and is not already applied there." >&2
+        echo "       The tree must be the vendor kernel (Linux 3.8.13), changed only by these patches." >&2
+        exit 1
+    fi
+done
+
 cd "$KDIR"
 
 echo "=== ensure config (idempotent): LOCALVERSION + gadget=m ==="

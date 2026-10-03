@@ -79,6 +79,17 @@ spotify_client_id.txt
 *.keystore
 .aider*
 
+# TLS keys and certificates. The firmware build creates its fallback pair in
+# build/tls/ (covered by /build/ above); a private key must never be committed.
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+
+# Vendor manuals and datasheets are not redistributed. Link to the vendor instead.
+*.pdf
+
 # librespot-audio is vendored + patched (upstream PR #1722) and MUST be tracked
 # despite the vendor/ rule above; the [patch.crates-io] in encore/Cargo.toml needs it.
 !encore/vendor/

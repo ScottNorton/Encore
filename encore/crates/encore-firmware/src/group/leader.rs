@@ -333,8 +333,8 @@ mod tests {
         stream(&mut tl, &mut now, 100, true); // stream a bit
         stream(&mut tl, &mut now, 6000, false); // 60s pause: clock runs, grid freezes
         stream(&mut tl, &mut now, 6000, true); // resume for 60s
-        // Between the raw-error re-anchor (bounds the pause damage at ~1s) and
-        // the fast slew (~20ms/s), the grid must be back near production.
+                                               // Between the raw-error re-anchor (bounds the pause damage at ~1s) and
+                                               // the fast slew (~20ms/s), the grid must be back near production.
         let next = tl.epoch_us + tl.chunk_index * CHUNK_DUR_US;
         let err = next as i64 - now as i64;
         assert!(

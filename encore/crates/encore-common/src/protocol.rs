@@ -52,15 +52,27 @@ pub enum SpotifyAction {
 pub enum BtAction {
     StartDiscovery,
     StopDiscovery,
-    Pair { addr: String },
-    Connect { addr: String },
-    Disconnect { addr: String },
-    Forget { addr: String },
+    Pair {
+        addr: String,
+    },
+    Connect {
+        addr: String,
+    },
+    Disconnect {
+        addr: String,
+    },
+    Forget {
+        addr: String,
+    },
     /// Change the Bluetooth name this speaker advertises ("visible as").
-    SetName { name: String },
+    SetName {
+        name: String,
+    },
     /// AVRCP transport control to the connected source: "play", "pause",
     /// "next", "prev", or "stop".
-    Transport { key: String },
+    Transport {
+        key: String,
+    },
     /// Ask the speaker to (re)broadcast its current BtStatus now, so a freshly
     /// opened dashboard fills in immediately instead of waiting for the next tick.
     RequestStatus,
@@ -362,7 +374,9 @@ pub enum BtEvent {
 }
 
 /// The currently-connected A2DP source.
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Archive, Serialize, Deserialize, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct BtConnectedDevice {
     pub name: String,
     pub addr: String,
@@ -373,7 +387,9 @@ pub struct BtConnectedDevice {
 /// A bonded device in the paired list. `name` is the friendly name learned on a
 /// past connection (persisted by the speaker); empty if never seen, in which
 /// case the dashboard falls back to the address.
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Archive, Serialize, Deserialize, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct BtPairedDevice {
     pub addr: String,
     #[serde(default)]
@@ -382,7 +398,9 @@ pub struct BtPairedDevice {
 
 /// Persistent Bluetooth status (broadcast on connect/disconnect/stream changes
 /// and rebroadcast periodically so late-joining dashboards catch up).
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Archive, Serialize, Deserialize, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct BtStatus {
     /// The connected source, or `None` when discoverable/idle.
     pub connected: Option<BtConnectedDevice>,
@@ -415,7 +433,17 @@ pub struct BtStatus {
 /// Now-playing metadata pulled from the source over AVRCP (Controller role).
 /// Empty strings where the source didn't supply a field; an all-empty track
 /// means "nothing playing / cleared".
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Archive,
+    Serialize,
+    Deserialize,
+    Debug,
+    Clone,
+    Default,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct BtTrack {
     #[serde(default)]
     pub title: String,
@@ -435,7 +463,17 @@ impl BtTrack {
 /// Playback position/duration for the connected source, in milliseconds.
 /// `duration_ms == 0` means unknown (live stream or source didn't report) —
 /// the dashboard then shows elapsed time without a total or bar.
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Archive,
+    Serialize,
+    Deserialize,
+    Debug,
+    Clone,
+    Default,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct BtPlayStatus {
     #[serde(default)]
     pub position_ms: u32,

@@ -266,7 +266,11 @@ async fn main() -> anyhow::Result<()> {
         // Network tap: mixer writes post-EQ/DRC audio here when active (leader reads)
         let network_tap = crate::audio::mixer::MixerSlot::new();
         let tap_active = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        audio.set_network_tap(network_tap.clone(), tap_active.clone(), network_slot.clone());
+        audio.set_network_tap(
+            network_tap.clone(),
+            tap_active.clone(),
+            network_slot.clone(),
+        );
 
         // Create capture consumers for mic audio (16kHz mono S16 from DSP left channel)
         let wyoming_mic = audio.add_capture_consumer(audio::capture::CaptureChannel::Left);
@@ -927,9 +931,8 @@ async fn main() -> anyhow::Result<()> {
                                 // re-broadcasts to BT), so it takes effect without
                                 // a reboot.
                                 if mesh_enabled != old_mesh_enabled {
-                                    let _ = group_tx.try_send(
-                                        group::GroupCmd::SetMeshEnabled(mesh_enabled),
-                                    );
+                                    let _ = group_tx
+                                        .try_send(group::GroupCmd::SetMeshEnabled(mesh_enabled));
                                 }
                             }
                         }

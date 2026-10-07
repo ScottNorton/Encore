@@ -470,18 +470,27 @@ impl JitterBuffer {
 /// Held in the group event loop; `reset()` on every `jitter_buffer.clear()`.
 pub(crate) struct DriftController {
     integ_us: i64,
-    correcting: bool, // Schmitt latch
-    decim: u32,       // tick decimator: bounds the sustained slew rate
+    correcting: bool,         // Schmitt latch
+    decim: u32,               // tick decimator: bounds the sustained slew rate
     coarse_decim: u32, // rate-limits coarse fires so a sustained over-buffer can't storm coarse every tick
     smoothed_backlog_us: i64, // EMA of raw network_slot backlog (us); -1 = uninit
-    pub skips: u64,   // telemetry: total stereo frames dropped (follower was ahead)
-    pub dups: u64,    // telemetry: total stereo frames duplicated (follower was behind)
+    pub skips: u64,    // telemetry: total stereo frames dropped (follower was ahead)
+    pub dups: u64,     // telemetry: total stereo frames duplicated (follower was behind)
     pub last_error_us: i64, // telemetry: most recent error fed in
 }
 
 impl DriftController {
     pub fn new() -> Self {
-        Self { integ_us: 0, correcting: false, decim: 0, coarse_decim: 0, smoothed_backlog_us: -1, skips: 0, dups: 0, last_error_us: 0 }
+        Self {
+            integ_us: 0,
+            correcting: false,
+            decim: 0,
+            coarse_decim: 0,
+            smoothed_backlog_us: -1,
+            skips: 0,
+            dups: 0,
+            last_error_us: 0,
+        }
     }
     /// Reset loop state across a stream change. Cumulative skips/dups are kept.
     pub fn reset(&mut self) {
@@ -545,9 +554,9 @@ impl DriftController {
 /// behind => duplicate.
 pub(crate) fn drift_correction(error_us: i64, converged: bool, st: &mut DriftController) -> i32 {
     const DEAD_BAND_US: i64 = 2_000; // locked stream: never touch it
-    const ENGAGE_US: i64 = 5_000;    // Schmitt: must exceed this to START correcting
-    const MAX_CORRECTION: i32 = 1;   // <=1 stereo frame (~20.8us) per fire
-    const DECIMATE: u32 = 5;         // >=5 ticks between fires => sustained slew ~<=2ms/s
+    const ENGAGE_US: i64 = 5_000; // Schmitt: must exceed this to START correcting
+    const MAX_CORRECTION: i32 = 1; // <=1 stereo frame (~20.8us) per fire
+    const DECIMATE: u32 = 5; // >=5 ticks between fires => sustained slew ~<=2ms/s
     const KP_NUM: i64 = 1;
     const KP_DEN: i64 = 8;
     const KI_NUM: i64 = 1;
@@ -623,7 +632,9 @@ pub(crate) fn drift_correction(error_us: i64, converged: bool, st: &mut DriftCon
 pub(crate) fn coarse_correction(error_us: i64, samples: &mut Vec<i32>, st: &mut DriftController) {
     const COARSE_FRAMES: usize = super::wire::AUDIO_CHUNK_FRAMES; // one wire audio chunk, ~3ms @48k
     const COARSE_THRESH_US: i64 = (COARSE_FRAMES as i64) * 1_000_000 / 48_000;
-    if COARSE_THRESH_US == 0 { return; }
+    if COARSE_THRESH_US == 0 {
+        return;
+    }
     let grains = (error_us.abs() / COARSE_THRESH_US) as usize;
     const MAX_COARSE_GRAINS: usize = 4; // <= ~12ms edit per fire; bounds the pad allocation hard
     let grains = grains.min(MAX_COARSE_GRAINS);
@@ -636,7 +647,9 @@ pub(crate) fn coarse_correction(error_us: i64, samples: &mut Vec<i32>, st: &mut 
     } else if samples.len() >= 2 {
         // Too empty -> pad whole grains of the last frame (dup).
         let last = [samples[samples.len() - 2], samples[samples.len() - 1]];
-        for _ in 0..frames { samples.extend_from_slice(&last); }
+        for _ in 0..frames {
+            samples.extend_from_slice(&last);
+        }
         st.dups += frames as u64;
     }
 }
@@ -992,7 +1005,10 @@ mod tests {
             jb.accept(1, i, i as u64 * d, frames(144, 1));
             delivered += jb.drain_due(i as u64 * d + d).len();
         }
-        assert!(delivered > 0, "far-future poison wedged the buffer to silence");
+        assert!(
+            delivered > 0,
+            "far-future poison wedged the buffer to silence"
+        );
     }
 
     #[test]
@@ -1017,11 +1033,15 @@ mod tests {
     fn ahead_skips_behind_dups_within_bound() {
         let mut a = DriftController::new();
         let mut last = 0;
-        for _ in 0..6 { last = drift_correction(100_000, true, &mut a); }
+        for _ in 0..6 {
+            last = drift_correction(100_000, true, &mut a);
+        }
         assert_eq!(last, 1, "ahead must drop exactly one frame per fire");
         let mut b = DriftController::new();
         let mut lastb = 0;
-        for _ in 0..6 { lastb = drift_correction(-100_000, true, &mut b); }
+        for _ in 0..6 {
+            lastb = drift_correction(-100_000, true, &mut b);
+        }
         assert_eq!(lastb, -1, "behind must dup exactly one frame per fire");
     }
 
@@ -1029,7 +1049,9 @@ mod tests {
     fn hysteresis_requires_engage_then_holds_until_deadband() {
         let mut st = DriftController::new();
         assert_eq!(drift_correction(3_000, true, &mut st), 0);
-        for _ in 0..5 { drift_correction(6_000, true, &mut st); }
+        for _ in 0..5 {
+            drift_correction(6_000, true, &mut st);
+        }
         assert!(st.correcting);
         drift_correction(1_000, true, &mut st);
         assert!(!st.correcting);
@@ -1045,13 +1067,18 @@ mod tests {
             assert!(c.abs() <= 1, "slew bounded every tick");
             total += c as i64;
         }
-        assert!(total > 0, "a persistent ahead bias must net to skips, got {total}");
+        assert!(
+            total > 0,
+            "a persistent ahead bias must net to skips, got {total}"
+        );
     }
 
     #[test]
     fn windup_is_clamped() {
         let mut st = DriftController::new();
-        for _ in 0..1_000_000 { let _ = drift_correction(1_000_000, true, &mut st); }
+        for _ in 0..1_000_000 {
+            let _ = drift_correction(1_000_000, true, &mut st);
+        }
         assert!(st.integ_us.abs() <= 2_000_000);
     }
 
@@ -1059,8 +1086,15 @@ mod tests {
     fn sustained_slew_is_rate_limited_by_decimator() {
         let mut st = DriftController::new();
         let mut fires = 0;
-        for _ in 0..1000 { if drift_correction(200_000, true, &mut st) != 0 { fires += 1; } }
-        assert!(fires <= 1000 / 5 + 1, "decimator must cap firing rate, got {fires}");
+        for _ in 0..1000 {
+            if drift_correction(200_000, true, &mut st) != 0 {
+                fires += 1;
+            }
+        }
+        assert!(
+            fires <= 1000 / 5 + 1,
+            "decimator must cap firing rate, got {fires}"
+        );
     }
 
     #[test]
@@ -1080,7 +1114,11 @@ mod tests {
         let mut tiny = make_stereo_pcm(500, 3, 3);
         let before3 = tiny.len();
         coarse_correction(1_000, &mut tiny, &mut st);
-        assert_eq!(tiny.len(), before3, "sub-grain error must not change length");
+        assert_eq!(
+            tiny.len(),
+            before3,
+            "sub-grain error must not change length"
+        );
     }
 
     #[test]
@@ -1088,7 +1126,10 @@ mod tests {
         let mut st = DriftController::new();
         st.smoothed_backlog(200_000);
         st.reset_fine();
-        assert_ne!(st.smoothed_backlog_us, -1, "reset_fine must keep the EMA primed");
+        assert_ne!(
+            st.smoothed_backlog_us, -1,
+            "reset_fine must keep the EMA primed"
+        );
         st.reset();
         assert_eq!(st.smoothed_backlog_us, -1, "full reset re-primes the EMA");
     }
@@ -1097,7 +1138,10 @@ mod tests {
     fn coarse_ready_rate_limits() {
         let mut st = DriftController::new();
         let fires = (0..160).filter(|_| st.coarse_ready()).count();
-        assert!(fires <= 160 / 16 + 1, "coarse must be rate-limited, got {fires}");
+        assert!(
+            fires <= 160 / 16 + 1,
+            "coarse must be rate-limited, got {fires}"
+        );
     }
 
     #[test]
@@ -1106,6 +1150,9 @@ mod tests {
         let mut s = make_stereo_pcm(50, 1, 1);
         let before = s.len();
         coarse_correction(-2_000_000, &mut s, &mut st); // huge underflow would pad huge without the cap
-        assert!(s.len() - before <= 4 * 144 * 2, "pad must be capped at MAX_COARSE_GRAINS");
+        assert!(
+            s.len() - before <= 4 * 144 * 2,
+            "pad must be capped at MAX_COARSE_GRAINS"
+        );
     }
 }

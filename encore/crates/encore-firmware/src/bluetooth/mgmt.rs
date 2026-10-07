@@ -429,10 +429,7 @@ impl MgmtSocket {
         let name_bytes = name.as_bytes();
         let len = name_bytes.len().min(248);
         name_buf[..len].copy_from_slice(&name_bytes[..len]);
-        if let Err(e) = self
-            .send_cmd(MGMT_OP_SET_LOCAL_NAME, 0, &name_buf)
-            .await
-        {
+        if let Err(e) = self.send_cmd(MGMT_OP_SET_LOCAL_NAME, 0, &name_buf).await {
             warn!("Bluetooth mgmt: SET_LOCAL_NAME failed: {}", e);
         }
     }

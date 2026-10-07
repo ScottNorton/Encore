@@ -19,10 +19,7 @@ fn role_label(role: &str) -> String {
 /// Current text in the "Visible as" name input.
 fn name_input_value() -> String {
     dom::get_el("bt-name-input")
-        .and_then(|el| {
-            el.dyn_ref::<web_sys::HtmlInputElement>()
-                .map(|i| i.value())
-        })
+        .and_then(|el| el.dyn_ref::<web_sys::HtmlInputElement>().map(|i| i.value()))
         .unwrap_or_default()
 }
 
@@ -78,7 +75,9 @@ pub fn render(container: &web_sys::Element) {
     let prev_btn = dom::el("button", "btn", Some("\u{23EE}")); // ⏮
     dom::set_attr(&prev_btn, "aria-label", "Previous track");
     dom::on_click(&prev_btn, || {
-        crate::ws::send_msg(&ClientMsg::BluetoothControl(BtAction::Transport { key: "prev".into() }));
+        crate::ws::send_msg(&ClientMsg::BluetoothControl(BtAction::Transport {
+            key: "prev".into(),
+        }));
     });
     dom::append(&np_controls, &prev_btn);
     let pp_btn = dom::el("button", "btn", Some("\u{25B6}")); // ▶
@@ -87,13 +86,17 @@ pub fn render(container: &web_sys::Element) {
     dom::on_click(&pp_btn, || {
         let playing = crate::state::with(|s| s.bt_status.as_ref().is_some_and(|st| st.playing));
         let key = if playing { "pause" } else { "play" };
-        crate::ws::send_msg(&ClientMsg::BluetoothControl(BtAction::Transport { key: key.into() }));
+        crate::ws::send_msg(&ClientMsg::BluetoothControl(BtAction::Transport {
+            key: key.into(),
+        }));
     });
     dom::append(&np_controls, &pp_btn);
     let next_btn = dom::el("button", "btn", Some("\u{23ED}")); // ⏭
     dom::set_attr(&next_btn, "aria-label", "Next track");
     dom::on_click(&next_btn, || {
-        crate::ws::send_msg(&ClientMsg::BluetoothControl(BtAction::Transport { key: "next".into() }));
+        crate::ws::send_msg(&ClientMsg::BluetoothControl(BtAction::Transport {
+            key: "next".into(),
+        }));
     });
     dom::append(&np_controls, &next_btn);
     dom::append(&np_card, &np_controls);
@@ -249,7 +252,11 @@ pub fn update_now_playing() {
                     .and_then(|d| d.active_element())
                     .is_some_and(|a| a.id() == "bt-name-input");
                 if !focused {
-                    let name = s.bt_status.as_ref().map(|st| st.name.clone()).unwrap_or_default();
+                    let name = s
+                        .bt_status
+                        .as_ref()
+                        .map(|st| st.name.clone())
+                        .unwrap_or_default();
                     if !name.is_empty() && input.value() != name {
                         input.set_value(&name);
                     }
@@ -347,7 +354,11 @@ pub fn update() {
                         let nm = dom::el(
                             "div",
                             "",
-                            Some(if has_name { p.name.as_str() } else { "Unknown device" }),
+                            Some(if has_name {
+                                p.name.as_str()
+                            } else {
+                                "Unknown device"
+                            }),
                         );
                         dom::append(&row, &nm);
                         let role_txt = if p.connected {
@@ -410,10 +421,7 @@ pub fn update() {
                 }
             });
         let playing = s.bt_status.as_ref().map(|st| st.playing).unwrap_or(false);
-        let reconnecting = s
-            .bt_status
-            .as_ref()
-            .and_then(|st| st.reconnecting.clone());
+        let reconnecting = s.bt_status.as_ref().and_then(|st| st.reconnecting.clone());
 
         if let Some(el) = dom::get_el("bt-conn-status") {
             dom::clear(&el);
@@ -427,11 +435,7 @@ pub fn update() {
                 dom::append(&info, &name_el);
                 // The servo-held stream buffer: how far playback trails the
                 // source. Visible only while streaming (0 when idle/paused).
-                let latency_ms = s
-                    .bt_status
-                    .as_ref()
-                    .map(|st| st.latency_ms)
-                    .unwrap_or(0);
+                let latency_ms = s.bt_status.as_ref().map(|st| st.latency_ms).unwrap_or(0);
                 let detail = if dev.codec.is_empty() {
                     "Connected".to_string()
                 } else {

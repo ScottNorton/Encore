@@ -62,14 +62,24 @@ pub fn spawn_avctp(
             loop {
                 match l2cap::l2cap_accept(lfd) {
                     Ok((fd, addr)) => {
-                        info!("AVRCP: AVCTP connection from {}", l2cap::bdaddr_to_string(&addr));
+                        info!(
+                            "AVRCP: AVCTP connection from {}",
+                            l2cap::bdaddr_to_string(&addr)
+                        );
                         // Publish the socket as a shared owning handle. The Arc
                         // keeps the fd alive while a subsystem writer holds a clone,
                         // so it can't be closed mid-write; clearing it to None ends
                         // the publication before our own clone drops (and closes it).
                         let fd = std::sync::Arc::new(fd);
                         *session_fd.lock().unwrap() = Some(fd.clone());
-                        avctp_session(fd.as_raw_fd(), vol_tx.as_ref(), &cur_vol, ws_tx.as_ref(), &vol_label, &vol_registered);
+                        avctp_session(
+                            fd.as_raw_fd(),
+                            vol_tx.as_ref(),
+                            &cur_vol,
+                            ws_tx.as_ref(),
+                            &vol_label,
+                            &vol_registered,
+                        );
                         *session_fd.lock().unwrap() = None;
                         vol_registered.store(false, Ordering::Relaxed);
                         info!("AVRCP: AVCTP session ended");
@@ -94,11 +104,12 @@ pub fn spawn_avctp(
 #[cfg(target_os = "linux")]
 fn broadcast_track(ws_tx: Option<&broadcast::Sender<String>>, t: &TrackMeta) {
     let Some(ws) = ws_tx else { return };
-    let msg = encore_common::protocol::ServerMsg::BluetoothTrack(encore_common::protocol::BtTrack {
-        title: t.title.clone(),
-        artist: t.artist.clone(),
-        album: t.album.clone(),
-    });
+    let msg =
+        encore_common::protocol::ServerMsg::BluetoothTrack(encore_common::protocol::BtTrack {
+            title: t.title.clone(),
+            artist: t.artist.clone(),
+            album: t.album.clone(),
+        });
     if let Ok(json) = serde_json::to_string(&msg) {
         let _ = ws.send(json);
     }
@@ -185,7 +196,8 @@ fn avctp_session(
                 CtEvent::Position(position_ms) => {
                     broadcast_play_status(ws_tx, position_ms, cur_duration);
                     // Position notifications are one-shot; re-arm for the next tick.
-                    let _ = l2cap::raw_write(raw, &build_register(4, EVENT_PLAYBACK_POS_CHANGED, 1));
+                    let _ =
+                        l2cap::raw_write(raw, &build_register(4, EVENT_PLAYBACK_POS_CHANGED, 1));
                 }
                 CtEvent::None => {}
             }

@@ -465,7 +465,10 @@ fn dispatch(msg: ServerMsg) {
     // every tick. Update only the now-playing card surgically and stop.
     if active == "settings"
         && leaf == Some("devices")
-        && matches!(msg_tag, "BluetoothPlayStatus" | "VolumeChanged" | "BluetoothTrack")
+        && matches!(
+            msg_tag,
+            "BluetoothPlayStatus" | "VolumeChanged" | "BluetoothTrack"
+        )
     {
         crate::pages::bluetooth::update_now_playing();
         return;
@@ -475,9 +478,17 @@ fn dispatch(msg: ServerMsg) {
         // Home: now-playing + device glance.
         (
             "home",
-            "SpotifyStatus" | "TrackChanged" | "SystemStatus" | "SubsystemStatus" | "GroupStatus"
-            | "VolumeChanged" | "BootMode" | "BluetoothStatus" | "BluetoothTrack"
-            | "BluetoothPlayStatus" | "BluetoothEvent",
+            "SpotifyStatus"
+            | "TrackChanged"
+            | "SystemStatus"
+            | "SubsystemStatus"
+            | "GroupStatus"
+            | "VolumeChanged"
+            | "BootMode"
+            | "BluetoothStatus"
+            | "BluetoothTrack"
+            | "BluetoothPlayStatus"
+            | "BluetoothEvent",
         ) => true,
         // Sound: levels, visualizations, EQ/DRC/DSP, volume.
         (
@@ -490,7 +501,11 @@ fn dispatch(msg: ServerMsg) {
         ("speakers", "GroupStatus") => true,
         // Settings sub-pages, gated by the leaf route segment.
         ("settings", "NetworkChanged" | "WifiConnectResult") if leaf == Some("network") => true,
-        ("settings", "BluetoothEvent" | "BluetoothStatus" | "GroupStatus") if leaf == Some("devices") => true,
+        ("settings", "BluetoothEvent" | "BluetoothStatus" | "GroupStatus")
+            if leaf == Some("devices") =>
+        {
+            true
+        }
         ("settings", "LogEntries") if leaf == Some("logs") => true,
         ("settings", "SystemStatus" | "SubsystemStatus") if leaf == Some("status") => true,
         // Setup wizard cares about WiFi join results.

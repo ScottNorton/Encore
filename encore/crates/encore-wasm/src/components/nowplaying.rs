@@ -55,15 +55,9 @@ pub fn render(container: &web_sys::Element, id: &str) {
     // Volume control (drives the master volume = the BT playback volume, and
     // reflects the AVRCP-synced level). Rendered once; `update` sets its value.
     let vol = crate::state::with(|s| s.master_volume) as u32;
-    let slider = Slider::create(
-        &format!("{}-vol", id),
-        "Volume",
-        0,
-        100,
-        vol,
-        "%",
-        |v| crate::ws::send_msg(&ClientMsg::SetMasterVolume(v as u8)),
-    );
+    let slider = Slider::create(&format!("{}-vol", id), "Volume", 0, 100, vol, "%", |v| {
+        crate::ws::send_msg(&ClientMsg::SetMasterVolume(v as u8))
+    });
     dom::set_style(&slider, "margin-top", "12px");
     dom::append(container, &slider);
 }
@@ -98,7 +92,9 @@ pub fn update(id: &str, ps: Option<&BtPlayStatus>) {
         .and_then(|d| d.active_element())
         .is_some_and(|a| a.id() == vol_id);
     if !focused {
-        if let Some(input) = dom::get_el(&vol_id).and_then(|e| e.dyn_into::<web_sys::HtmlInputElement>().ok()) {
+        if let Some(input) =
+            dom::get_el(&vol_id).and_then(|e| e.dyn_into::<web_sys::HtmlInputElement>().ok())
+        {
             let vol = crate::state::with(|s| s.master_volume);
             input.set_value(&vol.to_string());
             if let Some(val) = dom::get_el(&format!("{}-vol-val", id)) {

@@ -596,8 +596,8 @@ fn render_frame(animation: &LedAnimation, frame_num: u32, brightness: u8) -> [u8
             // Amber/blue alternating sectors rotating at ~0.5 rev/sec.
             // 12 ring LEDs split into two 6-LED sectors.
             let speed = 15u32; // ~0.5 rev/sec at 30fps
-            // Widen to u64 (see Spin above): frame_num * speed overflows u32 after
-            // long continuous SafeMode uptime.
+                               // Widen to u64 (see Spin above): frame_num * speed overflows u32 after
+                               // long continuous SafeMode uptime.
             let offset = ((frame_num as u64 * speed as u64 / FPS) % 12) as u32;
             let s = scale * 0.7;
             for i in 0..12u32 {

@@ -143,7 +143,10 @@ pub async fn config_save_handler(
             &mut config.network.wifi_password,
             &existing.network.wifi_password,
         );
-        keep_existing_secret(&mut config.network.ap_password, &existing.network.ap_password);
+        keep_existing_secret(
+            &mut config.network.ap_password,
+            &existing.network.ap_password,
+        );
         keep_existing_secret(
             &mut config.homeassistant.mqtt_password,
             &existing.homeassistant.mqtt_password,

@@ -228,9 +228,18 @@ mod tests {
     #[test]
     fn records_are_valid_des() {
         for r in RECORDS {
-            assert_eq!(r.attrs[0], 0x35, "record {:08x} must start with SEQ", r.handle);
+            assert_eq!(
+                r.attrs[0], 0x35,
+                "record {:08x} must start with SEQ",
+                r.handle
+            );
             let declared = r.attrs[1] as usize;
-            assert_eq!(declared + 2, r.attrs.len(), "record {:08x} length", r.handle);
+            assert_eq!(
+                declared + 2,
+                r.attrs.len(),
+                "record {:08x} length",
+                r.handle
+            );
         }
     }
 
@@ -288,7 +297,9 @@ mod tests {
     fn search_attr_response_includes_avrcp() {
         let resp = build_search_attr_response(
             0x0001,
-            &[0x35, 0x03, 0x19, 0x11, 0x0E, 0x35, 0x05, 0x0A, 0x00, 0x00, 0xFF, 0xFF],
+            &[
+                0x35, 0x03, 0x19, 0x11, 0x0E, 0x35, 0x05, 0x0A, 0x00, 0x00, 0xFF, 0xFF,
+            ],
         );
         assert_eq!(resp[0], SDP_SVC_SEARCH_ATTR_RSP);
         let byte_count = u16::from_be_bytes([resp[5], resp[6]]) as usize;

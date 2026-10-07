@@ -143,7 +143,8 @@ fn sample_exec() -> Option<TsfSample> {
 mod direct {
     use super::{clock, TsfSample};
 
-    // musl's ioctl takes c_int for the request (glibc takes c_ulong).
+    // musl's ioctl takes c_int for the request (glibc takes c_ulong); the call
+    // site casts with `as _` so both the device and host test builds compile.
     const MLAN_ETH_PRIV: libc::c_int = 0x89FE;
     const HOSTCMD_GET_TSF: u16 = 0x0080;
 
@@ -190,7 +191,7 @@ mod direct {
         req.name[..5].copy_from_slice(b"wlan0");
 
         let before = clock::now_us();
-        let ret = unsafe { libc::ioctl(fd, MLAN_ETH_PRIV, &mut req) };
+        let ret = unsafe { libc::ioctl(fd, MLAN_ETH_PRIV as _, &mut req) };
         let after = clock::now_us();
         unsafe { libc::close(fd) };
         if ret != 0 {

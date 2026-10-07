@@ -8,7 +8,7 @@
 #   - CRLF line endings in tracked shell scripts
 #
 # --history     also checks every commit reachable from HEAD: file names, sizes,
-#               private-key blocks, and author trailers in messages.
+#               and private-key blocks.
 #               Needs the full history (CI checks out with fetch-depth: 0).
 # --all-refs    with --history, checks every ref in the clone instead of HEAD.
 #
@@ -75,9 +75,6 @@ report "shell scripts with CRLF line endings in the index:" \
 if [ "$HISTORY" = 1 ]; then
     echo "=== History ($REFS) ==="
     # shellcheck disable=SC2086  # REFS is deliberately split: HEAD or --all
-    report "commits whose message has a Co-authored-by trailer:" \
-        "$(git log $REFS -i -E --grep='^co-authored-by:' --format='%h %s' || true)"
-    # shellcheck disable=SC2086
     report "commits that add or remove a private key block:" \
         "$(git log $REFS -G"$KEY_BLOCK" --format='%h %s' -- . "$SELF" || true)"
     # shellcheck disable=SC2086

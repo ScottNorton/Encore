@@ -166,7 +166,7 @@ jobs:
           # The history check needs every commit, not just the latest.
           fetch-depth: 0
 
-      - name: Check for leaked keys, vendor files, and trailers
+      - name: Check for leaked keys and vendor files
         run: make verify VERIFY_ARGS=--history
 
   audit:

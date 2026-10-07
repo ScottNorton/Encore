@@ -198,7 +198,7 @@ make verify
 
 This fails if the repository tracks a private key, a certificate or key file, a vendor PDF, a firmware image, a file over 2 MB, or a shell script with Windows line endings. It also looks for private-key blocks and common access-token formats in tracked text. Nothing needs to be set up for these checks, and CI runs them.
 
-To check the whole commit history as well (file names, sizes, private-key blocks, and author trailers in commit messages), run:
+To check the whole commit history as well (file names, sizes, and private-key blocks), run:
 
 ```bash
 make verify VERIFY_ARGS=--history

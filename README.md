@@ -81,7 +81,27 @@ talks to the kernel directly over raw HCI/L2CAP sockets, with no BlueZ daemon on
 A single-page app compiled to WebAssembly, embedded in the firmware binary, and served from
 the speaker. Setup wizard, network configuration, Bluetooth pairing, EQ, LED animation editor,
 Spotify controls, speaker grouping, logs, and OTA updates all live here. It also installs as
-a PWA on a phone or desktop.
+a PWA on a phone or desktop, and it comes in dark and light themes or follows your device.
+
+<p align="center">
+  <img src="docs/screenshots/stage-dark.png" width="49%" alt="The Stage view in a desktop browser, dark theme">
+  <img src="docs/screenshots/stage-light.png" width="49%" alt="The Stage view in a desktop browser, light theme">
+</p>
+<p align="center">
+  <img src="docs/screenshots/stage-phone-dark.png" width="24%" alt="Stage on a phone, dark theme">
+  <img src="docs/screenshots/sound-phone-dark.png" width="24%" alt="Sound on a phone, dark theme">
+  <img src="docs/screenshots/lights-phone-dark.png" width="24%" alt="Lights on a phone, dark theme">
+  <img src="docs/screenshots/settings-phone-dark.png" width="24%" alt="Settings on a phone, dark theme">
+</p>
+<p align="center">
+  <img src="docs/screenshots/stage-phone-light.png" width="24%" alt="Stage on a phone, light theme">
+  <img src="docs/screenshots/sound-phone-light.png" width="24%" alt="Sound on a phone, light theme">
+  <img src="docs/screenshots/lights-phone-light.png" width="24%" alt="Lights on a phone, light theme">
+  <img src="docs/screenshots/settings-phone-light.png" width="24%" alt="Settings on a phone, light theme">
+</p>
+
+<sub>Captured from the dashboard's demo mode: add <code>?demo</code> to its URL and it fills in
+sample playback and system data, so it runs in a browser without a speaker.</sub>
 
 ### Desktop & Mobile App
 

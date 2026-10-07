@@ -347,8 +347,8 @@ Stock firmware has an MCU firmware update binary. The update protocol is now kno
    - CRC16 computed across entire firmware file (custom polynomial)
 3. **Firmware path**: `/usr/share/mcu/`
 
-**Risk assessment**: Flashing bad MCU firmware bricks touch/LED/buttons. Current
-MCU firmware works fine with Encore. No reason to update unless adding new MCU features.
+**Risk assessment**: Flashing bad MCU firmware soft-bricks touch/LED/buttons until the
+MCU is reflashed over Spy-Bi-Wire/JTAG. Current MCU firmware works fine with Encore. No reason to update unless adding new MCU features.
 The protocol is documented here for completeness.
 
 ### 11b. Bluetooth — Character Device Mode (Not Needed)

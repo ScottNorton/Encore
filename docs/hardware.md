@@ -157,9 +157,10 @@ including LED animation format, button events, and firmware update procedure.
 ### MCU Firmware Update
 
 The MCU firmware can be updated over I2C using commands 0x12 (data blocks)
-and 0x11 (CRC verify). **WARNING**: A bad flash bricks the touch/LED/button
-subsystem permanently. The stock MCU firmware works correctly — do not update
-unless you have a known-good replacement and JTAG recovery capability.
+and 0x11 (CRC verify). **WARNING**: A bad flash soft-bricks the touch/LED/button
+subsystem: it stays unresponsive until the MCU is reflashed over JTAG. The stock
+MCU firmware works correctly — do not update unless you have a known-good
+replacement and JTAG recovery capability.
 
 ## I2C Bus
 

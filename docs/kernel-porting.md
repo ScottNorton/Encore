@@ -97,7 +97,7 @@ may be a secondary key, a firmware hash, or unrelated to RSA verification entire
 
 **WARNING**: A kexec test nearly overwrote cenv from position 0. Writing to mtd13
 without preserving the existing data would destroy the RSA key hash AND device config,
-potentially bricking the boot chain. The partial write (dd seek=16) failed because NAND
+potentially soft-bricking the boot chain. The partial write (dd seek=16) failed because NAND
 requires full erase-block writes (128KB).
 
 **U-Boot environment format:**
@@ -121,7 +121,7 @@ If the RSA key hash IS in cenv (writable NAND), it could potentially be:
 
 If confirmed, kernel replacement on NAND may be possible without hardware modification,
 just by updating the signing key in cenv. However, this is high-risk — a bad cenv write
-could brick the device (recovery only via USB boot mode, if the bootloader itself still works).
+could soft-brick the device (recovery only via USB boot mode, if the bootloader itself still works).
 
 **Next steps** (when device is online):
 1. Dump cenv cleanly: `nanddump -f /tmp/cenv.bin /dev/mtd13`

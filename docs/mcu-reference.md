@@ -402,8 +402,9 @@ Encore uses external mode exclusively after the init sequence.
 
 ## MCU Firmware Update
 
-**WARNING**: A bad MCU flash bricks the touch/LED/button subsystem permanently.
-The MCU has no recovery mechanism other than JTAG. The stock firmware works
+**WARNING**: A bad MCU flash soft-bricks the touch/LED/button subsystem: it stays
+unresponsive until the MCU is reflashed. The MCU has no recovery mechanism other
+than JTAG. The stock firmware works
 correctly — do not update unless you have a verified replacement image and
 Spy-Bi-Wire/JTAG programmer.
 

@@ -1,0 +1,29 @@
+# cargo-audit settings for CI's "Dependency audit" job (`cd encore && cargo audit`).
+#
+# Each ignored advisory was checked against how Encore uses the crate. Drop an
+# entry once the crate that pulls it in ships a fix. cargo-audit ignores by
+# advisory ID, so an entry also hides that advisory for any other version of
+# the crate.
+[advisories]
+ignore = [
+    # rsa 0.9 via librespot-core 0.8: Marvin timing attack on RSA private-key
+    # operations. librespot only verifies Spotify's handshake signature with a
+    # public key (connection/handshake.rs). No fixed rsa release exists.
+    "RUSTSEC-2023-0071",
+
+    # quick-xml 0.38 via librespot-core 0.8 (and plist, desktop app only):
+    # denial of service from crafted XML. librespot parses only the ProductInfo
+    # packet from Spotify's access point, inside the authenticated, encrypted
+    # session, and uses Reader rather than NsReader. Fixed in quick-xml 0.41,
+    # which librespot 0.8 does not accept.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+
+    # rustls-webpki 0.102 via rumqttc 0.24 and librespot-core's hyper-proxy2:
+    # certificate-validation bugs. That copy is only used for MQTT over TLS and
+    # for an HTTPS proxy in librespot, and Encore configures neither.
+    "RUSTSEC-2026-0049",
+    "RUSTSEC-2026-0098",
+    "RUSTSEC-2026-0099",
+    "RUSTSEC-2026-0104",
+]

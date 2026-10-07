@@ -115,7 +115,9 @@ fn render_bt_nowplaying(container: &web_sys::Element) {
 }
 
 fn send_bt_transport(key: &str) {
-    crate::ws::send_msg(&ClientMsg::BluetoothControl(BtAction::Transport { key: key.into() }));
+    crate::ws::send_msg(&ClientMsg::BluetoothControl(BtAction::Transport {
+        key: key.into(),
+    }));
 }
 
 /// Show and populate the Stage BT now-playing card when BT is the active source.

@@ -309,7 +309,10 @@ mod tests {
             None
         );
         // benign leading element with an overstated length must not panic either:
-        assert_eq!(parse_codec_from_caps(&[CAP_MEDIA_TRANSPORT, 0xFF, 0x00]), None);
+        assert_eq!(
+            parse_codec_from_caps(&[CAP_MEDIA_TRANSPORT, 0xFF, 0x00]),
+            None
+        );
     }
 
     #[test]

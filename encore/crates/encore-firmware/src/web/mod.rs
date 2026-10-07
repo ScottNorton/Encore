@@ -731,7 +731,8 @@ async fn portal_fallback(
     axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
     req: axum::extract::Request,
 ) -> Response {
-    let from_ap = matches!(addr.ip(), std::net::IpAddr::V4(v4) if v4.octets()[..3] == [192, 168, 43]);
+    let from_ap =
+        matches!(addr.ip(), std::net::IpAddr::V4(v4) if v4.octets()[..3] == [192, 168, 43]);
     if from_ap && is_captive_portal_probe(req.uri().path()) {
         return axum::response::Redirect::temporary("http://192.168.43.1/").into_response();
     }
@@ -838,10 +839,7 @@ mod tests {
 
     #[test]
     fn origin_allowed_same_host_any_scheme_or_port() {
-        assert!(origin_allowed(
-            "https://encore.local",
-            Some("encore.local")
-        ));
+        assert!(origin_allowed("https://encore.local", Some("encore.local")));
         assert!(origin_allowed(
             "http://192.168.1.50",
             Some("192.168.1.50:443")
@@ -854,15 +852,27 @@ mod tests {
 
     #[test]
     fn origin_allowed_app_and_dev_loop() {
-        assert!(origin_allowed("http://tauri.localhost", Some("192.168.1.50")));
+        assert!(origin_allowed(
+            "http://tauri.localhost",
+            Some("192.168.1.50")
+        ));
         assert!(origin_allowed("tauri://localhost", Some("192.168.1.50")));
-        assert!(origin_allowed("http://localhost:8765", Some("192.168.1.50")));
-        assert!(origin_allowed("http://127.0.0.1:8765", Some("192.168.1.50")));
+        assert!(origin_allowed(
+            "http://localhost:8765",
+            Some("192.168.1.50")
+        ));
+        assert!(origin_allowed(
+            "http://127.0.0.1:8765",
+            Some("192.168.1.50")
+        ));
     }
 
     #[test]
     fn origin_allowed_rejects_hostile_pages() {
-        assert!(!origin_allowed("https://evil.example", Some("192.168.1.50")));
+        assert!(!origin_allowed(
+            "https://evil.example",
+            Some("192.168.1.50")
+        ));
         assert!(!origin_allowed("null", Some("192.168.1.50")));
         assert!(!origin_allowed("", Some("192.168.1.50")));
         // Attacker page named to look local must not match a real host

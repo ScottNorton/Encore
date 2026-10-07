@@ -400,10 +400,18 @@ mod tests {
         assert_eq!(p1, [0, 0, 0, 0], "first period: ring still filling");
         let mut p2 = [5i32, 6, 7, 8];
         d.process(&mut p2, true);
-        assert_eq!(p2, [0, 0, 0, 0], "second period: ring at delay, not delay+period");
+        assert_eq!(
+            p2,
+            [0, 0, 0, 0],
+            "second period: ring at delay, not delay+period"
+        );
         let mut p3 = [9i32, 10, 11, 12];
         d.process(&mut p3, true);
-        assert_eq!(p3, [1, 2, 3, 4], "third period: audio from exactly 8 samples ago");
+        assert_eq!(
+            p3,
+            [1, 2, 3, 4],
+            "third period: audio from exactly 8 samples ago"
+        );
         let mut p4 = [13i32, 14, 15, 16];
         d.process(&mut p4, true);
         assert_eq!(p4, [5, 6, 7, 8]);

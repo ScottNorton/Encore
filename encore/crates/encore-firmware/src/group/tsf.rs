@@ -143,7 +143,8 @@ fn sample_exec() -> Option<TsfSample> {
 mod direct {
     use super::{clock, TsfSample};
 
-    // musl's ioctl takes c_int for the request (glibc takes c_ulong).
+    // musl's ioctl takes c_int for the request (glibc takes c_ulong); the call
+    // site casts with `as _` so both the device and host test builds compile.
     const MLAN_ETH_PRIV: libc::c_int = 0x89FE;
     const HOSTCMD_GET_TSF: u16 = 0x0080;
 
@@ -190,7 +191,7 @@ mod direct {
         req.name[..5].copy_from_slice(b"wlan0");
 
         let before = clock::now_us();
-        let ret = unsafe { libc::ioctl(fd, MLAN_ETH_PRIV, &mut req) };
+        let ret = unsafe { libc::ioctl(fd, MLAN_ETH_PRIV as _, &mut req) };
         let after = clock::now_us();
         unsafe { libc::close(fd) };
         if ret != 0 {
@@ -283,7 +284,9 @@ mod tests {
         );
         assert_eq!(parse_tsf_output(""), None);
         assert_eq!(
-            parse_tsf_output("HOSTCMD_RESP: Result=0000\npayload: len=8\nzz 50 8f a1 64 00 00 00\n"),
+            parse_tsf_output(
+                "HOSTCMD_RESP: Result=0000\npayload: len=8\nzz 50 8f a1 64 00 00 00\n"
+            ),
             None
         );
         // Success line but payload missing entirely.
@@ -296,8 +299,16 @@ mod tests {
         // we read tsf=1_400_000 at our mono 9_100_000 (±150µs).
         // Leader's mono at our tsf instant = 5_000_000 + 400_000 = 5_400_000
         // → true offset (leader − ours) = 5_400_000 − 9_100_000 = −3_700_000.
-        let leader = TsfSample { tsf_us: 1_000_000, mono_us: 5_000_000, err_us: 100 };
-        let ours = TsfSample { tsf_us: 1_400_000, mono_us: 9_100_000, err_us: 150 };
+        let leader = TsfSample {
+            tsf_us: 1_000_000,
+            mono_us: 5_000_000,
+            err_us: 100,
+        };
+        let ours = TsfSample {
+            tsf_us: 1_400_000,
+            mono_us: 9_100_000,
+            err_us: 150,
+        };
         let (t1, t2, t3, t4) = synthesize_exchange(&leader, &ours);
         let offset = ((t2 as i128 - t1 as i128) + (t3 as i128 - t4 as i128)) / 2;
         let rtt = (t4 as i128 - t1 as i128) - (t3 as i128 - t2 as i128);

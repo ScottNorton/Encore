@@ -466,7 +466,10 @@ impl Subsystem for BluetoothSubsystem {
                 avrcp_vol_label.clone(),
                 avrcp_vol_registered.clone(),
             );
-            info!("Bluetooth: AVCTP target listening on PSM {}", avrcp::PSM_AVCTP);
+            info!(
+                "Bluetooth: AVCTP target listening on PSM {}",
+                avrcp::PSM_AVCTP
+            );
 
             (avdtp_tx, rx)
         };
@@ -481,8 +484,8 @@ impl Subsystem for BluetoothSubsystem {
             // source (if still bonded) on the poll ticker for a short window —
             // retries cover the case where the source isn't ready the instant
             // we boot. Zeroed once any device connects.
-            let auto_reconnect_addr = load_last_device()
-                .filter(|a| self.paired.iter().any(|p| p.addr == *a));
+            let auto_reconnect_addr =
+                load_last_device().filter(|a| self.paired.iter().any(|p| p.addr == *a));
             if let Some(ref addr) = auto_reconnect_addr {
                 self.auto_reconnect_retries = 3;
                 // Resolve a readable label now (paired is already populated —

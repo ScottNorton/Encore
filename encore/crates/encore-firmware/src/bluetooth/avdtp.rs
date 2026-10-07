@@ -675,7 +675,10 @@ fn initiator_session(
         };
         if let Some((ctype, specific)) = find_media_codec(&caps) {
             if let Some((int_seid, codec, cfg)) = build_set_config(ctype, &specific) {
-                if best.as_ref().is_none_or(|b| codec_rank(codec) > codec_rank(b.2)) {
+                if best
+                    .as_ref()
+                    .is_none_or(|b| codec_rank(codec) > codec_rank(b.2))
+                {
                     best = Some((acp, int_seid, codec, cfg));
                 }
             }
@@ -753,7 +756,6 @@ fn initiator_session(
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -768,7 +770,7 @@ mod tests {
         assert_eq!(seps.len(), 2);
         assert_eq!(seps[0], (1, false, false, 0)); // source
         assert_eq!(seps[1], (2, false, true, 0)); // sink
-        // in_use flag
+                                                  // in_use flag
         let busy = [(3u8 << 2) | 0x02, 0x00];
         assert_eq!(parse_discover_seps(&busy)[0], (3, true, false, 0));
     }

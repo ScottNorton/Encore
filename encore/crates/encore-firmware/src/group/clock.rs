@@ -679,7 +679,10 @@ mod tests {
         }
         assert!(c.converged());
         let locked = c.local_to_remote_stable(2_000_000);
-        assert!((locked as i64 - (2_000_000 + 1000)).abs() < 60, "got {locked}");
+        assert!(
+            (locked as i64 - (2_000_000 + 1000)).abs() < 60,
+            "got {locked}"
+        );
 
         // A wild burst (accepted RTT-wise, wildly scattered offsets) breaks
         // convergence and swings the live mapping...
@@ -701,7 +704,10 @@ mod tests {
         // One sample: not converged, no snapshot — must still map via the
         // live estimate rather than identity.
         let mapped = c.local_to_remote_stable(500_000);
-        assert!((mapped as i64 - (500_000 + 1000)).abs() < 60, "got {mapped}");
+        assert!(
+            (mapped as i64 - (500_000 + 1000)).abs() < 60,
+            "got {mapped}"
+        );
     }
 
     #[test]

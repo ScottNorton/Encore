@@ -143,7 +143,7 @@ fn navigate_to_source(id: &str) {
     let hash = match id {
         "bluetooth" => "#settings/devices", // Bluetooth lives on the Devices page
         "voice" => "#settings/integrations", // voice/assistant lives under Integrations
-        _ => "#home",                        // Spotify controls live on Stage
+        _ => "#home",                       // Spotify controls live on Stage
     };
     crate::dom::window().location().set_hash(hash).ok();
 }

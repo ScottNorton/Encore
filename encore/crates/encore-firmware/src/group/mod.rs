@@ -739,8 +739,7 @@ impl Subsystem for GroupSubsystem {
                                 err_us,
                             }) = wire::decode_payload(ptype, payload)
                             {
-                                let _ =
-                                    udp_tsfmap_tx.try_send((tsf_us, mono_us, err_us, src.ip()));
+                                let _ = udp_tsfmap_tx.try_send((tsf_us, mono_us, err_us, src.ip()));
                             }
                         }
                         _ => {}

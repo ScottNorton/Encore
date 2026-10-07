@@ -191,7 +191,12 @@ pub fn handle_frame(frame: &[u8], cur_vol_pct: u8) -> Action {
 fn handle_vendor(label: u8, operands: &[u8], cur_vol_pct: u8) -> Action {
     if operands.len() < 7 || operands[..3] != BT_SIG_COMPANY {
         return Action {
-            response: Some(vendor_response(label, RSP_REJECTED, 0x00, &[STATUS_INVALID_PARAM])),
+            response: Some(vendor_response(
+                label,
+                RSP_REJECTED,
+                0x00,
+                &[STATUS_INVALID_PARAM],
+            )),
             ..Default::default()
         };
     }
@@ -283,7 +288,12 @@ fn handle_vendor(label: u8, operands: &[u8], cur_vol_pct: u8) -> Action {
             }
         }
         _ => Action {
-            response: Some(vendor_response(label, RSP_REJECTED, pdu, &[STATUS_INVALID_PARAM])),
+            response: Some(vendor_response(
+                label,
+                RSP_REJECTED,
+                pdu,
+                &[STATUS_INVALID_PARAM],
+            )),
             ..Default::default()
         },
     }
@@ -327,11 +337,7 @@ pub enum CtEvent {
 
 /// AVCTP single-packet command header for `label` (cr=0).
 fn avctp_command_header(label: u8) -> [u8; 3] {
-    [
-        label << 4,
-        (PID_AVRCP >> 8) as u8,
-        (PID_AVRCP & 0xFF) as u8,
-    ]
+    [label << 4, (PID_AVRCP >> 8) as u8, (PID_AVRCP & 0xFF) as u8]
 }
 
 /// Build a VENDOR DEPENDENT command (controller -> target).
@@ -385,7 +391,12 @@ fn parse_element_attributes(params: &[u8]) -> Option<TrackMeta> {
         if pos + 8 > params.len() {
             break;
         }
-        let id = u32::from_be_bytes([params[pos], params[pos + 1], params[pos + 2], params[pos + 3]]);
+        let id = u32::from_be_bytes([
+            params[pos],
+            params[pos + 1],
+            params[pos + 2],
+            params[pos + 3],
+        ]);
         let len = u16::from_be_bytes([params[pos + 6], params[pos + 7]]) as usize;
         pos += 8;
         if pos + len > params.len() {
@@ -561,7 +572,19 @@ mod tests {
 
     #[test]
     fn unit_info_is_answered_stable() {
-        let frame = [0x00, 0x11, 0x0E, 0x01, SUBUNIT_UNIT, OP_UNIT_INFO, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
+        let frame = [
+            0x00,
+            0x11,
+            0x0E,
+            0x01,
+            SUBUNIT_UNIT,
+            OP_UNIT_INFO,
+            0xFF,
+            0xFF,
+            0xFF,
+            0xFF,
+            0xFF,
+        ];
         let resp = handle_frame(&frame, 0).response.expect("response");
         assert_eq!(resp[3], RSP_STABLE);
         assert_eq!(resp[5], OP_UNIT_INFO);
@@ -570,7 +593,16 @@ mod tests {
     #[test]
     fn passthrough_is_accepted() {
         // label 1, ctype control, panel, passthrough, play (0x44) press
-        let frame = [0x10, 0x11, 0x0E, 0x00, SUBUNIT_PANEL, OP_PASSTHROUGH, 0x44, 0x00];
+        let frame = [
+            0x10,
+            0x11,
+            0x0E,
+            0x00,
+            SUBUNIT_PANEL,
+            OP_PASSTHROUGH,
+            0x44,
+            0x00,
+        ];
         let resp = handle_frame(&frame, 0).response.expect("response");
         assert_eq!(resp[3], RSP_ACCEPTED);
         assert_eq!(resp[5], OP_PASSTHROUGH);
@@ -610,7 +642,11 @@ mod tests {
     fn parse_element_attributes_extracts_title_artist_album() {
         // count=3, then (id, charset=UTF-8(106), len, value) for title/artist/album.
         let mut p = vec![3u8];
-        for (id, val) in [(ATTR_TITLE, "Song"), (ATTR_ARTIST, "Band"), (ATTR_ALBUM, "Disc")] {
+        for (id, val) in [
+            (ATTR_TITLE, "Song"),
+            (ATTR_ARTIST, "Band"),
+            (ATTR_ALBUM, "Disc"),
+        ] {
             p.extend_from_slice(&id.to_be_bytes());
             p.extend_from_slice(&106u16.to_be_bytes()); // charset UTF-8
             p.extend_from_slice(&(val.len() as u16).to_be_bytes());
@@ -701,7 +737,10 @@ mod tests {
         frame.push(0x00);
         frame.extend_from_slice(&(params.len() as u16).to_be_bytes());
         frame.extend_from_slice(&params);
-        assert_eq!(parse_ct_response(&frame), CtEvent::PlayStatus(240_000, 42_000));
+        assert_eq!(
+            parse_ct_response(&frame),
+            CtEvent::PlayStatus(240_000, 42_000)
+        );
 
         // PLAYBACK_POS_CHANGED notification: event(1) + position(4).
         let mut frame = vec![0x02, 0x11, 0x0E, RSP_CHANGED, SUBUNIT_PANEL, OP_VENDOR];

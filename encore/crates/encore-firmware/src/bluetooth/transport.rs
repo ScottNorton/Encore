@@ -50,7 +50,10 @@ pub fn resolve_latency_target_ms(configured: u16) -> u32 {
     } else {
         configured
     };
-    t.clamp(*LATENCY_TARGET_RANGE_MS.start(), *LATENCY_TARGET_RANGE_MS.end()) as u32
+    t.clamp(
+        *LATENCY_TARGET_RANGE_MS.start(),
+        *LATENCY_TARGET_RANGE_MS.end(),
+    ) as u32
 }
 
 /// Resample a decoded chunk and push it into the mixer slot, steered by the

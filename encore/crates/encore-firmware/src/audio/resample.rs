@@ -374,7 +374,13 @@ mod tests {
         let err = (out_samples as f64 - expected).abs();
         // Cross-chunk continuity means no per-chunk rounding accumulation:
         // total must be within a frame or two of exact.
-        assert!(err < 8.0, "output {} vs expected {} (err {})", out_samples, expected, err);
+        assert!(
+            err < 8.0,
+            "output {} vs expected {} (err {})",
+            out_samples,
+            expected,
+            err
+        );
     }
 
     #[test]
@@ -401,8 +407,14 @@ mod tests {
             rs.process(chunk, &mut out);
         }
         let lefts: Vec<i32> = out.iter().step_by(2).copied().collect();
-        assert!(lefts.windows(2).all(|w| w[1] >= w[0]), "ramp must stay monotonic");
-        assert!(lefts.len() > 2000, "upsampling must yield more frames than input");
+        assert!(
+            lefts.windows(2).all(|w| w[1] >= w[0]),
+            "ramp must stay monotonic"
+        );
+        assert!(
+            lefts.len() > 2000,
+            "upsampling must yield more frames than input"
+        );
     }
 
     #[test]

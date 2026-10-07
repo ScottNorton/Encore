@@ -32,6 +32,7 @@ packaging the rootfs.
 | `make app-android-dev` | Windows (Android SDK) | `app-dist`, `app-icons` | — | Launch on connected Android device |
 | `make app-dist` | Any | `wasm` | `build/app-dist/` | Assemble web dashboard + branding for Tauri |
 | `make app-icons` | Any (Rust, Tauri) | — | `encore/crates/encore-app/icons/` | Generate platform icons from branding source |
+| `make lint-app` | Any (Rust, Tauri) | — | — | Clippy on the desktop app, warnings denied (`make lint` skips it because Tauri needs system packages). Needs `build/app-dist/`, so run `make app-dist` first |
 
 `make app` clears the WebView2 cache (`%LOCALAPPDATA%/com.encore.speaker/`) before
 building to prevent stale frontend content.
@@ -116,14 +117,17 @@ The GitHub Actions workflows use the same Makefile targets:
 
 ### CI (`ci.yml`)
 
-Runs on pull requests to `main` and on manual dispatch (Actions tab → CI → Run workflow).
-Direct pushes do not trigger it. Three parallel jobs:
+Runs on pull requests to `main`, every Monday at 06:00 UTC, and on manual dispatch
+(Actions tab → CI → Run workflow). Direct pushes do not trigger it. Jobs:
 
 | Job | What it runs | Purpose |
 |-----|-------------|---------|
-| **Test** | `cargo test --workspace --exclude encore-app` | Unit tests (host-only) |
-| **Build** | `wasm-pack build` → `cargo zigbuild --release` → `llvm-strip` | Verify ARM binary compiles, upload as artifact |
-| **Verify** | `make verify` | Credential leak + line ending checks |
+| **Test** | `make test`, then `make lint` | Unit tests (host-only), rustfmt and clippy |
+| **Desktop app** | `make lint-app`, with a placeholder `build/app-dist` | Proves the Tauri app still compiles, clippy-clean |
+| **Build ARM binary** | `wasm-pack build` → `cargo zigbuild --release` → `llvm-strip` | Verify ARM binary compiles, upload as artifact |
+| **Build firmware image** | Downloads stock image → `build_firmware.sh` | Proves the combined image builds; nothing is uploaded |
+| **Verify** | `make verify VERIFY_ARGS=--history` | Credential leak + line ending checks |
+| **Dependency audit** | `cargo audit` | RUSTSEC advisories; informational, with an allow-list in `encore/.cargo/audit.toml` |
 
 ### Release (`release.yml`)
 

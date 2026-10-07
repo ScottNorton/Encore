@@ -22,7 +22,7 @@ else
   RUN_LINUX = bash -lc "cd '$(CURDIR)' && $(1)"
 endif
 
-.PHONY: help test lint tls firmware wasm encore app-dist app-icons app app-dev app-android app-android-dev kernel kernel-vendor kexec download clean clean-kernel clean-kernel-vendor clean-kexec clean-all distclean verify check-wsl
+.PHONY: help test lint lint-app tls firmware wasm encore app-dist app-icons app app-dev app-android app-android-dev kernel kernel-vendor kexec download clean clean-kernel clean-kernel-vendor clean-kexec clean-all distclean verify check-wsl
 
 # Default target — show usage
 .DEFAULT_GOAL := help
@@ -49,6 +49,7 @@ help:
 	@echo "  make test             Run Rust tests"
 	@echo "  make lint             rustfmt --check + clippy gate"
 	@echo "  make lint             Run clippy (deny warnings)"
+	@echo "  make lint-app         Clippy gate for the desktop app"
 	@echo "  make app              Build desktop app"
 	@echo "  make app-dev          Run desktop app in dev mode"
 	@echo "  make app-android      Build Android app"
@@ -81,6 +82,12 @@ lint:
 	cd encore && cargo clippy -p encore-wasm --target wasm32-unknown-unknown --all-targets -- \
 		-D warnings \
 		-A clippy::too_many_arguments -A clippy::type_complexity -A clippy::needless_range_loop
+
+# Clippy gate for the desktop app, kept out of `lint` because it needs Tauri's system
+# packages (WebKitGTK and friends on Linux). The app embeds build/app-dist when it
+# compiles, so run `make app-dist` first; CI uses a placeholder page instead.
+lint-app:
+	cd encore && cargo clippy -p encore-app --all-targets -- -D warnings
 
 firmware: encore check-wsl
 	$(call RUN_LINUX,bash scripts/build/build_firmware.sh)

@@ -56,6 +56,45 @@ jobs:
       - name: Lint (rustfmt + clippy)
         run: make lint
 
+  app:
+    name: Desktop app
+    runs-on: ubuntu-latest
+    # The Test job skips encore-app because Tauri needs system packages. This job
+    # installs them and runs clippy on the app, so a dependency update that breaks
+    # the desktop build fails CI instead of reaching main.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-12-07
+          components: clippy
+
+      - name: Install Tauri system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev libssl-dev \
+            libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            encore/target
+          key: ${{ runner.os }}-cargo-app-${{ hashFiles('encore/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-app-
+
+      # The app embeds build/app-dist when it compiles. A placeholder page is
+      # enough for clippy and skips building the WASM dashboard.
+      - name: Create placeholder frontend
+        run: mkdir -p build/app-dist && echo '<!doctype html><title>Encore</title>' > build/app-dist/index.html
+
+      - name: Clippy (desktop app)
+        run: make lint-app
+
   build:
     name: Build ARM binary
     runs-on: ubuntu-latest

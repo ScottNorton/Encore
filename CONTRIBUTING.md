@@ -43,12 +43,15 @@ Add teardown photos for hardware revision 2
 
 ## Things You Should Never Do
 
-These rules exist because they've each bricked a device at least once:
+These rules exist because they've each soft-bricked a device at least once: the
+firmware failed to start properly and the speaker had to be recovered. No speaker
+has ever been permanently bricked.
 
 - **Never use `mksquashfs -all-root`** — destroys file ownership, breaks boot
 - **Never update MCU firmware unless you fully understand the protocol** — a
-  bad I2C flash permanently bricks the touch ring, LED ring, and button
-  subsystem. See [MCU Reference](docs/mcu-reference.md) for the full protocol
+  bad I2C flash soft-bricks the touch ring, LED ring, and button subsystem
+  until the MCU is reflashed over Spy-Bi-Wire/JTAG. See
+  [MCU Reference](docs/mcu-reference.md) for the full protocol
 
 ## Areas Where Help Is Valuable
 

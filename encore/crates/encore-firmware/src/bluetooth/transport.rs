@@ -119,8 +119,8 @@ fn parse_rtp_sbc(buf: &[u8]) -> Option<(usize, u8)> {
     }
 
     // A2DP media header: 1 byte after RTP header
-    // Bits 7-4: frame count
-    let frame_count = (buf[RTP_HEADER_SIZE] >> 4) & 0x0F;
+    // Low nibble: SBC frame count for unfragmented packets.
+    let frame_count = buf[RTP_HEADER_SIZE] & 0x0F;
     let payload_offset = RTP_HEADER_SIZE + A2DP_MEDIA_HEADER_SIZE;
 
     Some((payload_offset, frame_count))
@@ -463,7 +463,7 @@ mod tests {
     const RTP_V2_BYTE0: u8 = 0x80; // 0b1000_0000 -> (>>6 & 0x03) == 2
 
     /// Build a minimal SBC packet: 12-byte RTP header + 1-byte A2DP media header.
-    /// `media_header` carries the frame-count nibble in bits 7..4.
+    /// `media_header` carries the frame-count nibble in bits 3..0.
     fn sbc_packet(version_byte0: u8, media_header: u8) -> Vec<u8> {
         let mut p = vec![0u8; RTP_HEADER_SIZE + A2DP_MEDIA_HEADER_SIZE];
         p[0] = version_byte0;
@@ -473,8 +473,8 @@ mod tests {
 
     #[test]
     fn parse_rtp_sbc_wellformed_returns_offset_and_frame_count() {
-        // media header 0x50 -> frame count nibble = 5
-        let pkt = sbc_packet(RTP_V2_BYTE0, 0x50);
+        // Media header 0x05 encodes five SBC frames.
+        let pkt = sbc_packet(RTP_V2_BYTE0, 0x05);
         let parsed = parse_rtp_sbc(&pkt);
         assert_eq!(parsed, Some((RTP_HEADER_SIZE + A2DP_MEDIA_HEADER_SIZE, 5)));
         // Payload offset is exactly 13 (12 RTP + 1 media header).
@@ -482,18 +482,18 @@ mod tests {
     }
 
     #[test]
-    fn parse_rtp_sbc_frame_count_nibble_is_high_bits_only() {
-        // 0xF3: high nibble = 0xF (15), low nibble must be ignored.
-        let pkt = sbc_packet(RTP_V2_BYTE0, 0xF3);
+    fn parse_rtp_sbc_frame_count_uses_low_nibble() {
+        // 0x0F encodes the maximum frame count of 15.
+        let pkt = sbc_packet(RTP_V2_BYTE0, 0x0F);
         assert_eq!(parse_rtp_sbc(&pkt), Some((13, 15)));
 
         // 0x00 -> zero frames.
         let pkt0 = sbc_packet(RTP_V2_BYTE0, 0x00);
         assert_eq!(parse_rtp_sbc(&pkt0), Some((13, 0)));
 
-        // 0x0A: high nibble = 0 (low nibble 0xA ignored).
-        let pkt_low = sbc_packet(RTP_V2_BYTE0, 0x0A);
-        assert_eq!(parse_rtp_sbc(&pkt_low), Some((13, 0)));
+        // Upper bits do not contribute to the extracted count.
+        let pkt = sbc_packet(RTP_V2_BYTE0, 0x83);
+        assert_eq!(parse_rtp_sbc(&pkt), Some((13, 3)));
     }
 
     #[test]
@@ -508,7 +508,7 @@ mod tests {
 
     #[test]
     fn parse_rtp_sbc_exact_minimum_length_is_accepted() {
-        let pkt = sbc_packet(RTP_V2_BYTE0, 0x10);
+        let pkt = sbc_packet(RTP_V2_BYTE0, 0x01);
         assert_eq!(pkt.len(), MIN_SBC_PACKET_SIZE);
         assert_eq!(parse_rtp_sbc(&pkt), Some((13, 1)));
     }

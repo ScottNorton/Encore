@@ -1249,18 +1249,39 @@ fn mic_compute_levels(samples: &[i16]) -> (f32, f32) {
     ((sum_sq / n).sqrt() as f32, peak as f32)
 }
 
-/// Load Home Assistant MQTT config from /lsync/encore/config.toml.
-/// Returns None if file missing or [mqtt] section absent.
+/// Load the dashboard's MQTT settings, with a fallback for older [mqtt] files.
 #[cfg(target_os = "linux")]
 fn load_ha_config() -> Option<(String, Option<u16>, Option<String>, Option<String>)> {
     let content = std::fs::read_to_string("/lsync/encore/config.toml").ok()?;
+    parse_ha_config(&content)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn parse_ha_config(content: &str) -> Option<(String, Option<u16>, Option<String>, Option<String>)> {
     let table: toml::Table = content.parse().ok()?;
+    if let Some(settings) = table.get("homeassistant") {
+        let settings: encore_common::config::HomeAssistantConfig =
+            settings.clone().try_into().ok()?;
+        if settings.enabled {
+            return Some((
+                settings.mqtt_host.filter(|host| !host.trim().is_empty())?,
+                settings.mqtt_port,
+                settings.mqtt_user,
+                settings.mqtt_password,
+            ));
+        }
+        if settings.mqtt_host.is_some() {
+            return None;
+        }
+        // An unconfigured dashboard table can coexist with a legacy MQTT setup.
+    }
+
     let mqtt = table.get("mqtt")?.as_table()?;
     let host = mqtt.get("host")?.as_str()?.to_string();
     let port = mqtt
         .get("port")
         .and_then(|v| v.as_integer())
-        .map(|v| v as u16);
+        .and_then(|v| u16::try_from(v).ok());
     let user = mqtt
         .get("user")
         .and_then(|v| v.as_str())
@@ -1270,4 +1291,60 @@ fn load_ha_config() -> Option<(String, Option<u16>, Option<String>, Option<Strin
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
     Some((host, port, user, password))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_ha_config;
+
+    #[test]
+    fn uses_dashboard_mqtt_settings_after_save() {
+        let mut config = encore_common::config::EncoreConfigFile::default();
+        config.homeassistant.enabled = true;
+        config.homeassistant.mqtt_host = Some("broker.example".into());
+        config.homeassistant.mqtt_port = Some(1884);
+        config.homeassistant.mqtt_user = Some("example-user".into());
+        config.homeassistant.mqtt_password = Some("example-password".into());
+        let mut content = toml::to_string_pretty(&config).unwrap();
+        assert_eq!(
+            parse_ha_config(&content),
+            Some((
+                "broker.example".into(),
+                Some(1884),
+                Some("example-user".into()),
+                Some("example-password".into()),
+            ))
+        );
+
+        content.push_str("\n[mqtt]\nhost = \"legacy.example\"\n");
+        assert_eq!(parse_ha_config(&content).unwrap().0, "broker.example");
+    }
+
+    #[test]
+    fn respects_disabled_dashboard_mqtt_settings() {
+        let content = r#"
+[homeassistant]
+enabled = false
+mqtt_host = "broker.example"
+
+[mqtt]
+host = "legacy.example"
+"#;
+        assert_eq!(parse_ha_config(content), None);
+    }
+
+    #[test]
+    fn supports_legacy_mqtt_with_unconfigured_dashboard_settings() {
+        let content = r#"
+[homeassistant]
+enabled = false
+
+[mqtt]
+host = "legacy.example"
+"#;
+        assert_eq!(
+            parse_ha_config(content),
+            Some(("legacy.example".into(), None, None, None))
+        );
+    }
 }

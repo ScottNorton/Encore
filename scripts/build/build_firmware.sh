@@ -163,7 +163,8 @@ apply_overlay() {
 
     # Set permissions — boot scripts
     chmod 755 "$HYBRID/sbin/mount_partition.sh" "$HYBRID/sbin/auto_wifi_firewall.sh" \
-              "$HYBRID/sbin/start_ap.sh" "$HYBRID/sbin/encore_supervisor.sh"
+              "$HYBRID/sbin/start_ap.sh" "$HYBRID/sbin/encore_supervisor.sh" \
+              "$HYBRID/sbin/wpa_supplicant_setup.sh"
 
     # USB RNDIS gadget scripts (modules ship in usr/lib/usbgadget/)
     chmod 755 "$HYBRID/sbin/usb_gadget.sh" "$HYBRID/sbin/usb_gadget_monitor.sh" 2>/dev/null || true

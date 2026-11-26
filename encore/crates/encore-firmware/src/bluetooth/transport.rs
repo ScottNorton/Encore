@@ -13,7 +13,7 @@ use crate::bluetooth::A2dpCodec;
 use anyhow::{Context, Result};
 use std::io::Read;
 use std::os::fd::{FromRawFd, IntoRawFd, OwnedFd};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
@@ -153,6 +153,7 @@ fn parse_rtp_aptx(buf: &[u8], has_rtp: &mut Option<bool>) -> usize {
 /// Handle to a running A2DP reader thread.
 #[derive(Clone)]
 pub struct ReaderHandle {
+    pub sample_rate: Arc<AtomicU32>,
     /// Set to `true` to ask the reader to stop. A blocking read only observes
     /// this once it returns, so in practice the reader exits when the media
     /// channel closes (CLOSE/disconnect → EOF) rather than mid-read.
@@ -179,8 +180,11 @@ pub fn spawn_reader(
     read_mtu: u16,
     slot: Arc<MixerSlot>,
     codec: A2dpCodec,
+    sample_rate: u32,
     latency_target_ms: u32,
 ) -> Result<ReaderHandle> {
+    let sample_rate = Arc::new(AtomicU32::new(sample_rate));
+    let reader_rate = sample_rate.clone();
     let stop = Arc::new(AtomicBool::new(false));
     let running = Arc::new(AtomicBool::new(true));
     let stop_clone = stop.clone();
@@ -198,17 +202,33 @@ pub fn spawn_reader(
                 A2dpCodec::Sbc => {
                     reader_loop_sbc(fd, read_mtu, slot, stop_clone, latency_target_ms)
                 }
-                A2dpCodec::Aptx => {
-                    reader_loop_aptx(fd, read_mtu, slot, stop_clone, false, latency_target_ms)
-                }
-                A2dpCodec::AptxHd => {
-                    reader_loop_aptx(fd, read_mtu, slot, stop_clone, true, latency_target_ms)
-                }
+                A2dpCodec::Aptx => reader_loop_aptx(
+                    fd,
+                    read_mtu,
+                    slot,
+                    stop_clone,
+                    false,
+                    &reader_rate,
+                    latency_target_ms,
+                ),
+                A2dpCodec::AptxHd => reader_loop_aptx(
+                    fd,
+                    read_mtu,
+                    slot,
+                    stop_clone,
+                    true,
+                    &reader_rate,
+                    latency_target_ms,
+                ),
             }
         })
         .context("failed to spawn BT A2DP reader thread")?;
 
-    Ok(ReaderHandle { stop, running })
+    Ok(ReaderHandle {
+        stop,
+        running,
+        sample_rate,
+    })
 }
 
 /// SBC reader loop — original decode path.
@@ -310,6 +330,7 @@ fn reader_loop_aptx(
     slot: Arc<MixerSlot>,
     stop: Arc<AtomicBool>,
     hd: bool,
+    sample_rate: &AtomicU32,
     latency_target_ms: u32,
 ) {
     let mut file = unsafe { std::fs::File::from_raw_fd(fd.into_raw_fd()) };
@@ -329,7 +350,8 @@ fn reader_loop_aptx(
     let mut total_samples: u64 = 0;
     let mut zero_sample_packets: u64 = 0;
     let mut has_rtp: Option<bool> = None;
-    let mut resampler = AdaptiveResampler::new(BT_SOURCE_RATE, MIXER_RATE);
+    let mut source_rate = sample_rate.load(Ordering::Relaxed);
+    let mut resampler = AdaptiveResampler::new(source_rate, MIXER_RATE);
     let mut servo = LatencyServo::new(latency_target_ms);
     let mut resampled = Vec::with_capacity(APTX_MAX_SAMPLES * 2);
 
@@ -372,6 +394,13 @@ fn reader_loop_aptx(
                 if has_rtp == Some(true) { "" } else { "NOT " },
                 payload_offset
             );
+        }
+
+        let rate = sample_rate.load(Ordering::Relaxed);
+        if rate != source_rate {
+            source_rate = rate;
+            resampler = AdaptiveResampler::new(rate, MIXER_RATE);
+            servo = LatencyServo::new(latency_target_ms);
         }
 
         let payload = &packet[payload_offset..];

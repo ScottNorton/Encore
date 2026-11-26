@@ -110,6 +110,7 @@ fn avdtp_loop(
         let mut media_fd: Option<OwnedFd> = None;
         let mut codec: Option<A2dpCodec> = None;
         let mut configured_seid: u8 = 0;
+        let mut sample_rate = 44_100;
         let mut reader: Option<ReaderHandle> = None;
 
         // Wait for a signaling connection
@@ -199,11 +200,22 @@ fn avdtp_loop(
                 AVDTP_SET_CONFIGURATION => {
                     debug!("AVDTP: SET_CONFIGURATION");
                     let (resp, detected_codec, seid) = handle_set_configuration(txn_label, payload);
-                    if detected_codec.is_some() {
-                        codec = detected_codec;
+                    if let Some(detected_codec) = detected_codec {
+                        let Some(rate) = configured_sample_rate(detected_codec, &payload[2..])
+                        else {
+                            if let Some(ref sig) = sig_fd {
+                                let reject = build_reject(txn_label, signal_id, 0x29);
+                                if l2cap::raw_write(sig.as_raw_fd(), &reject).is_err() {
+                                    break 'session;
+                                }
+                            }
+                            continue;
+                        };
+                        sample_rate = rate;
+                        codec = Some(detected_codec);
                         configured_seid = seid;
                         state = AvdtpState::Configured;
-                        info!("AVDTP: configured seid={} codec={}", seid, codec.unwrap());
+                        info!("AVDTP: configured seid={seid} codec={detected_codec} sample_rate={sample_rate}");
                     }
                     resp
                 }
@@ -243,6 +255,7 @@ fn avdtp_loop(
                                 read_mtu,
                                 slot.clone(),
                                 c,
+                                sample_rate,
                                 latency_target_ms,
                             ) {
                                 Ok(h) => {
@@ -297,19 +310,21 @@ fn avdtp_loop(
                 }
                 AVDTP_RECONFIGURE => {
                     debug!("AVDTP: RECONFIGURE");
-                    if let Some(h) = reader.take() {
-                        h.stop.store(true, Ordering::Relaxed);
+                    // RECONFIGURE has only ACP SEID before the capability list.
+                    if payload.first().map(|seid| seid >> 2) != Some(configured_seid) {
+                        build_reject(txn_label, signal_id, AVDTP_ERR_BAD_STATE)
+                    } else if let Some((c, rate)) = codec.and_then(|c| {
+                        configured_sample_rate(c, &payload[1..]).map(|rate| (c, rate))
+                    }) {
+                        sample_rate = rate;
+                        if let Some(h) = &reader {
+                            h.sample_rate.store(rate, Ordering::Relaxed);
+                        }
+                        info!("AVDTP: reconfigured seid={configured_seid} codec={c} sample_rate={rate}");
+                        build_accept(txn_label, signal_id, &[])
+                    } else {
+                        build_reject(txn_label, signal_id, 0x29)
                     }
-                    let _ = tx.blocking_send(AvdtpEvent::Stopped);
-
-                    let (resp, detected_codec, seid) = handle_set_configuration(txn_label, payload);
-                    if detected_codec.is_some() {
-                        codec = detected_codec;
-                        configured_seid = seid;
-                        state = AvdtpState::Open; // After reconfig, wait for START
-                        info!("AVDTP: reconfigured seid={} codec={}", seid, codec.unwrap());
-                    }
-                    resp
                 }
                 _ => {
                     debug!("AVDTP: unknown signal_id=0x{:02x}", signal_id);
@@ -546,9 +561,29 @@ fn find_media_codec(caps: &[u8]) -> Option<(u8, Vec<u8>)> {
     None
 }
 
+fn configured_sample_rate(codec: A2dpCodec, caps: &[u8]) -> Option<u32> {
+    if codec == A2dpCodec::Sbc {
+        return Some(44_100);
+    }
+    let (codec_type, specific) = find_media_codec(caps)?;
+    let expected: &[u8] = match codec {
+        A2dpCodec::Aptx => &APTX_CAPS,
+        A2dpCodec::AptxHd => &APTX_HD_CAPS,
+        A2dpCodec::Sbc => unreachable!(),
+    };
+    if codec_type != CODEC_VENDOR || !specific.starts_with(&expected[..6]) {
+        return None;
+    }
+    match specific.get(6)? & 0xf0 {
+        0x20 => Some(44_100),
+        0x10 => Some(48_000),
+        _ => None,
+    }
+}
+
 /// Build the SET_CONFIGURATION service capabilities for a remote SEP whose
 /// MEDIA_CODEC element was `(codec_type, specific)`. Chooses 44.1 kHz stereo —
-/// the decode path resamples from a fixed 44.1 k — and returns
+/// our preferred initiator rate — and returns
 /// `(our_int_seid, codec, caps)` or None if the SEP can't serve that.
 fn build_set_config(codec_type: u8, specific: &[u8]) -> Option<(u8, A2dpCodec, Vec<u8>)> {
     let (int_seid, codec, cfg): (u8, A2dpCodec, Vec<u8>) = match codec_type {
@@ -563,7 +598,10 @@ fn build_set_config(codec_type: u8, specific: &[u8]) -> Option<(u8, A2dpCodec, V
             let mut cfg = specific[..6].to_vec();
             cfg.push(0x22); // 44.1 kHz stereo
             match (vendor, cid) {
-                (0x0000_00D7, 0x0024) => (1, A2dpCodec::AptxHd, cfg),
+                (0x0000_00D7, 0x0024) if specific.len() == APTX_HD_CAPS.len() => {
+                    cfg.extend_from_slice(&APTX_HD_CAPS[7..]);
+                    (1, A2dpCodec::AptxHd, cfg)
+                }
                 (0x0000_004F, 0x0001) => (2, A2dpCodec::Aptx, cfg),
                 _ => return None,
             }
@@ -685,6 +723,7 @@ fn initiator_session(
         }
     }
     let (acp, int_seid, codec, cfg) = best.ok_or("no usable codec on source")?;
+    let sample_rate = configured_sample_rate(codec, &cfg).ok_or("missing codec sample rate")?;
     info!("AVDTP INT: selected remote SEP {} codec={}", acp, codec);
 
     // SET_CONFIGURATION → OPEN → media transport (we initiate it too) → START.
@@ -699,8 +738,15 @@ fn initiator_session(
         .map(|o| o.imtu)
         .unwrap_or(672);
     let mut reader = Some(
-        transport::spawn_reader(media, read_mtu, slot.clone(), codec, latency_target_ms)
-            .map_err(|e| format!("reader spawn: {e}"))?,
+        transport::spawn_reader(
+            media,
+            read_mtu,
+            slot.clone(),
+            codec,
+            sample_rate,
+            latency_target_ms,
+        )
+        .map_err(|e| format!("reader spawn: {e}"))?,
     );
     let _ = tx.blocking_send(AvdtpEvent::Streaming { codec });
     info!("AVDTP INT: streaming (codec={}, mtu={})", codec, read_mtu);
@@ -759,6 +805,38 @@ fn initiator_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn aptx_configuration_uses_the_selected_rate() {
+        for (codec, specific) in [
+            (A2dpCodec::Aptx, APTX_CAPS.as_slice()),
+            (A2dpCodec::AptxHd, APTX_HD_CAPS.as_slice()),
+        ] {
+            let mut caps = vec![CAP_MEDIA_CODEC, (specific.len() + 2) as u8, 0, CODEC_VENDOR];
+            caps.extend_from_slice(&specific);
+            assert_eq!(configured_sample_rate(codec, &caps), None);
+            caps[10] = 0x22;
+            assert_eq!(configured_sample_rate(codec, &caps), Some(44_100));
+            caps[10] = 0x12;
+            assert_eq!(configured_sample_rate(codec, &caps), Some(48_000));
+            assert_eq!(configured_sample_rate(codec, &caps[..10]), None);
+        }
+    }
+
+    #[test]
+    fn aptx_hd_advertisement_and_configuration_include_reserved_bytes() {
+        let advertised = handle_get_capabilities(0, AVDTP_GET_CAPABILITIES, 1);
+        let (codec_type, specific) = find_media_codec(&advertised[2..]).unwrap();
+        assert_eq!(specific.len(), 11);
+        assert_eq!(&specific[7..], &[0; 4]);
+        let (_, codec, configured) = build_set_config(codec_type, &specific).unwrap();
+        assert_eq!(codec, A2dpCodec::AptxHd);
+        let (_, configured_specific) = find_media_codec(&configured).unwrap();
+        assert_eq!(configured_specific.len(), 11);
+        assert_eq!(configured_specific[6], 0x22);
+        assert_eq!(&configured_specific[7..], &[0; 4]);
+        assert!(build_set_config(codec_type, &specific[..7]).is_none());
+    }
 
     // ── initiator (INT role) codecs ──
 

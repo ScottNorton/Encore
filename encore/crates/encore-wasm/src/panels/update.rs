@@ -11,6 +11,55 @@ const GITHUB_RELEASES_URL: &str =
 const MAX_ENCORE_SIZE: f64 = 16.0 * 1024.0 * 1024.0;
 const MAX_ROOTFS_SIZE: f64 = 84_824_064.0;
 
+/// Guards one-time registration of the app-wide drop catch-all (render()
+/// runs again on every navigation to this page).
+static WINDOW_DND: std::sync::Once = std::sync::Once::new();
+
+/// On the update page, allow dropping anywhere and route the file to the
+/// same handler — including over fixed shell elements (mini now-playing
+/// bar, nav) that sit above the content and have no drop handlers of
+/// their own. A drop there previously landed on an element that neither
+/// permits nor handles it, so nothing happened.
+fn install_window_dnd() {
+    WINDOW_DND.call_once(|| {
+        let ondragover = Closure::wrap(Box::new(|e: web_sys::DragEvent| {
+            if on_update_page() {
+                e.prevent_default();
+            }
+        }) as Box<dyn FnMut(_)>);
+        dom::window()
+            .add_event_listener_with_callback("dragover", ondragover.as_ref().unchecked_ref())
+            .ok();
+        ondragover.forget();
+
+        let ondrop = Closure::wrap(Box::new(|e: web_sys::DragEvent| {
+            if !on_update_page() {
+                return;
+            }
+            e.prevent_default();
+            if let Some(dt) = e.data_transfer() {
+                if let Some(files) = dt.files() {
+                    if let Some(file) = files.get(0) {
+                        handle_file(file);
+                    }
+                }
+            }
+        }) as Box<dyn FnMut(_)>);
+        dom::window()
+            .add_event_listener_with_callback("drop", ondrop.as_ref().unchecked_ref())
+            .ok();
+        ondrop.forget();
+    });
+}
+
+fn on_update_page() -> bool {
+    dom::window()
+        .location()
+        .hash()
+        .map(|h| h.contains("settings/system/update"))
+        .unwrap_or(false)
+}
+
 #[derive(serde::Deserialize)]
 struct GithubRelease {
     tag_name: String,
@@ -96,6 +145,23 @@ pub fn render(container: &web_sys::Element) {
     file_input.set_id("fw-file-input");
     dom::append(&upload, &file_input);
 
+    // Make the whole zone one uniform drop target: hit-test drops against
+    // #upload-area itself (which owns the drag handlers) rather than a
+    // child text node. Some engines treat file drops over text differently
+    // (e.g. a text-insertion path for drags carrying text/uri-list), which
+    // can swallow the drop when it lands on the zone's text/icon but not
+    // on its padding.
+    {
+        let children = upload.children();
+        let mut i = 0u32;
+        while let Some(c) = children.item(i) {
+            if let Some(el) = c.dyn_ref::<web_sys::Element>() {
+                dom::set_style(el, "pointer-events", "none");
+            }
+            i += 1;
+        }
+    }
+
     // Click upload area -> trigger file picker
     dom::on_click(&upload, || {
         if let Some(input) = dom::get_el("fw-file-input") {
@@ -105,24 +171,24 @@ pub fn render(container: &web_sys::Element) {
         }
     });
 
-    // File selection handler
-    let onchange = Closure::wrap(Box::new(|_: web_sys::Event| {
-        if let Some(input) = dom::get_el("fw-file-input") {
-            if let Some(input) = input.dyn_ref::<web_sys::HtmlInputElement>() {
-                if let Some(files) = input.files() {
-                    if let Some(file) = files.get(0) {
-                        handle_file(file);
-                    }
+    // File selection handler. Attach to the element directly — this runs
+    // before #upload-area is in the document, so looking the input up by id
+    // here returned None and the listener was never attached ("pick a file,
+    // nothing happens").
+    let input_ref = file_input.clone();
+    let onchange = Closure::wrap(Box::new(move |_: web_sys::Event| {
+        if let Some(input) = input_ref.dyn_ref::<web_sys::HtmlInputElement>() {
+            if let Some(files) = input.files() {
+                if let Some(file) = files.get(0) {
+                    handle_file(file);
                 }
-                input.set_value(""); // allow re-selecting same file
             }
+            input.set_value(""); // allow re-selecting same file
         }
     }) as Box<dyn FnMut(_)>);
-    if let Some(input) = dom::get_el("fw-file-input") {
-        input
-            .add_event_listener_with_callback("change", onchange.as_ref().unchecked_ref())
-            .ok();
-    }
+    file_input
+        .add_event_listener_with_callback("change", onchange.as_ref().unchecked_ref())
+        .ok();
     onchange.forget();
 
     // Drag-and-drop handlers
@@ -161,6 +227,8 @@ pub fn render(container: &web_sys::Element) {
 
         let ondrop = Closure::wrap(Box::new(|e: web_sys::DragEvent| {
             e.prevent_default();
+            // Zone handled it — don't let the app-wide catch-all re-handle.
+            e.stop_propagation();
             if let Some(area) = dom::get_el("upload-area") {
                 dom::set_style(&area, "border-color", "var(--border)");
                 dom::set_style(&area, "background", "");
@@ -180,6 +248,7 @@ pub fn render(container: &web_sys::Element) {
     }
 
     dom::append(container, &upload);
+    install_window_dnd();
 
     // Progress area (hidden initially)
     let progress = dom::create_div();
